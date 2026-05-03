@@ -12,7 +12,8 @@ object AppData {
         ScopedApp(packageName = "android", name = "系统服务"),
         ScopedApp(packageName = "com.meizu.customizecenter", name = "主题美化"),
         ScopedApp(packageName = "com.meizu.flyme.launcher", name = "桌面"),
-        ScopedApp(packageName = "com.android.mms", name = "信息")
+        ScopedApp(packageName = "com.android.mms", name = "信息"),
+        ScopedApp(packageName = "com.meizu.share", name = "互传")
     )
 
     fun getScopedApps(context: Context): List<ScopedApp> {
@@ -157,6 +158,13 @@ object AppData {
                 key = "auto_copy_verify_code",
                 label = "自动复制验证码",
                 description = "收到验证码短信时自动复制验证码到剪贴板"
+            )
+        ),
+        "com.meizu.share" to listOf(
+            HookFeature(
+                key = "auto_accept_share",
+                label = "自动接收互传文件",
+                description = "收到互传或蓝牙传文件请求时自动确认接收，无需手动点击"
             )
         )
     )

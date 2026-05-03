@@ -8,6 +8,7 @@ import com.karen.flymetool.hook.entry.LauncherEntry
 import com.karen.flymetool.hook.entry.MmsEntry
 import com.karen.flymetool.hook.entry.PackageInstallerEntry
 import com.karen.flymetool.hook.entry.SettingsEntry
+import com.karen.flymetool.hook.entry.ShareEntry
 import com.karen.flymetool.hook.entry.SystemUIEntry
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.callbacks.XC_LoadPackage
@@ -24,7 +25,8 @@ class XposedInit : IXposedHookLoadPackage {
             AndroidEntry,
             CustomizeCenterEntry,
             LauncherEntry,
-            MmsEntry
+            MmsEntry,
+            ShareEntry
         )
 
         private val ENTRY_MAP: Map<String, HookEntry> = ENTRIES.associateBy { it.targetPackage }

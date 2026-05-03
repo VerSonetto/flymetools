@@ -9,5 +9,6 @@
         <item>com.meizu.customizecenter</item>
         <item>com.meizu.flyme.launcher</item>
         <item>com.android.mms</item>
+        <item>com.meizu.share</item>
     </string-array>
 </resources>
