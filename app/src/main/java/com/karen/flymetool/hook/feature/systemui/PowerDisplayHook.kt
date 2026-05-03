@@ -29,9 +29,12 @@ object PowerDisplayHook {
     private var powerTextView: TextView? = null
     private var isRunning = false
     private var lastVoltage = 0
+    private var refreshInterval: Long = 1000
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam, interval: Int = 1000) {
         if (lpparam.packageName != "com.android.systemui") return
+
+        refreshInterval = interval.toLong().coerceIn(500, 5000)
 
         try {
             val clazz = XposedHelpers.findClass(PHONE_STATUS_BAR_VIEW, lpparam.classLoader)
@@ -129,7 +132,7 @@ object PowerDisplayHook {
                     val power = (lastVoltage / 1000.0) * (abs(current) / 1_000_000.0)
                     powerTextView?.text = String.format("%.2fW", power)
                 }
-                if (isRunning) handler.postDelayed(this, 1000)
+                if (isRunning) handler.postDelayed(this, refreshInterval)
             }
         })
     }

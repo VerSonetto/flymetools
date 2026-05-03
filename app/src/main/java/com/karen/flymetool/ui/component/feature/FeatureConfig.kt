@@ -16,5 +16,6 @@ fun FeatureConfig(
         "task_card_radius" -> TaskCardRadiusConfig(packageName, featureKey)
         "task_blur_intensity" -> BlurIntensityConfig(packageName, featureKey)
         "memory_display" -> MemoryDisplayConfig(packageName, featureKey)
+        "power_display" -> PowerDisplayConfig(packageName, featureKey)
     }
 }

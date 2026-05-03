@@ -31,7 +31,8 @@ object SystemUIEntry : HookEntry {
 
         // 功率显示
         if (XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "power_display")) {
-            PowerDisplayHook.handleLoadPackage(lpparam)
+            val refreshInterval = XposedPrefs.getFeatureValue(lpparam, targetPackage, "power_display", 1000)
+            PowerDisplayHook.handleLoadPackage(lpparam, refreshInterval)
         }
 
         // 隐藏手势条
