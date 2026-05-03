@@ -1,0 +1,32 @@
+package com.karen.flymetool.data
+
+import android.content.Context
+import android.content.SharedPreferences
+
+/**
+ * 跨进程 SharedPreferences 工具类（使用 MODE_WORLD_READABLE 供 Xposed 读取）
+ */
+object PrefsHelper {
+
+    private const val PREFS_NAME = "flymetool_prefs"
+
+    private fun getPrefs(context: Context): SharedPreferences {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_WORLD_READABLE)
+    }
+
+    fun isFeatureEnabled(context: Context, packageName: String, featureKey: String): Boolean {
+        return getPrefs(context).getBoolean("$packageName:$featureKey", false)
+    }
+
+    fun setFeatureEnabled(context: Context, packageName: String, featureKey: String, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean("$packageName:$featureKey", enabled).apply()
+    }
+
+    fun getFeatureValue(context: Context, packageName: String, featureKey: String, defaultValue: Int): Int {
+        return getPrefs(context).getInt("$packageName:$featureKey:value", defaultValue)
+    }
+
+    fun setFeatureValue(context: Context, packageName: String, featureKey: String, value: Int) {
+        getPrefs(context).edit().putInt("$packageName:$featureKey:value", value).apply()
+    }
+}

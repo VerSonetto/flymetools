@@ -1,0 +1,20 @@
+package com.karen.flymetool.ui.component.feature
+
+import androidx.compose.runtime.Composable
+
+@Composable
+fun FeatureConfig(
+    featureKey: String,
+    packageName: String
+) {
+    when (featureKey) {
+        "statusbar_weekday" -> WeekdayFormatConfig(packageName, featureKey)
+        "notification_card_radius" -> NotificationCardRadiusConfig(packageName, featureKey)
+        "connection_rate_low_speed_hide" -> ConnectionRateConfig(packageName, featureKey)
+        "pulldown_area_ratio" -> PulldownAreaRatioConfig(packageName, featureKey)
+        "notification_icon_limit" -> NotificationIconLimitConfig(packageName, featureKey)
+        "task_card_radius" -> TaskCardRadiusConfig(packageName, featureKey)
+        "task_blur_intensity" -> BlurIntensityConfig(packageName, featureKey)
+        "memory_display" -> MemoryDisplayConfig(packageName, featureKey)
+    }
+}

@@ -1,0 +1,142 @@
+package com.karen.flymetool.ui.component.feature
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.karen.flymetool.data.PrefsHelper
+
+@Composable
+fun PulldownAreaRatioConfig(
+    packageName: String,
+    featureKey: String
+) {
+    val context = LocalContext.current
+    var controlCenterRatio by remember {
+        mutableStateOf(PrefsHelper.getFeatureValue(context, packageName, featureKey, 50))
+    }
+
+    val ratios = listOf(25, 50, 75)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Text(
+            text = "控制中心区域比例",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ratios.forEach { ratio ->
+                val isSelected = controlCenterRatio == ratio
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        )
+                        .border(
+                            width = if (isSelected) 2.dp else 0.dp,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary
+                            else Color.Transparent,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .clickable {
+                            controlCenterRatio = ratio
+                            PrefsHelper.setFeatureValue(context, packageName, featureKey, ratio)
+                        }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "$ratio%",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isSelected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Text(
+            text = "通知面板区域比例",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ratios.forEach { ratio ->
+                val notificationRatio = 100 - controlCenterRatio
+                val isSelected = notificationRatio == ratio
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        )
+                        .border(
+                            width = if (isSelected) 2.dp else 0.dp,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary
+                            else Color.Transparent,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .clickable {
+                            val newControlCenterRatio = 100 - ratio
+                            controlCenterRatio = newControlCenterRatio
+                            PrefsHelper.setFeatureValue(context, packageName, featureKey, newControlCenterRatio)
+                        }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "$ratio%",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isSelected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
+            }
+        }
+    }
+}

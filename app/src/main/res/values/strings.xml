@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">FlymeTool</string>
+
+    <string-array name="xposed_scope">
+        <item>com.android.systemui</item>
+        <item>com.android.settings</item>
+        <item>com.android.packageinstaller</item>
+        <item>android</item>
+        <item>com.meizu.customizecenter</item>
+        <item>com.meizu.flyme.launcher</item>
+    </string-array>
+</resources>
