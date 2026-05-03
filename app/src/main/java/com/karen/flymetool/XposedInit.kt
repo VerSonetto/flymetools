@@ -1,14 +1,14 @@
 package com.karen.flymetool
 
-import com.karen.flymetool.hook.AndroidEntry
-import com.karen.flymetool.hook.CustomizeCenterEntry
-import com.karen.flymetool.hook.HookEntry
-import com.karen.flymetool.hook.LauncherEntry
-import com.karen.flymetool.hook.Logger
-import com.karen.flymetool.hook.MmsEntry
-import com.karen.flymetool.hook.PackageInstallerEntry
-import com.karen.flymetool.hook.SettingsEntry
-import com.karen.flymetool.hook.SystemUIEntry
+import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.entry.AndroidEntry
+import com.karen.flymetool.hook.entry.CustomizeCenterEntry
+import com.karen.flymetool.hook.entry.HookEntry
+import com.karen.flymetool.hook.entry.LauncherEntry
+import com.karen.flymetool.hook.entry.MmsEntry
+import com.karen.flymetool.hook.entry.PackageInstallerEntry
+import com.karen.flymetool.hook.entry.SettingsEntry
+import com.karen.flymetool.hook.entry.SystemUIEntry
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
