@@ -11,7 +11,8 @@ object AppData {
         ScopedApp(packageName = "com.android.packageinstaller", name = "软件包安装程序"),
         ScopedApp(packageName = "android", name = "系统服务"),
         ScopedApp(packageName = "com.meizu.customizecenter", name = "主题美化"),
-        ScopedApp(packageName = "com.meizu.flyme.launcher", name = "桌面")
+        ScopedApp(packageName = "com.meizu.flyme.launcher", name = "桌面"),
+        ScopedApp(packageName = "com.android.mms", name = "信息")
     )
 
     fun getScopedApps(context: Context): List<ScopedApp> {
@@ -149,6 +150,13 @@ object AppData {
                 key = "memory_display",
                 label = "最近任务显示内存",
                 description = "在最近任务界面右上角显示内存占用信息"
+            )
+        ),
+        "com.android.mms" to listOf(
+            HookFeature(
+                key = "auto_copy_verify_code",
+                label = "自动复制验证码",
+                description = "收到验证码短信时自动复制验证码到剪贴板"
             )
         )
     )
