@@ -5,6 +5,7 @@ import com.karen.flymetool.hook.feature.systemui.AODLyricHook
 import com.karen.flymetool.hook.feature.systemui.ConnectionRateLowSpeedHideHook
 import com.karen.flymetool.hook.feature.systemui.HideChargingAnimationHook
 import com.karen.flymetool.hook.feature.systemui.HideGestureBarHook
+import com.karen.flymetool.hook.feature.systemui.HideStatusBarIconHook
 import com.karen.flymetool.hook.feature.systemui.HideKeyguardShortcutsHook
 import com.karen.flymetool.hook.feature.systemui.NotificationCardRadiusHook
 import com.karen.flymetool.hook.feature.systemui.NotificationIconLimitHook
@@ -93,6 +94,11 @@ object SystemUIEntry : HookEntry {
         // 解除通知管理限制
         if (XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "notification_manage")) {
             NotificationManageHook.handleLoadPackage(lpparam)
+        }
+
+        // 隐藏状态栏图标
+        if (XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "hide_status_bar_icon")) {
+            HideStatusBarIconHook.handleLoadPackage(lpparam)
         }
     }
 }

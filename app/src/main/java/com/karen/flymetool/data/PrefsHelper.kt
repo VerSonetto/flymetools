@@ -29,4 +29,12 @@ object PrefsHelper {
     fun setFeatureValue(context: Context, packageName: String, featureKey: String, value: Int) {
         getPrefs(context).edit().putInt("$packageName:$featureKey:value", value).apply()
     }
+
+    fun getFeatureStringSet(context: Context, packageName: String, featureKey: String, defaultValue: Set<String>): Set<String> {
+        return getPrefs(context).getStringSet("$packageName:$featureKey:values", defaultValue) ?: defaultValue
+    }
+
+    fun setFeatureStringSet(context: Context, packageName: String, featureKey: String, values: Set<String>) {
+        getPrefs(context).edit().putStringSet("$packageName:$featureKey:values", values).apply()
+    }
 }

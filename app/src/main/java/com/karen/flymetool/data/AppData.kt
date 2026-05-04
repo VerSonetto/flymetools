@@ -100,6 +100,11 @@ object AppData {
                 key = "notification_manage",
                 label = "解除通知管理限制",
                 description = "解除系统通知不支持管理的限制，允许管理所有系统通知"
+            ),
+            HookFeature(
+                key = "hide_status_bar_icon",
+                label = "隐藏状态栏图标",
+                description = "选择要隐藏的状态栏图标，隐藏后不会显示在状态栏上"
             )
         ),
         "com.android.settings" to listOf(

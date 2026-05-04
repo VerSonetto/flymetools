@@ -17,5 +17,6 @@ fun FeatureConfig(
         "task_blur_intensity" -> BlurIntensityConfig(packageName, featureKey)
         "memory_display" -> MemoryDisplayConfig(packageName, featureKey)
         "power_display" -> PowerDisplayConfig(packageName, featureKey)
+        "hide_status_bar_icon" -> HideStatusBarIconConfig(packageName, featureKey)
     }
 }
