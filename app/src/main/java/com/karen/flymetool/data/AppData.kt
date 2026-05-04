@@ -149,6 +149,11 @@ object AppData {
                 key = "force_free_theme",
                 label = "主题免费下载",
                 description = "绕过付费检查，所有主题均可直接免费下载"
+            ),
+            HookFeature(
+                key = "force_free_font",
+                label = "字体免费下载",
+                description = "绕过付费检查，所有字体均可直接免费下载"
             )
         ),
         "com.meizu.flyme.launcher" to listOf(

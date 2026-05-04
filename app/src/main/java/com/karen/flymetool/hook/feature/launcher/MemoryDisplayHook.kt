@@ -66,6 +66,17 @@ object MemoryDisplayHook {
                         val stateManager = XposedHelpers.callMethod(launcher, "getStateManager")
 
                         if (dragLayer != null && deviceProfile != null) {
+                            // 清除旧视图，确保重新创建
+                            memoryContainer?.let {
+                                try {
+                                    (it.parent as? ViewGroup)?.removeView(it)
+                                } catch (e: Throwable) {
+                                    // 忽略
+                                }
+                            }
+                            memoryContainer = null
+                            memoryTextView = null
+                            
                             createMemoryView(dragLayer, context, deviceProfile)
                             Logger.i(HOOK_NAME, "Created memory view in DragLayer")
                             
@@ -75,6 +86,26 @@ object MemoryDisplayHook {
                             }
                         } else {
                             Logger.e(HOOK_NAME, "DragLayer or DeviceProfile is null")
+                        }
+                    }
+                }
+            )
+            
+            // Hook onResume 确保视图始终存在
+            XposedHelpers.findAndHookMethod(
+                launcherClass,
+                "onResume",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val launcher = param.thisObject
+                        val dragLayer = XposedHelpers.callMethod(launcher, "getDragLayer") as? ViewGroup
+                        val deviceProfile = XposedHelpers.callMethod(launcher, "getDeviceProfile")
+                        
+                        // 如果视图不存在，重新创建
+                        if (memoryContainer == null && dragLayer != null && deviceProfile != null) {
+                            val context = XposedHelpers.callMethod(launcher, "getApplicationContext") as Context
+                            createMemoryView(dragLayer, context, deviceProfile)
+                            Logger.i(HOOK_NAME, "Recreated memory view in onResume")
                         }
                     }
                 }

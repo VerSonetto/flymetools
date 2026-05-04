@@ -20,12 +20,12 @@ android {
         create("release") {
             keyAlias = keystoreProperties.getProperty("keyAlias") ?: "sonetto"
             keyPassword = keystoreProperties.getProperty("keyPassword") ?: ""
-            storeFile = file(keystoreProperties.getProperty("storeFile") ?: "../release.keystore")
+            storeFile = file("../" + (keystoreProperties.getProperty("storeFile") ?: "release.keystore"))
             storePassword = keystoreProperties.getProperty("storePassword") ?: ""
             enableV1Signing = true
             enableV2Signing = true
             enableV3Signing = true
-            enableV4Signing = true
+            enableV4Signing = false
         }
     }
 
@@ -46,7 +46,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
-            isShrinkResources = true
+            isShrinkResources = false
             isDebuggable = false
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(
