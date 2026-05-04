@@ -22,6 +22,10 @@ android {
             keyPassword = keystoreProperties.getProperty("keyPassword") ?: ""
             storeFile = file(keystoreProperties.getProperty("storeFile") ?: "../release.keystore")
             storePassword = keystoreProperties.getProperty("storePassword") ?: ""
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+            enableV4Signing = true
         }
     }
 
@@ -51,6 +55,7 @@ android {
             )
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
