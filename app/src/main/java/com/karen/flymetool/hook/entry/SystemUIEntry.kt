@@ -2,6 +2,7 @@ package com.karen.flymetool.hook.entry
 
 import com.karen.flymetool.hook.base.XposedPrefs
 import com.karen.flymetool.hook.feature.systemui.AODLyricHook
+import com.karen.flymetool.hook.feature.systemui.AppIconNotificationHook
 import com.karen.flymetool.hook.feature.systemui.ConnectionRateLowSpeedHideHook
 import com.karen.flymetool.hook.feature.systemui.HideChargingAnimationHook
 import com.karen.flymetool.hook.feature.systemui.HideGestureBarHook
@@ -99,6 +100,11 @@ object SystemUIEntry : HookEntry {
         // 隐藏状态栏图标
         if (XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "hide_status_bar_icon")) {
             HideStatusBarIconHook.handleLoadPackage(lpparam)
+        }
+
+        // 应用图标通知
+        if (XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "app_icon_notification")) {
+            AppIconNotificationHook.handleLoadPackage(lpparam)
         }
     }
 }

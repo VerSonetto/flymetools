@@ -105,6 +105,11 @@ object AppData {
                 key = "hide_status_bar_icon",
                 label = "隐藏状态栏图标",
                 description = "选择要隐藏的状态栏图标，隐藏后不会显示在状态栏上"
+            ),
+            HookFeature(
+                key = "app_icon_notification",
+                label = "通知图标使用应用图标",
+                description = "将状态栏通知小图标替换为应用桌面图标"
             )
         ),
         "com.android.settings" to listOf(
