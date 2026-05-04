@@ -2,7 +2,6 @@ package com.karen.flymetool.hook.feature.systemui
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Paint
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
@@ -18,7 +17,6 @@ object AppIconNotificationHook {
     private const val ICON_DRAWING_SIZE_DP = 15f
 
     private val appIconPackages = mutableSetOf<String>()
-    private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
 
     fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         if (lpparam.packageName != "com.android.systemui") return
@@ -27,78 +25,142 @@ object AppIconNotificationHook {
             return
         }
 
-        Logger.i(TAG, "Hooking StatusBarIconView")
+        Logger.i(TAG, "Hooking StatusBarIconView and Ticker")
 
         try {
             hookFlymeNotificationIconUtils(lpparam)
+            hookStatusBarIconView(lpparam)
+            hookMarqueeTicker(lpparam)
 
-            val iconViewClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.StatusBarIconView",
+            Logger.i(TAG, "All hooks applied successfully")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "Hook failed", e)
+        }
+    }
+
+    private fun hookStatusBarIconView(lpparam: XC_LoadPackage.LoadPackageParam) {
+        val iconViewClass = XposedHelpers.findClass(
+            "com.android.systemui.statusbar.StatusBarIconView",
+            lpparam.classLoader
+        )
+
+        XposedHelpers.findAndHookMethod(
+            iconViewClass,
+            "getIcon",
+            "com.android.internal.statusbar.StatusBarIcon",
+            object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val thisObject = param.thisObject
+                    val notification = XposedHelpers.getObjectField(thisObject, "mNotification")
+                    if (notification == null) {
+                        return
+                    }
+
+                    val context = XposedHelpers.callMethod(thisObject, "getContext") as android.content.Context
+                    val pkgName = XposedHelpers.callMethod(notification, "getPackageName") as? String ?: return
+
+                    if (pkgName == "com.android.systemui" || pkgName == "android") {
+                        return
+                    }
+
+                    try {
+                        val appIcon = getAppIcon(context, pkgName)
+                        if (appIcon != null) {
+                            val density = context.resources.displayMetrics.density
+                            val iconSizePx = (ICON_DRAWING_SIZE_DP * density).toInt()
+                            val icon = iconFromDrawable(appIcon, iconSizePx)
+                            val statusBarIcon = param.args[0]
+                            XposedHelpers.setObjectField(statusBarIcon, "icon", icon)
+                            param.result = icon.loadDrawable(context)
+
+                            appIconPackages.add(pkgName)
+                            XposedHelpers.setBooleanField(thisObject, "mShowsConversation", true)
+                        }
+                    } catch (e: Exception) {
+                        Logger.e(TAG, "Failed to get app icon for $pkgName", e)
+                    }
+                }
+            }
+        )
+
+        XposedHelpers.findAndHookMethod(
+            iconViewClass,
+            "updateIconColor",
+            object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val thisObject = param.thisObject
+                    val notification = XposedHelpers.getObjectField(thisObject, "mNotification")
+                    if (notification == null) {
+                        return
+                    }
+
+                    val pkgName = XposedHelpers.callMethod(notification, "getPackageName") as? String
+                    if (pkgName != null && pkgName in appIconPackages) {
+                        XposedHelpers.callMethod(thisObject, "setColorFilter", null as Any?)
+                        param.result = null
+                    }
+                }
+            }
+        )
+    }
+
+    private fun hookMarqueeTicker(lpparam: XC_LoadPackage.LoadPackageParam) {
+        try {
+            val marqueeTickerClass = XposedHelpers.findClass(
+                "com.flyme.statusbar.ticker.MarqueeTicker",
                 lpparam.classLoader
             )
 
             XposedHelpers.findAndHookMethod(
-                iconViewClass,
-                "getIcon",
-                "com.android.internal.statusbar.StatusBarIcon",
+                marqueeTickerClass,
+                "addEntry",
+                "android.service.notification.StatusBarNotification",
                 object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val thisObject = param.thisObject
-                        val notification = XposedHelpers.getObjectField(thisObject, "mNotification")
-                        if (notification == null) {
-                            return
-                        }
-
-                        val context = XposedHelpers.callMethod(thisObject, "getContext") as android.content.Context
-                        val pkgName = XposedHelpers.callMethod(notification, "getPackageName") as? String ?: return
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val sbn = param.args[0]
+                        val pkgName = XposedHelpers.callMethod(sbn, "getPackageName") as String
 
                         if (pkgName == "com.android.systemui" || pkgName == "android") {
                             return
                         }
 
-                        try {
-                            val appIcon = getAppIcon(context, pkgName)
-                            if (appIcon != null) {
-                                val density = context.resources.displayMetrics.density
-                                val iconSizePx = (ICON_DRAWING_SIZE_DP * density).toInt()
-                                val icon = iconFromDrawable(appIcon, iconSizePx)
-                                val statusBarIcon = param.args[0]
-                                XposedHelpers.setObjectField(statusBarIcon, "icon", icon)
-                                param.result = icon.loadDrawable(context)
+                        val context = XposedHelpers.getObjectField(param.thisObject, "mContext") as android.content.Context
+                        val appIcon = getAppIcon(context, pkgName) ?: return
 
-                                appIconPackages.add(pkgName)
-                                XposedHelpers.setBooleanField(thisObject, "mShowsConversation", true)
-                            }
-                        } catch (e: Exception) {
-                            Logger.e(TAG, "Failed to get app icon for $pkgName", e)
+                        val density = context.resources.displayMetrics.density
+                        val iconSizePx = (ICON_DRAWING_SIZE_DP * density).toInt()
+                        val newIcon = iconFromDrawable(appIcon, iconSizePx)
+
+                        val notification = XposedHelpers.callMethod(sbn, "getNotification")
+                        XposedHelpers.callMethod(notification, "setSmallIcon", newIcon)
+                    }
+
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val iconSwitcher = XposedHelpers.getObjectField(param.thisObject, "mIconSwitcher") as? android.widget.ImageSwitcher
+                        iconSwitcher?.getCurrentView()?.let { view ->
+                            (view as? android.widget.ImageView)?.setColorFilter(null)
                         }
                     }
                 }
             )
 
             XposedHelpers.findAndHookMethod(
-                iconViewClass,
-                "updateIconColor",
+                marqueeTickerClass,
+                "onDarkChanged",
+                ArrayList::class.java, Float::class.java, Int::class.java,
                 object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val thisObject = param.thisObject
-                        val notification = XposedHelpers.getObjectField(thisObject, "mNotification")
-                        if (notification == null) {
-                            return
-                        }
-
-                        val pkgName = XposedHelpers.callMethod(notification, "getPackageName") as? String
-                        if (pkgName != null && pkgName in appIconPackages) {
-                            XposedHelpers.callMethod(thisObject, "setColorFilter", null as Any?)
-                            param.result = null
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val iconSwitcher = XposedHelpers.getObjectField(param.thisObject, "mIconSwitcher") as? android.widget.ImageSwitcher
+                        iconSwitcher?.getCurrentView()?.let { view ->
+                            (view as? android.widget.ImageView)?.setColorFilter(null)
                         }
                     }
                 }
             )
 
-            Logger.i(TAG, "Hooked StatusBarIconView successfully")
+            Logger.i(TAG, "Hooked MarqueeTicker.addEntry and onDarkChanged")
         } catch (e: Throwable) {
-            Logger.e(TAG, "Hook failed", e)
+            Logger.w(TAG, "MarqueeTicker hook failed: ${e.message}")
         }
     }
 
