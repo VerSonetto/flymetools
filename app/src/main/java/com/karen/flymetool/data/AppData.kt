@@ -114,6 +114,11 @@ object AppData {
         ),
         "com.android.settings" to listOf(
             HookFeature(
+                key = "never_lock_screen",
+                label = "永不锁屏",
+                description = "在自动锁屏选项中添加「永不锁屏」选项"
+            ),
+            HookFeature(
                 key = "force_notification_enable",
                 label = "强制开启通知开关",
                 description = "强制开启所有应用的通知开关权限，解除系统对通知开关的限制"
