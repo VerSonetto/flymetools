@@ -10,5 +10,6 @@
         <item>com.meizu.flyme.launcher</item>
         <item>com.android.mms</item>
         <item>com.meizu.share</item>
+        <item>com.meizu.suggestion</item>
     </string-array>
 </resources>

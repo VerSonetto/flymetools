@@ -59,4 +59,21 @@ object XposedPrefs {
             defaultValue
         }
     }
+
+    fun getFeatureString(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String, featureKey: String, defaultValue: String): String {
+        val key = "$packageName:$featureKey:value"
+        return try {
+            val prefs = XSharedPreferences(MODULE_PACKAGE, PREFS_NAME)
+            if (!prefs.file.canRead()) {
+                Logger.e(HOOK_NAME, "XSharedPreferences file not readable")
+                return defaultValue
+            }
+            val value = prefs.getString(key, defaultValue) ?: defaultValue
+            Logger.d(HOOK_NAME, "Read: $key = $value")
+            value
+        } catch (e: Throwable) {
+            Logger.e(HOOK_NAME, "Read error", e)
+            defaultValue
+        }
+    }
 }

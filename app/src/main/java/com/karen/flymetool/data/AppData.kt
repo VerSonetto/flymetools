@@ -13,7 +13,8 @@ object AppData {
         ScopedApp(packageName = "com.meizu.customizecenter", name = "主题美化"),
         ScopedApp(packageName = "com.meizu.flyme.launcher", name = "桌面"),
         ScopedApp(packageName = "com.android.mms", name = "信息"),
-        ScopedApp(packageName = "com.meizu.share", name = "互传")
+        ScopedApp(packageName = "com.meizu.share", name = "互传"),
+        ScopedApp(packageName = "com.meizu.suggestion", name = "Aicy 建议")
     )
 
     fun getScopedApps(context: Context): List<ScopedApp> {
@@ -185,6 +186,13 @@ object AppData {
                 key = "auto_accept_share",
                 label = "自动接收互传文件",
                 description = "收到互传或蓝牙传文件请求时自动确认接收，无需手动点击"
+            )
+        ),
+        "com.meizu.suggestion" to listOf(
+            HookFeature(
+                key = "custom_browser",
+                label = "自定义浏览器",
+                description = "自定义 Aicy 建议打开链接时使用的浏览器"
             )
         )
     )

@@ -18,5 +18,6 @@ fun FeatureConfig(
         "memory_display" -> MemoryDisplayConfig(packageName, featureKey)
         "power_display" -> PowerDisplayConfig(packageName, featureKey)
         "hide_status_bar_icon" -> HideStatusBarIconConfig(packageName, featureKey)
+        "custom_browser" -> CustomBrowserConfig(packageName, featureKey)
     }
 }
