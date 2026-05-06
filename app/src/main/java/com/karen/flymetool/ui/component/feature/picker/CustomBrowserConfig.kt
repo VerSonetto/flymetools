@@ -1,4 +1,4 @@
-package com.karen.flymetool.ui.component.feature
+package com.karen.flymetool.ui.component.feature.picker
 
 import android.content.Context
 import android.content.Intent
@@ -50,7 +50,7 @@ fun CustomBrowserConfig(
 
     SelectionGroup(
         title = "选择浏览器",
-        description = "Aicy 建议打开链接时将使用选择的浏览器，不选择则使用系统默认浏览器"
+        description = "Aicy 识屏打开链接时将使用选择的浏览器，不选择则使用系统默认浏览器"
     ) {
         SelectionList(
             options = options,

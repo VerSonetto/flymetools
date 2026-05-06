@@ -11,6 +11,7 @@
         <item>com.android.mms</item>
         <item>com.meizu.share</item>
         <item>com.meizu.suggestion</item>
+        <item>com.meizu.picker</item>
         <item>com.meizu.flyme.update</item>
     </string-array>
 </resources>

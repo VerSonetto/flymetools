@@ -15,6 +15,7 @@ object AppData {
         ScopedApp(packageName = "com.android.mms", name = "信息"),
         ScopedApp(packageName = "com.meizu.share", name = "互传"),
         ScopedApp(packageName = "com.meizu.suggestion", name = "Aicy 建议"),
+        ScopedApp(packageName = "com.meizu.picker", name = "Aicy 识屏"),
         ScopedApp(packageName = "com.meizu.flyme.update", name = "系统更新")
     )
 
@@ -194,6 +195,13 @@ object AppData {
                 key = "custom_browser",
                 label = "自定义浏览器",
                 description = "自定义 Aicy 建议打开链接时使用的浏览器"
+            )
+        ),
+        "com.meizu.picker" to listOf(
+            HookFeature(
+                key = "custom_browser",
+                label = "自定义浏览器",
+                description = "自定义 Aicy 识屏打开链接时使用的浏览器"
             )
         ),
         "com.meizu.flyme.update" to listOf(

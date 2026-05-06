@@ -7,6 +7,7 @@ import com.karen.flymetool.hook.entry.HookEntry
 import com.karen.flymetool.hook.entry.LauncherEntry
 import com.karen.flymetool.hook.entry.MmsEntry
 import com.karen.flymetool.hook.entry.PackageInstallerEntry
+import com.karen.flymetool.hook.entry.PickerEntry
 import com.karen.flymetool.hook.entry.SettingsEntry
 import com.karen.flymetool.hook.entry.FlymeUpdateEntry
 import com.karen.flymetool.hook.entry.ShareEntry
@@ -30,6 +31,7 @@ class XposedInit : IXposedHookLoadPackage {
             MmsEntry,
             ShareEntry,
             SuggestionEntry,
+            PickerEntry,
             FlymeUpdateEntry
         )
 
