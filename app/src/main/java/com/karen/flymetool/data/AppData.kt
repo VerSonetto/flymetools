@@ -14,7 +14,8 @@ object AppData {
         ScopedApp(packageName = "com.meizu.flyme.launcher", name = "桌面"),
         ScopedApp(packageName = "com.android.mms", name = "信息"),
         ScopedApp(packageName = "com.meizu.share", name = "互传"),
-        ScopedApp(packageName = "com.meizu.suggestion", name = "Aicy 建议")
+        ScopedApp(packageName = "com.meizu.suggestion", name = "Aicy 建议"),
+        ScopedApp(packageName = "com.meizu.flyme.update", name = "系统更新")
     )
 
     fun getScopedApps(context: Context): List<ScopedApp> {
@@ -193,6 +194,13 @@ object AppData {
                 key = "custom_browser",
                 label = "自定义浏览器",
                 description = "自定义 Aicy 建议打开链接时使用的浏览器"
+            )
+        ),
+        "com.meizu.flyme.update" to listOf(
+            HookFeature(
+                key = "disable_update_check",
+                label = "禁用更新检查",
+                description = "阻止系统更新检查，始终判定为最新版"
             )
         )
     )

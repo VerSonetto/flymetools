@@ -8,6 +8,7 @@ import com.karen.flymetool.hook.entry.LauncherEntry
 import com.karen.flymetool.hook.entry.MmsEntry
 import com.karen.flymetool.hook.entry.PackageInstallerEntry
 import com.karen.flymetool.hook.entry.SettingsEntry
+import com.karen.flymetool.hook.entry.FlymeUpdateEntry
 import com.karen.flymetool.hook.entry.ShareEntry
 import com.karen.flymetool.hook.entry.SuggestionEntry
 import com.karen.flymetool.hook.entry.SystemUIEntry
@@ -28,7 +29,8 @@ class XposedInit : IXposedHookLoadPackage {
             LauncherEntry,
             MmsEntry,
             ShareEntry,
-            SuggestionEntry
+            SuggestionEntry,
+            FlymeUpdateEntry
         )
 
         private val ENTRY_MAP: Map<String, HookEntry> = ENTRIES.associateBy { it.targetPackage }
