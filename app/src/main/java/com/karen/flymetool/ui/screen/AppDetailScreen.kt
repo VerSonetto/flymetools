@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -104,12 +105,19 @@ fun AppDetailScreen(
                         true
                     }
 
-                    val shouldShow = dependsOnKey == null || dependencyEnabled
+                    val visibleUnlessKey = feature.visibleUnless
+                    val hiddenByVisibleUnless = if (visibleUnlessKey != null) {
+                        featureStates[visibleUnlessKey]?.value ?: false
+                    } else {
+                        false
+                    }
+
+                    val shouldShow = (dependsOnKey == null || dependencyEnabled) && !hiddenByVisibleUnless
 
                     AnimatedVisibility(
                         visible = shouldShow,
-                        enter = fadeIn(tween(300, delayMillis = index * 60)) +
-                                slideInVertically(tween(300, delayMillis = index * 60)) { it / 2 }
+                        enter = fadeIn(tween(250)) + slideInVertically(tween(250)) { it / 3 },
+                        exit = fadeOut(tween(200))
                     ) {
                         FeatureItem(
                             packageName = app.packageName,

@@ -9,5 +9,6 @@ data class HookFeature(
     val key: String,
     val label: String,
     val description: String = "",
-    val dependsOn: String? = null
+    val dependsOn: String? = null,
+    val visibleUnless: String? = null
 )

@@ -51,6 +51,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <provider
+            android:name=".hook.provider.CapturedUpdateProvider"
+            android:authorities="com.karen.flymetool.captured_update_provider"
+            android:exported="true" />
     </application>
 
 </manifest>

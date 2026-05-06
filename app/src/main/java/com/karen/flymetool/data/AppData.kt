@@ -201,6 +201,12 @@ object AppData {
                 key = "disable_update_check",
                 label = "禁用更新检查",
                 description = "阻止系统更新检查，始终判定为最新版"
+            ),
+            HookFeature(
+                key = "capture_update_link",
+                label = "抓取更新包链接",
+                description = "抓取常规更新检查返回的更新包下载链接",
+                visibleUnless = "disable_update_check"
             )
         )
     )

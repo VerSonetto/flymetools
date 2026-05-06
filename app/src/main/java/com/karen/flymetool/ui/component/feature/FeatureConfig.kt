@@ -19,5 +19,6 @@ fun FeatureConfig(
         "power_display" -> PowerDisplayConfig(packageName, featureKey)
         "hide_status_bar_icon" -> HideStatusBarIconConfig(packageName, featureKey)
         "custom_browser" -> CustomBrowserConfig(packageName, featureKey)
+        "capture_update_link" -> CaptureUpdateLinkConfig(packageName, featureKey)
     }
 }
