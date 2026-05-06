@@ -50,6 +50,7 @@ import com.karen.flymetool.data.ScopedApp
 import com.karen.flymetool.ui.component.AppIcon
 import com.karen.flymetool.ui.component.FeatureSwitch
 import com.karen.flymetool.ui.component.feature.FeatureConfig
+import com.karen.flymetool.util.RootUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -290,9 +291,9 @@ private fun FeatureItem(
 }
 
 private fun restartScopedApp(context: android.content.Context, app: ScopedApp) {
-    if (app.packageName == "android") {
-        Thread {
-            val result = runRootCommand("reboot")
+    Thread {
+        if (app.packageName == "android") {
+            val result = RootUtils.reboot()
             (context as? android.app.Activity)?.runOnUiThread {
                 Toast.makeText(
                     context,
@@ -300,12 +301,10 @@ private fun restartScopedApp(context: android.content.Context, app: ScopedApp) {
                     Toast.LENGTH_SHORT
                 ).show()
             }
-        }.start()
-        return
-    }
-    
-    Thread {
-        val result = runRootCommand("pid=\$(pidof ${app.packageName}); if [ -n \"\$pid\" ]; then kill -9 \$pid; fi")
+            return@Thread
+        }
+
+        val result = RootUtils.killPackage(app.packageName)
         (context as? android.app.Activity)?.runOnUiThread {
             Toast.makeText(
                 context,
@@ -314,14 +313,4 @@ private fun restartScopedApp(context: android.content.Context, app: ScopedApp) {
             ).show()
         }
     }.start()
-}
-
-private fun runRootCommand(command: String): Boolean {
-    return try {
-        val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-        process.waitFor()
-        process.exitValue() == 0
-    } catch (e: Exception) {
-        false
-    }
 }

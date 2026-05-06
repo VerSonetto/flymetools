@@ -50,7 +50,11 @@ fun CustomBrowserConfig(
 
     SelectionGroup(
         title = "选择浏览器",
-        description = "Aicy 建议打开链接时将使用选择的浏览器，不选择则使用系统默认浏览器"
+        description = when (packageName) {
+            "com.meizu.suggestion" -> "Aicy 建议打开链接时将使用选择的浏览器，不选择则使用系统默认浏览器"
+            "com.meizu.picker" -> "Aicy 识屏打开链接时将使用选择的浏览器，不选择则使用系统默认浏览器"
+            else -> "打开链接时将使用选择的浏览器，不选择则使用系统默认浏览器"
+        }
     ) {
         SelectionList(
             options = options,

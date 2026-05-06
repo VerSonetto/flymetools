@@ -68,6 +68,8 @@ android {
     }
 }
 
+val adbDeviceSerial = providers.gradleProperty("adbDeviceSerial").orNull
+
 tasks.register<Exec>("installSignedRelease") {
     group = "install"
     description = "Build signed release APK and install to device"
@@ -80,7 +82,12 @@ tasks.register<Exec>("installSignedRelease") {
         .asFile
         .absolutePath
 
-    commandLine("adb", "-s", "461QYGDN22652", "install", "-r", apkPath)
+    val installCmd = if (adbDeviceSerial != null) {
+        listOf("adb", "-s", adbDeviceSerial, "install", "-r", apkPath)
+    } else {
+        listOf("adb", "install", "-r", apkPath)
+    }
+    commandLine(installCmd)
 }
 
 dependencies {

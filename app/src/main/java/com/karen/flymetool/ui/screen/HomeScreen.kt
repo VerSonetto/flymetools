@@ -18,12 +18,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Refresh
@@ -56,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import com.karen.flymetool.data.AppData
 import com.karen.flymetool.data.ScopedApp
 import com.karen.flymetool.ui.component.AppIcon
+import com.karen.flymetool.util.RootUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -147,7 +151,9 @@ private fun RestartScopeDialog(
                 )
             },
             text = {
-                Column {
+                Column(
+                    modifier = Modifier.heightIn(max = 480.dp)
+                ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -187,39 +193,45 @@ private fun RestartScopeDialog(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    apps.forEach { app ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    if (selectedApps.contains(app)) {
-                                        selectedApps.remove(app)
-                                    } else {
-                                        selectedApps.add(app)
+                    Column(
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        apps.forEach { app ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        if (selectedApps.contains(app)) {
+                                            selectedApps.remove(app)
+                                        } else {
+                                            selectedApps.add(app)
+                                        }
                                     }
-                                }
-                                .padding(vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = selectedApps.contains(app),
-                                onCheckedChange = {
-                                    if (it) {
-                                        selectedApps.add(app)
-                                    } else {
-                                        selectedApps.remove(app)
-                                    }
-                                },
-                                colors = CheckboxDefaults.colors(
-                                    checkedColor = MaterialTheme.colorScheme.primary,
-                                    uncheckedColor = MaterialTheme.colorScheme.outline
+                                    .padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = selectedApps.contains(app),
+                                    onCheckedChange = {
+                                        if (it) {
+                                            selectedApps.add(app)
+                                        } else {
+                                            selectedApps.remove(app)
+                                        }
+                                    },
+                                    colors = CheckboxDefaults.colors(
+                                        checkedColor = MaterialTheme.colorScheme.primary,
+                                        uncheckedColor = MaterialTheme.colorScheme.outline
+                                    )
                                 )
-                            )
-                            Text(
-                                text = app.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
+                                Text(
+                                    text = app.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         }
                     }
                 }
@@ -356,10 +368,10 @@ private fun AppListItem(
 
 private fun restartScopedApps(context: android.content.Context, apps: List<ScopedApp>) {
     if (apps.isEmpty()) return
-    
-    if (apps.any { it.packageName == "android" }) {
-        Thread {
-            val result = runRootCommand("reboot")
+
+    Thread {
+        if (apps.any { it.packageName == "android" }) {
+            val result = RootUtils.reboot()
             (context as? android.app.Activity)?.runOnUiThread {
                 Toast.makeText(
                     context,
@@ -367,16 +379,13 @@ private fun restartScopedApps(context: android.content.Context, apps: List<Scope
                     Toast.LENGTH_SHORT
                 ).show()
             }
-        }.start()
-        return
-    }
-    
-    Thread {
+            return@Thread
+        }
+
         var successCount = 0
         var failCount = 0
         for (app in apps) {
-            val result = runRootCommand("pid=\$(pidof ${app.packageName}); if [ -n \"\$pid\" ]; then kill -9 \$pid; fi")
-            if (result) {
+            if (RootUtils.killPackage(app.packageName)) {
                 successCount++
             } else {
                 failCount++
@@ -390,14 +399,4 @@ private fun restartScopedApps(context: android.content.Context, apps: List<Scope
             ).show()
         }
     }.start()
-}
-
-private fun runRootCommand(command: String): Boolean {
-    return try {
-        val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-        process.waitFor()
-        process.exitValue() == 0
-    } catch (e: Exception) {
-        false
-    }
 }
