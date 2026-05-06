@@ -6,6 +6,7 @@ import com.karen.flymetool.hook.feature.systemui.AppIconNotificationHook
 import com.karen.flymetool.hook.feature.systemui.ConnectionRateLowSpeedHideHook
 import com.karen.flymetool.hook.feature.systemui.HideChargingAnimationHook
 import com.karen.flymetool.hook.feature.systemui.HideGestureBarHook
+import com.karen.flymetool.hook.feature.systemui.HideMediaAppIconBgHook
 import com.karen.flymetool.hook.feature.systemui.HideStatusBarIconHook
 import com.karen.flymetool.hook.feature.systemui.HideKeyguardShortcutsHook
 import com.karen.flymetool.hook.feature.systemui.NotificationCardRadiusHook
@@ -105,6 +106,11 @@ object SystemUIEntry : HookEntry {
         // 应用图标通知
         if (XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "app_icon_notification")) {
             AppIconNotificationHook.handleLoadPackage(lpparam)
+        }
+
+        // 隐藏媒体播放器应用图标背景
+        if (XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "hide_media_app_icon_bg")) {
+            HideMediaAppIconBgHook.handleLoadPackage(lpparam)
         }
     }
 }

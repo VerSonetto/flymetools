@@ -113,6 +113,11 @@ object AppData {
                 key = "app_icon_notification",
                 label = "通知图标使用应用图标",
                 description = "将状态栏通知小图标替换为应用桌面图标"
+            ),
+            HookFeature(
+                key = "hide_media_app_icon_bg",
+                label = "隐藏媒体播放器应用图标背景",
+                description = "隐藏媒体播放器卡片上应用图标的白色背景"
             )
         ),
         "com.android.settings" to listOf(
