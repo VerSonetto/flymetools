@@ -37,87 +37,104 @@ object AppData {
             HookFeature(
                 key = "statusbar_weekday",
                 label = "状态栏显示星期几",
-                description = "在状态栏时间左侧显示当前星期"
+                description = "在状态栏时间左侧显示当前星期",
+                group = "状态栏"
             ),
             HookFeature(
                 key = "power_display",
                 label = "状态栏显示功率",
-                description = "在状态栏显示当前设备功率（充电/放电）"
-            ),
-            HookFeature(
-                key = "hide_gesture_bar",
-                label = "隐藏底部手势条",
-                description = "隐藏底部导航栏的手势指示条"
-            ),
-            HookFeature(
-                key = "notification_card_radius",
-                label = "通知卡片圆角",
-                description = "自定义通知中心通知卡片的圆角大小"
-            ),
-            HookFeature(
-                key = "ticker_click",
-                label = "点击滚动消息跳转",
-                description = "点击状态栏滚动通知消息跳转到对应应用（开启后滚动消息区域无法下拉）"
+                description = "在状态栏显示当前设备功率（充电/放电）",
+                group = "状态栏"
             ),
             HookFeature(
                 key = "connection_rate_low_speed_hide",
                 label = "低速隐藏网速",
-                description = "当网速低于设定值时自动隐藏网速指示器"
-            ),
-            HookFeature(
-                key = "hide_keyguard_flashlight",
-                label = "隐藏锁屏手电筒",
-                description = "隐藏锁屏界面左下角的手电筒快捷方式"
-            ),
-            HookFeature(
-                key = "hide_keyguard_camera",
-                label = "隐藏锁屏相机",
-                description = "隐藏锁屏界面右下角的相机快捷方式"
-            ),
-            HookFeature(
-                key = "hide_charging_animation",
-                label = "隐藏充电动画",
-                description = "插入充电器时不显示充电动画"
+                description = "当网速低于设定值时自动隐藏网速指示器",
+                group = "状态栏"
             ),
             HookFeature(
                 key = "pulldown_area_ratio",
                 label = "下拉区域比例",
-                description = "自定义状态栏下拉触发通知面板和控制中心的区域比例"
+                description = "自定义状态栏下拉触发通知面板和控制中心的区域比例",
+                group = "状态栏"
             ),
             HookFeature(
                 key = "notification_icon_limit",
                 label = "通知图标数量限制",
-                description = "限制状态栏显示的通知图标数量"
+                description = "限制状态栏显示的通知图标数量",
+                group = "状态栏"
             ),
             HookFeature(
                 key = "show_data_sim_only",
                 label = "仅显示上网卡信号",
-                description = "双卡时仅显示当前用于数据上网的 SIM 卡信号栏"
-            ),
-            HookFeature(
-                key = "aod_lyric",
-                label = "AOD 显示歌词",
-                description = "在熄屏 AOD 界面显示当前播放的歌词"
-            ),
-            HookFeature(
-                key = "notification_manage",
-                label = "解除通知管理限制",
-                description = "解除系统通知不支持管理的限制，允许管理所有系统通知"
+                description = "双卡时仅显示当前用于数据上网的 SIM 卡信号栏",
+                group = "状态栏"
             ),
             HookFeature(
                 key = "hide_status_bar_icon",
                 label = "隐藏状态栏图标",
-                description = "选择要隐藏的状态栏图标，隐藏后不会显示在状态栏上"
+                description = "选择要隐藏的状态栏图标，隐藏后不会显示在状态栏上",
+                group = "状态栏"
             ),
             HookFeature(
                 key = "app_icon_notification",
                 label = "通知图标使用应用图标",
-                description = "将状态栏通知小图标替换为应用桌面图标"
+                description = "将状态栏通知小图标替换为应用桌面图标",
+                group = "状态栏"
+            ),
+            HookFeature(
+                key = "hide_keyguard_flashlight",
+                label = "隐藏锁屏手电筒",
+                description = "隐藏锁屏界面左下角的手电筒快捷方式",
+                group = "锁屏"
+            ),
+            HookFeature(
+                key = "hide_keyguard_camera",
+                label = "隐藏锁屏相机",
+                description = "隐藏锁屏界面右下角的相机快捷方式",
+                group = "锁屏"
+            ),
+            HookFeature(
+                key = "aod_lyric",
+                label = "AOD 显示歌词",
+                description = "在熄屏 AOD 界面显示当前播放的歌词",
+                group = "锁屏"
+            ),
+            HookFeature(
+                key = "hide_charging_animation",
+                label = "隐藏充电动画",
+                description = "插入充电器时不显示充电动画",
+                group = "锁屏"
+            ),
+            HookFeature(
+                key = "notification_card_radius",
+                label = "通知卡片圆角",
+                description = "自定义通知中心通知卡片的圆角大小",
+                group = "通知"
+            ),
+            HookFeature(
+                key = "ticker_click",
+                label = "点击滚动消息跳转",
+                description = "点击状态栏滚动通知消息跳转到对应应用（开启后滚动消息区域无法下拉）",
+                group = "通知"
+            ),
+            HookFeature(
+                key = "notification_manage",
+                label = "解除通知管理限制",
+                description = "解除系统通知不支持管理的限制，允许管理所有系统通知",
+                group = "通知"
             ),
             HookFeature(
                 key = "hide_media_app_icon_bg",
                 label = "隐藏媒体播放器应用图标背景",
-                description = "隐藏媒体播放器卡片上应用图标的白色背景"
+                description = "隐藏媒体播放器卡片上应用图标的白色背景",
+                group = "通知"
+            ),
+            HookFeature(
+                key = "hide_gesture_bar",
+                label = "隐藏底部手势条",
+                description = "隐藏底部导航栏的手势指示条",
+                group = "其他"
             )
         ),
         "com.android.settings" to listOf(
@@ -226,5 +243,24 @@ object AppData {
 
     fun getFeatures(packageName: String): List<HookFeature> {
         return features[packageName] ?: emptyList()
+    }
+
+    fun getFeatureGroups(packageName: String): List<String> {
+        return features[packageName]
+            ?.mapNotNull { it.group }
+            ?.distinct()
+            ?: emptyList()
+    }
+
+    fun getFeaturesByGroup(packageName: String, group: String): List<HookFeature> {
+        return features[packageName]
+            ?.filter { it.group == group }
+            ?: emptyList()
+    }
+
+    fun getUngroupedFeatures(packageName: String): List<HookFeature> {
+        return features[packageName]
+            ?.filter { it.group == null }
+            ?: emptyList()
     }
 }

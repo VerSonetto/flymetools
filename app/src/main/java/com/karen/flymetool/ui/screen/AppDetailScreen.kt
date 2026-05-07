@@ -1,12 +1,17 @@
 package com.karen.flymetool.ui.screen
 
+import android.content.Context
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,11 +24,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -31,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,8 +45,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -60,11 +69,17 @@ fun AppDetailScreen(
 ) {
     val context = LocalContext.current
     val features = AppData.getFeatures(app.packageName)
+    val groups = AppData.getFeatureGroups(app.packageName)
+    val ungroupedFeatures = AppData.getUngroupedFeatures(app.packageName)
 
     val featureStates = remember {
         features.associate { feature ->
             feature.key to mutableStateOf(PrefsHelper.isFeatureEnabled(context, app.packageName, feature.key))
         }
+    }
+
+    val expandedStates = remember {
+        groups.associateWith { mutableStateOf(false) }
     }
 
     Scaffold(
@@ -74,7 +89,7 @@ fun AppDetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
                 AppHeaderSection(
@@ -84,11 +99,54 @@ fun AppDetailScreen(
                 )
             }
 
-            item {
-                SectionTitle(
-                    title = "功能配置",
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
-                )
+            if (groups.isNotEmpty()) {
+                item {
+                    Text(
+                        text = "功能分组",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
+                    )
+                }
+
+                groups.forEach { group ->
+                    item(key = "group_$group") {
+                        val groupFeatures = AppData.getFeaturesByGroup(app.packageName, group)
+
+                        ExpandableGroupCard(
+                            title = group,
+                            isExpanded = expandedStates[group]?.value ?: false,
+                            onToggle = { expandedStates[group]?.value = !(expandedStates[group]?.value ?: false) },
+                            packageName = app.packageName,
+                            groupFeatures = groupFeatures,
+                            featureStates = featureStates,
+                            context = context
+                        )
+                    }
+                }
+            }
+
+            if (ungroupedFeatures.isNotEmpty()) {
+                item {
+                    Text(
+                        text = if (groups.isNotEmpty()) "其他功能" else "功能配置",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
+                    )
+                }
+
+                items(ungroupedFeatures) { feature ->
+                    FeatureEntry(
+                        packageName = app.packageName,
+                        feature = feature,
+                        featureStates = featureStates,
+                        context = context,
+                        modifier = Modifier.padding(horizontal = 20.dp)
+                    )
+                }
             }
 
             if (features.isEmpty()) {
@@ -96,41 +154,6 @@ fun AppDetailScreen(
                     EmptyState(
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 32.dp)
                     )
-                }
-            } else {
-                itemsIndexed(features) { index, feature ->
-                    val dependsOnKey = feature.dependsOn
-                    val dependencyEnabled = if (dependsOnKey != null) {
-                        featureStates[dependsOnKey]?.value ?: false
-                    } else {
-                        true
-                    }
-
-                    val visibleUnlessKey = feature.visibleUnless
-                    val hiddenByVisibleUnless = if (visibleUnlessKey != null) {
-                        featureStates[visibleUnlessKey]?.value ?: false
-                    } else {
-                        false
-                    }
-
-                    val shouldShow = (dependsOnKey == null || dependencyEnabled) && !hiddenByVisibleUnless
-
-                    AnimatedVisibility(
-                        visible = shouldShow,
-                        enter = fadeIn(tween(250)) + slideInVertically(tween(250)) { it / 3 },
-                        exit = fadeOut(tween(200))
-                    ) {
-                        FeatureItem(
-                            packageName = app.packageName,
-                            feature = feature,
-                            enabled = featureStates[feature.key]?.value ?: false,
-                            onEnabledChange = { newValue ->
-                                featureStates[feature.key]?.value = newValue
-                                PrefsHelper.setFeatureEnabled(context, app.packageName, feature.key, newValue)
-                            },
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
-                        )
-                    }
                 }
             }
         }
@@ -231,17 +254,198 @@ private fun AppHeaderSection(
 }
 
 @Composable
-private fun SectionTitle(
+private fun ExpandableGroupCard(
     title: String,
+    isExpanded: Boolean,
+    onToggle: () -> Unit,
+    packageName: String,
+    groupFeatures: List<HookFeature>,
+    featureStates: Map<String, MutableState<Boolean>>,
+    context: Context,
     modifier: Modifier = Modifier
 ) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        fontWeight = FontWeight.SemiBold,
-        modifier = modifier
+    val rotation by animateFloatAsState(
+        targetValue = if (isExpanded) 180f else 0f,
+        animationSpec = tween(200),
+        label = "arrow_rotation"
     )
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.6f))
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Icon(
+                imageVector = Icons.Rounded.KeyboardArrowDown,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(22.dp)
+                    .rotate(rotation)
+            )
+        }
+
+        AnimatedVisibility(
+            visible = isExpanded,
+            enter = expandVertically(tween(250)) + fadeIn(tween(200)),
+            exit = shrinkVertically(tween(220)) + fadeOut(tween(150))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
+                    .graphicsLayer { clip = true },
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                groupFeatures.forEach { feature ->
+                    FeatureEntryCompact(
+                        packageName = packageName,
+                        feature = feature,
+                        featureStates = featureStates,
+                        context = context
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FeatureEntryCompact(
+    packageName: String,
+    feature: HookFeature,
+    featureStates: Map<String, MutableState<Boolean>>,
+    context: Context
+) {
+    val dependsOnKey = feature.dependsOn
+    val dependencyEnabled = if (dependsOnKey != null) {
+        featureStates[dependsOnKey]?.value ?: false
+    } else {
+        true
+    }
+
+    val visibleUnlessKey = feature.visibleUnless
+    val hiddenByVisibleUnless = if (visibleUnlessKey != null) {
+        featureStates[visibleUnlessKey]?.value ?: false
+    } else {
+        false
+    }
+
+    val shouldShow = (dependsOnKey == null || dependencyEnabled) && !hiddenByVisibleUnless
+
+    if (shouldShow) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                .graphicsLayer { clip = true }
+        ) {
+            FeatureSwitch(
+                title = feature.label,
+                description = feature.description,
+                checked = featureStates[feature.key]?.value ?: false,
+                onCheckedChange = { newValue ->
+                    featureStates[feature.key]?.value = newValue
+                    PrefsHelper.setFeatureEnabled(context, packageName, feature.key, newValue)
+                }
+            )
+
+            AnimatedVisibility(
+                visible = featureStates[feature.key]?.value == true,
+                enter = expandVertically(tween(180)) + fadeIn(tween(120)),
+                exit = shrinkVertically(tween(150)) + fadeOut(tween(100))
+            ) {
+                FeatureConfig(
+                    featureKey = feature.key,
+                    packageName = packageName
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FeatureEntry(
+    packageName: String,
+    feature: HookFeature,
+    featureStates: Map<String, MutableState<Boolean>>,
+    context: Context,
+    modifier: Modifier = Modifier
+) {
+    val dependsOnKey = feature.dependsOn
+    val dependencyEnabled = if (dependsOnKey != null) {
+        featureStates[dependsOnKey]?.value ?: false
+    } else {
+        true
+    }
+
+    val visibleUnlessKey = feature.visibleUnless
+    val hiddenByVisibleUnless = if (visibleUnlessKey != null) {
+        featureStates[visibleUnlessKey]?.value ?: false
+    } else {
+        false
+    }
+
+    val shouldShow = (dependsOnKey == null || dependencyEnabled) && !hiddenByVisibleUnless
+
+    AnimatedVisibility(
+        visible = shouldShow,
+        enter = fadeIn(tween(200)),
+        exit = fadeOut(tween(150))
+    ) {
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .graphicsLayer { clip = true }
+        ) {
+            FeatureSwitch(
+                title = feature.label,
+                description = feature.description,
+                checked = featureStates[feature.key]?.value ?: false,
+                onCheckedChange = { newValue ->
+                    featureStates[feature.key]?.value = newValue
+                    PrefsHelper.setFeatureEnabled(context, packageName, feature.key, newValue)
+                }
+            )
+
+            AnimatedVisibility(
+                visible = featureStates[feature.key]?.value == true,
+                enter = expandVertically(tween(200)) + fadeIn(tween(150)),
+                exit = shrinkVertically(tween(180)) + fadeOut(tween(120))
+            ) {
+                FeatureConfig(
+                    featureKey = feature.key,
+                    packageName = packageName
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -257,36 +461,6 @@ private fun EmptyState(
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-    }
-}
-
-@Composable
-private fun FeatureItem(
-    packageName: String,
-    feature: HookFeature,
-    enabled: Boolean,
-    onEnabledChange: (Boolean) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surface)
-    ) {
-        FeatureSwitch(
-            title = feature.label,
-            description = feature.description,
-            checked = enabled,
-            onCheckedChange = onEnabledChange
-        )
-
-        AnimatedVisibility(visible = enabled) {
-            FeatureConfig(
-                featureKey = feature.key,
-                packageName = packageName
-            )
-        }
     }
 }
 
