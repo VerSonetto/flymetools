@@ -1,4 +1,6 @@
 import java.util.Properties
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 
 plugins {
     alias(libs.plugins.android.application)
@@ -11,6 +13,14 @@ val keystoreProperties = Properties()
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(keystorePropertiesFile.inputStream())
 }
+
+val versionPropsFile = rootProject.file("version.properties")
+val versionProps = Properties()
+if (versionPropsFile.exists()) {
+    versionProps.load(versionPropsFile.inputStream())
+}
+
+val dateCode = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")).toInt()
 
 android {
     namespace = "com.karen.flymetool"
@@ -33,8 +43,8 @@ android {
         applicationId = "com.karen.flymetool"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = dateCode
+        versionName = versionProps.getProperty("versionName") ?: "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
@@ -88,6 +98,14 @@ tasks.register<Exec>("installSignedRelease") {
         listOf("adb", "install", "-r", apkPath)
     }
     commandLine(installCmd)
+
+    doLast {
+        val name = versionProps.getProperty("versionName") ?: "1.0"
+        val parts = name.split(".")
+        val last = parts.last().toIntOrNull() ?: 0
+        parts.dropLast(1).let { versionProps.setProperty("versionName", (it + (last + 1).toString()).joinToString(".")) }
+        versionProps.store(versionPropsFile.outputStream(), null)
+    }
 }
 
 dependencies {
