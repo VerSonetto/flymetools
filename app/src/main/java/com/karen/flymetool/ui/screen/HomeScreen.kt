@@ -42,6 +42,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -57,6 +58,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.karen.flymetool.data.AppData
+import com.karen.flymetool.data.PrefsHelper
 import com.karen.flymetool.data.ScopedApp
 import com.karen.flymetool.ui.component.AppIcon
 import com.karen.flymetool.util.RootUtils
@@ -69,6 +71,13 @@ fun HomeScreen(
     val context = LocalContext.current
     val apps = AppData.getScopedApps(context)
     var showRestartDialog by remember { mutableStateOf(false) }
+    var showIntroDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        if (!PrefsHelper.isIntroShown(context)) {
+            showIntroDialog = true
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -126,6 +135,15 @@ fun HomeScreen(
             onConfirm = { selectedApps ->
                 showRestartDialog = false
                 restartScopedApps(context, selectedApps)
+            }
+        )
+    }
+
+    if (showIntroDialog) {
+        IntroDialog(
+            onDismiss = {
+                PrefsHelper.markIntroShown(context)
+                showIntroDialog = false
             }
         )
     }
@@ -262,6 +280,39 @@ private fun RestartScopeDialog(
             containerColor = MaterialTheme.colorScheme.surface
         )
     }
+}
+
+@Composable
+private fun IntroDialog(
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "FlymeTool",
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        },
+        text = {
+            Text(
+                text = "本模块基于 Flyme 10 开发，更高版本未经测试。" +
+                        "\n使用前请备好救砖模块。",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(
+                    text = "我知道了",
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        },
+        shape = RoundedCornerShape(20.dp),
+        containerColor = MaterialTheme.colorScheme.surface
+    )
 }
 
 @Composable

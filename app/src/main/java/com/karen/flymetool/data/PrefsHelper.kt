@@ -45,4 +45,12 @@ object PrefsHelper {
     fun setFeatureString(context: Context, packageName: String, featureKey: String, value: String) {
         getPrefs(context).edit().putString("$packageName:$featureKey:value", value).apply()
     }
+
+    fun isIntroShown(context: Context): Boolean {
+        return getPrefs(context).getBoolean("intro_shown", false)
+    }
+
+    fun markIntroShown(context: Context) {
+        getPrefs(context).edit().putBoolean("intro_shown", true).apply()
+    }
 }
