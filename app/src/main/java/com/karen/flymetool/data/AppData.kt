@@ -95,6 +95,12 @@ object AppData {
                 group = "锁屏"
             ),
             HookFeature(
+                key = "hide_keyguard_status_bar",
+                label = "隐藏锁屏状态栏",
+                description = "隐藏锁屏界面顶部的状态栏",
+                group = "锁屏"
+            ),
+            HookFeature(
                 key = "aod_lyric",
                 label = "AOD 显示歌词",
                 description = "在熄屏 AOD 界面显示当前播放的歌词",

@@ -9,6 +9,7 @@ import com.karen.flymetool.hook.feature.systemui.HideGestureBarHook
 import com.karen.flymetool.hook.feature.systemui.HideMediaAppIconBgHook
 import com.karen.flymetool.hook.feature.systemui.HideStatusBarIconHook
 import com.karen.flymetool.hook.feature.systemui.HideKeyguardShortcutsHook
+import com.karen.flymetool.hook.feature.systemui.HideKeyguardStatusBarHook
 import com.karen.flymetool.hook.feature.systemui.NotificationCardRadiusHook
 import com.karen.flymetool.hook.feature.systemui.NotificationIconLimitHook
 import com.karen.flymetool.hook.feature.systemui.NotificationManageHook
@@ -29,7 +30,8 @@ object SystemUIEntry : HookEntry {
         // 状态栏星期
         if (XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "statusbar_weekday")) {
             val formatValue = XposedPrefs.getFeatureValue(lpparam, targetPackage, "statusbar_weekday", 0)
-            StatusBarClockHook.handleLoadPackage(lpparam, formatValue)
+            val positionValue = XposedPrefs.getFeatureValue(lpparam, targetPackage, "statusbar_weekday_position", 0)
+            StatusBarClockHook.handleLoadPackage(lpparam, formatValue, positionValue)
         }
 
         // 功率显示
@@ -65,6 +67,11 @@ object SystemUIEntry : HookEntry {
         val hideCamera = XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "hide_keyguard_camera")
         if (hideFlashlight || hideCamera) {
             HideKeyguardShortcutsHook.handleLoadPackage(lpparam, hideFlashlight, hideCamera)
+        }
+
+        // 隐藏锁屏状态栏
+        if (XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "hide_keyguard_status_bar")) {
+            HideKeyguardStatusBarHook.handleLoadPackage(lpparam)
         }
 
         // 隐藏充电动画

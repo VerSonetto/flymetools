@@ -5,6 +5,7 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.util.FlymeVersionUtils
 
 object HideKeyguardShortcutsHook {
 
@@ -19,9 +20,84 @@ object HideKeyguardShortcutsHook {
         this.hideFlashlight = hideFlashlight
         this.hideCamera = hideCamera
 
+        when {
+            FlymeVersionUtils.isFlyme12() -> hookFlyme12(lpparam)
+            FlymeVersionUtils.isFlyme11() -> hookFlyme11(lpparam)
+            FlymeVersionUtils.isFlyme10() -> hookFlyme10(lpparam)
+            else -> {
+                hookFlyme10(lpparam)
+            }
+        }
+        Logger.i(HOOK_NAME, "Loaded, hideFlashlight=$hideFlashlight, hideCamera=$hideCamera")
+    }
+
+    private fun hookFlyme12(lpparam: XC_LoadPackage.LoadPackageParam) {
+        try {
+            val clazz = XposedHelpers.findClass(KEYGUARD_BOTTOM_AREA_VIEW, lpparam.classLoader)
+
+            XposedHelpers.findAndHookMethod(
+                clazz,
+                "updateLeftRightClickVisibility",
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val view = param.thisObject as? View ?: return
+
+                        if (hideFlashlight) {
+                            val leftView = XposedHelpers.getObjectField(view, "mLeftClickAffordanceView")
+                            (leftView as? View)?.visibility = View.GONE
+                        }
+
+                        if (hideCamera) {
+                            val rightView = XposedHelpers.getObjectField(view, "mRightClickAffordanceView")
+                            (rightView as? View)?.visibility = View.GONE
+                        }
+
+                        param.result = null
+                    }
+                }
+            )
+
+            Logger.i(HOOK_NAME, "Hooked updateLeftRightClickVisibility for Flyme 12")
+        } catch (e: Throwable) {
+            Logger.e(HOOK_NAME, "Hook Flyme 12 failed", e)
+        }
+    }
+
+    private fun hookFlyme11(lpparam: XC_LoadPackage.LoadPackageParam) {
+        try {
+            val clazz = XposedHelpers.findClass(KEYGUARD_BOTTOM_AREA_VIEW, lpparam.classLoader)
+
+            XposedHelpers.findAndHookMethod(
+                clazz,
+                "updateLeftRightClickVisibility",
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val view = param.thisObject as? View ?: return
+
+                        if (hideFlashlight) {
+                            val leftView = XposedHelpers.getObjectField(view, "mLeftClickAffordanceView")
+                            (leftView as? View)?.visibility = View.GONE
+                        }
+
+                        if (hideCamera) {
+                            val rightView = XposedHelpers.getObjectField(view, "mRightClickAffordanceView")
+                            (rightView as? View)?.visibility = View.GONE
+                        }
+
+                        param.result = null
+                    }
+                }
+            )
+
+            Logger.i(HOOK_NAME, "Hooked updateLeftRightClickVisibility for Flyme 11")
+        } catch (e: Throwable) {
+            Logger.e(HOOK_NAME, "Hook Flyme 11 failed", e)
+        }
+    }
+
+    private fun hookFlyme10(lpparam: XC_LoadPackage.LoadPackageParam) {
         hookUpdateLeftClickVisibility(lpparam)
         hookUpdateRightClickVisibility(lpparam)
-        Logger.i(HOOK_NAME, "Loaded, hideFlashlight=$hideFlashlight, hideCamera=$hideCamera")
     }
 
     private fun hookUpdateLeftClickVisibility(lpparam: XC_LoadPackage.LoadPackageParam) {

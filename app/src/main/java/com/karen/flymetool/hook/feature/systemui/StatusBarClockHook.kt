@@ -15,7 +15,7 @@ object StatusBarClockHook {
 
     private val CHINESE_WEEKDAYS = arrayOf("周日", "周一", "周二", "周三", "周四", "周五", "周六")
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam, format: Int = 0) {
+    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam, format: Int = 0, position: Int = 0) {
         if (lpparam.packageName != "com.android.systemui") return
 
         try {
@@ -32,17 +32,21 @@ object StatusBarClockHook {
                         val weekday = getWeekday(format)
                         if (originalText.contains(weekday)) return
 
-                        clockView.text = "$weekday $originalText"
+                        clockView.text = if (position == 1) {
+                            "$originalText $weekday"
+                        } else {
+                            "$weekday $originalText"
+                        }
                     }
                 }
             )
         } catch (e: Throwable) {
             Logger.e(HOOK_NAME, "Hook Clock failed", e)
-            tryAlternativeHook(lpparam, format)
+            tryAlternativeHook(lpparam, format, position)
         }
     }
 
-    private fun tryAlternativeHook(lpparam: XC_LoadPackage.LoadPackageParam, format: Int) {
+    private fun tryAlternativeHook(lpparam: XC_LoadPackage.LoadPackageParam, format: Int, position: Int) {
         try {
             val clazz = XposedHelpers.findClass(CLOCK_CLASS, lpparam.classLoader)
 
@@ -57,7 +61,11 @@ object StatusBarClockHook {
                         val weekday = getWeekday(format)
                         if (originalText.contains(weekday)) return
 
-                        clockView.text = "$weekday $originalText"
+                        clockView.text = if (position == 1) {
+                            "$originalText $weekday"
+                        } else {
+                            "$weekday $originalText"
+                        }
                     }
                 }
             )
