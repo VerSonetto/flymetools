@@ -5,11 +5,13 @@ import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.util.FlymeVersionUtils
 
 object HideStatusBarIconHook {
 
-    private const val TAG = "HideStatusBarIcon"
-    private const val IMPL_CLASS = "com.android.systemui.statusbar.phone.StatusBarIconControllerImpl"
+    private const val HOOK_NAME = "HideStatusBarIcon"
+
+    private var hiddenSlots: Set<String> = emptySet()
 
     private val SLOT_LABELS = linkedMapOf(
         "alarm_clock" to "闹钟",
@@ -43,16 +45,60 @@ object HideStatusBarIconHook {
     fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         if (lpparam.packageName != "com.android.systemui") return
 
-        val hiddenSlots = XposedPrefs.getFeatureStringSet(
+        hiddenSlots = XposedPrefs.getFeatureStringSet(
             lpparam, "com.android.systemui", "hide_status_bar_icon", emptySet()
         )
         if (hiddenSlots.isEmpty()) return
 
-        Logger.i(TAG, "Hidden slots: $hiddenSlots")
+        Logger.i(HOOK_NAME, "Hidden slots: $hiddenSlots")
 
+        when {
+            FlymeVersionUtils.isFlyme12() -> hookFlyme12(lpparam)
+            FlymeVersionUtils.isFlyme11() -> hookFlyme11(lpparam)
+            FlymeVersionUtils.isFlyme10() -> hookFlyme10(lpparam)
+            else -> hookFlyme10(lpparam)
+        }
+    }
+
+    private fun hookFlyme12(lpparam: XC_LoadPackage.LoadPackageParam) {
+        val implClass = findClassByFeature(lpparam) ?: run {
+            Logger.e(HOOK_NAME, "Flyme 12: Cannot find StatusBarIconControllerImpl")
+            return
+        }
+
+        hookSetIconVisibility(implClass)
+        Logger.i(HOOK_NAME, "Hooked Flyme 12: ${implClass.name}")
+    }
+
+    private fun hookFlyme11(lpparam: XC_LoadPackage.LoadPackageParam) {
+        val implClass = findClassByFeature(lpparam) ?: run {
+            Logger.e(HOOK_NAME, "Flyme 11: Cannot find StatusBarIconControllerImpl")
+            return
+        }
+
+        hookSetIconVisibility(implClass)
+        Logger.i(HOOK_NAME, "Hooked Flyme 11: ${implClass.name}")
+    }
+
+    private fun hookFlyme10(lpparam: XC_LoadPackage.LoadPackageParam) {
+        val knownPath = "com.android.systemui.statusbar.phone.StatusBarIconControllerImpl"
+        val implClass = try {
+            XposedHelpers.findClass(knownPath, lpparam.classLoader)
+        } catch (e: Throwable) {
+            findClassByFeature(lpparam)
+        }
+
+        if (implClass == null) {
+            Logger.e(HOOK_NAME, "Flyme 10: Cannot find StatusBarIconControllerImpl")
+            return
+        }
+
+        hookSetIconVisibility(implClass)
+        Logger.i(HOOK_NAME, "Hooked Flyme 10: ${implClass.name}")
+    }
+
+    private fun hookSetIconVisibility(implClass: Class<*>) {
         try {
-            val implClass = XposedHelpers.findClass(IMPL_CLASS, lpparam.classLoader)
-
             XposedHelpers.findAndHookMethod(
                 implClass,
                 "setIconVisibility",
@@ -83,10 +129,29 @@ object HideStatusBarIconHook {
                     }
                 }
             )
-
-            Logger.i(TAG, "Hooked StatusBarIconControllerImpl.setIconVisibility")
         } catch (e: Throwable) {
-            Logger.e(TAG, "Hook failed", e)
+            Logger.e(HOOK_NAME, "Hook setIconVisibility failed", e)
         }
+    }
+
+    private fun findClassByFeature(lpparam: XC_LoadPackage.LoadPackageParam): Class<*>? {
+        try {
+            val dexFile = dalvik.system.DexFile(lpparam.appInfo.sourceDir)
+
+            dexFile.entries().iterator().forEach { className ->
+                if (className.endsWith("StatusBarIconControllerImpl")) {
+                    try {
+                        val clazz = XposedHelpers.findClass(className, lpparam.classLoader)
+                        clazz.getDeclaredMethod("setIconVisibility", String::class.java, Boolean::class.java)
+                        return clazz
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Logger.e(HOOK_NAME, "findClassByFeature failed", e)
+        }
+
+        return null
     }
 }

@@ -11,11 +11,17 @@ object FlymeVersionUtils {
         cachedFullVersion?.let { return it }
 
         val version = try {
-            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "getprop ro.build.display.id"))
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            reader.readLine()?.trim() ?: ""
-        } catch (e: Exception) {
-            ""
+            val clazz = Class.forName("android.os.SystemProperties")
+            val method = clazz.getMethod("get", String::class.java)
+            method.invoke(null, "ro.build.display.id") as? String ?: ""
+        } catch (_: Exception) {
+            try {
+                val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "getprop ro.build.display.id"))
+                val reader = BufferedReader(InputStreamReader(process.inputStream))
+                reader.readLine()?.trim() ?: ""
+            } catch (_: Exception) {
+                ""
+            }
         }
 
         cachedFullVersion = version
