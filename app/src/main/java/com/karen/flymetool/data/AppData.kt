@@ -107,6 +107,12 @@ object AppData {
                 group = "锁屏"
             ),
             HookFeature(
+                key = "aod_notification",
+                label = "AOD 显示通知",
+                description = "在熄屏 AOD 界面显示最近的应用消息通知内容",
+                group = "锁屏"
+            ),
+            HookFeature(
                 key = "hide_charging_animation",
                 label = "隐藏充电动画",
                 description = "插入充电器时不显示充电动画",

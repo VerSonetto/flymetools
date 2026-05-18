@@ -12,11 +12,13 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.util.FlymeVersionUtils
 
 object AODLyricHook {
 
     private const val AOD_BASIC_VIEW = "com.flyme.aod.view.AODBasicView"
-    private const val ADVERT_TICKER_VIEW = "com.flyme.statusbar.ticker.AdvertTickerView"
+    private const val ADVERT_TICKER_VIEW_OLD = "com.flyme.statusbar.ticker.AdvertTickerView"
+    private const val ADVERT_TICKER_VIEW_NEW = "com.flyme.systemui.statusbar.ticker.AdvertTickerView"
     private const val HOOK_NAME = "AODLyric"
 
     private val handler = Handler(Looper.getMainLooper())
@@ -27,7 +29,11 @@ object AODLyricHook {
         if (lpparam.packageName != "com.android.systemui") return
 
         hookAODBasicView(lpparam)
-        hookAdvertTickerView(lpparam)
+
+        when {
+            FlymeVersionUtils.isFlyme12() -> hookFlyme12(lpparam)
+            else -> hookFlyme10(lpparam)
+        }
     }
 
     private fun hookAODBasicView(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -56,9 +62,17 @@ object AODLyricHook {
         }
     }
 
-    private fun hookAdvertTickerView(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookFlyme12(lpparam: XC_LoadPackage.LoadPackageParam) {
+        hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_NEW, "Flyme 12")
+    }
+
+    private fun hookFlyme10(lpparam: XC_LoadPackage.LoadPackageParam) {
+        hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_OLD, "Flyme 10")
+    }
+
+    private fun hookAdvertTickerView(lpparam: XC_LoadPackage.LoadPackageParam, className: String, versionTag: String) {
         try {
-            val clazz = XposedHelpers.findClass(ADVERT_TICKER_VIEW, lpparam.classLoader)
+            val clazz = XposedHelpers.findClass(className, lpparam.classLoader)
 
             XposedHelpers.findAndHookMethod(
                 clazz,
@@ -98,9 +112,9 @@ object AODLyricHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked AdvertTickerView")
+            Logger.i(HOOK_NAME, "Hooked $versionTag: $className")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook AdvertTickerView failed", e)
+            Logger.e(HOOK_NAME, "Hook $versionTag failed", e)
         }
     }
 

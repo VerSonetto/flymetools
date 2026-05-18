@@ -2,6 +2,7 @@ package com.karen.flymetool.hook.entry
 
 import com.karen.flymetool.hook.base.XposedPrefs
 import com.karen.flymetool.hook.feature.systemui.AODLyricHook
+import com.karen.flymetool.hook.feature.systemui.AODNotificationHook
 import com.karen.flymetool.hook.feature.systemui.AppIconNotificationHook
 import com.karen.flymetool.hook.feature.systemui.ConnectionRateLowSpeedHideHook
 import com.karen.flymetool.hook.feature.systemui.HideChargingAnimationHook
@@ -98,6 +99,11 @@ object SystemUIEntry : HookEntry {
         // AOD 歌词
         if (XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "aod_lyric")) {
             AODLyricHook.handleLoadPackage(lpparam)
+        }
+
+        // AOD 应用消息通知
+        if (XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "aod_notification")) {
+            AODNotificationHook.handleLoadPackage(lpparam)
         }
 
         // 解除通知管理限制

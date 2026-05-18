@@ -1,6 +1,7 @@
 package com.karen.flymetool.hook.feature.systemui
 
 import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.Logger
@@ -12,6 +13,28 @@ object HideStatusBarIconHook {
     private const val HOOK_NAME = "HideStatusBarIcon"
 
     private var hiddenSlots: Set<String> = emptySet()
+
+    private val SLOT_FIELD_TO_KEY = mapOf(
+        "mSlotAlarmClock" to "alarm_clock",
+        "mSlotBluetooth" to "bluetooth",
+        "mSlotCast" to "cast",
+        "mSlotHotspot" to "hotspot",
+        "mSlotHeadset" to "headset",
+        "mSlotMute" to "mute",
+        "mSlotVibrate" to "vibrate",
+        "mSlotZen" to "zen",
+        "mSlotRotate" to "rotate",
+        "mSlotLocation" to "location",
+        "mSlotMicrophone" to "microphone",
+        "mSlotCamera" to "camera",
+        "mSlotSensorsOff" to "sensors_off",
+        "mSlotScreenRecord" to "screen_record",
+        "mSlotDataSaver" to "data_saver",
+        "mSlotManagedProfile" to "managed_profile",
+        "mSlotTty" to "tty",
+    )
+
+    private var resolvedSlots: Set<String> = emptySet()
 
     private val SLOT_LABELS = linkedMapOf(
         "alarm_clock" to "闹钟",
@@ -67,6 +90,33 @@ object HideStatusBarIconHook {
         }
 
         hookSetIconVisibility(implClass)
+
+        try {
+            val psbpClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.PhoneStatusBarPolicy",
+                lpparam.classLoader
+            )
+            for (ctor in psbpClass.declaredConstructors) {
+                XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val mapping = mutableMapOf<String, String>()
+                        for (field in psbpClass.declaredFields) {
+                            if (field.type == String::class.java && field.name.startsWith("mSlot")) {
+                                field.isAccessible = true
+                                val value = field.get(param.thisObject) as? String ?: continue
+                                val key = SLOT_FIELD_TO_KEY[field.name] ?: continue
+                                mapping[key] = value
+                            }
+                        }
+                        resolvedSlots = hiddenSlots.mapNotNull { mapping[it] }.toSet()
+                        Logger.i(HOOK_NAME, "Resolved slots: $resolvedSlots")
+                    }
+                })
+            }
+        } catch (e: Throwable) {
+            Logger.e(HOOK_NAME, "Hook PhoneStatusBarPolicy failed", e)
+        }
+
         Logger.i(HOOK_NAME, "Hooked Flyme 12: ${implClass.name}")
     }
 
@@ -107,7 +157,7 @@ object HideStatusBarIconHook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val slot = param.args[0] as? String ?: return
-                        if (slot in hiddenSlots) {
+                        if (slot in hiddenSlots || slot in resolvedSlots) {
                             param.args[1] = false
                         }
                     }
@@ -123,7 +173,7 @@ object HideStatusBarIconHook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val slot = param.args[0] as? String ?: return
-                        if (slot in hiddenSlots) {
+                        if (slot in hiddenSlots || slot in resolvedSlots) {
                             param.args[1] = false
                         }
                     }
