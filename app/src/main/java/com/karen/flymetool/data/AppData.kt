@@ -208,6 +208,16 @@ object AppData {
                 key = "memory_display",
                 label = "最近任务显示内存",
                 description = "在最近任务界面右上角显示内存占用信息"
+            ),
+            HookFeature(
+                key = "folder_icon_blur",
+                label = "文件夹图标毛玻璃",
+                description = "自定义桌面文件夹图标的毛玻璃背景模糊半径"
+            ),
+            HookFeature(
+                key = "folder_open_blur",
+                label = "文件夹展开模糊强度",
+                description = "自定义打开文件夹时桌面背景的模糊程度"
             )
         ),
         "com.android.mms" to listOf(
