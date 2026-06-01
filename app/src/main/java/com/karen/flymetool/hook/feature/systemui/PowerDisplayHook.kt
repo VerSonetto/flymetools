@@ -5,7 +5,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.graphics.Rect
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
@@ -17,23 +16,31 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import kotlin.math.abs
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object PowerDisplayHook {
+object PowerDisplayHook : FeatureHook {
 
     private const val PHONE_STATUS_BAR_VIEW = "com.android.systemui.statusbar.phone.PhoneStatusBarView"
     private const val DARK_ICON_DISPATCHER = "com.android.systemui.plugins.DarkIconDispatcher"
     private const val HOOK_NAME = "PowerDisplay"
 
-    private val handler = Handler(Looper.getMainLooper())
+    private val handler: Handler by lazy { Handler(Looper.getMainLooper()) }
     private var powerTextView: TextView? = null
     private var isRunning = false
     private var lastVoltage = 0
     private var refreshInterval: Long = 1000
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam, interval: Int = 1000) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "power_display")) return
         if (lpparam.packageName != "com.android.systemui") return
 
+        val interval = XposedPrefs.getFeatureValue(lpparam, packageName, "power_display", 1000)
+        mount(lpparam, interval)
+    }
+
+    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, interval: Int) {
         refreshInterval = interval.toLong().coerceIn(500, 5000)
 
         try {

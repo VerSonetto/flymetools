@@ -15,11 +15,12 @@ import android.widget.TextView
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 import com.karen.flymetool.util.FlymeVersionUtils
 
-object AODNotificationHook {
+object AODNotificationHook : FeatureHook {
 
     private const val AOD_BASIC_VIEW = "com.flyme.aod.view.AODBasicView"
     private const val ALERTING_MANAGER = "com.android.systemui.statusbar.AlertingNotificationManager"
@@ -28,14 +29,13 @@ object AODNotificationHook {
     private const val ADVERT_TICKER_VIEW_NEW = "com.flyme.systemui.statusbar.ticker.AdvertTickerView"
     private const val NOTIFICATION_ENTRY = "com.android.systemui.statusbar.notification.collection.NotificationEntry"
     private const val HOOK_NAME = "AODNotification"
-    private const val SYSTEMUI_PACKAGE = "com.android.systemui"
-    private const val FEATURE_KEY = "aod_notification"
     private const val DEFAULT_MAX_LINES = 3
 
-    private val handler = Handler(Looper.getMainLooper())
+    private val handler: Handler by lazy { Handler(Looper.getMainLooper()) }
     private var containerLayout: LinearLayout? = null
     private var iconView: ImageView? = null
     private var notificationTextView: TextView? = null
+    private var packageName: String = ""
 
     @Volatile
     private var cachedNotification: NotificationData? = null
@@ -56,14 +56,22 @@ object AODNotificationHook {
         }
     }
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        this.packageName = packageName
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "aod_notification")) return
         if (lpparam.packageName != "com.android.systemui") return
 
         hookAODBasicView(lpparam)
 
         when {
-            FlymeVersionUtils.isFlyme12() -> hookFlyme12(lpparam)
-            else -> hookFlyme10(lpparam)
+            FlymeVersionUtils.isFlyme12() -> {
+                hookHeadsUpManager(lpparam)
+                hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_NEW)
+            }
+            else -> {
+                hookAlertingManager(lpparam)
+                hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_OLD)
+            }
         }
     }
 
@@ -79,7 +87,7 @@ object AODNotificationHook {
                         val basicView = param.thisObject as LinearLayout
                         val context = basicView.context
 
-                        containerLayout = createContainerLayout(context, lpparam)
+                        containerLayout = createContainerLayout(context, lpparam, packageName)
                         basicView.addView(containerLayout)
 
                         cachedNotification?.let { data ->
@@ -95,16 +103,6 @@ object AODNotificationHook {
         } catch (e: Throwable) {
             Logger.e(HOOK_NAME, "Hook AODBasicView failed", e)
         }
-    }
-
-    private fun hookFlyme12(lpparam: XC_LoadPackage.LoadPackageParam) {
-        hookHeadsUpManager(lpparam)
-        hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_NEW)
-    }
-
-    private fun hookFlyme10(lpparam: XC_LoadPackage.LoadPackageParam) {
-        hookAlertingManager(lpparam)
-        hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_OLD)
     }
 
     private fun hookAlertingManager(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -210,7 +208,6 @@ object AODNotificationHook {
                         val sbn = param.args[0] ?: return
                         val notification = XposedHelpers.callMethod(sbn, "getNotification") as? Notification ?: return
 
-                        // 排除媒体类应用的通知
                         if (XposedHelpers.callMethod(notification, "isMediaNotification") as Boolean) {
                             return
                         }
@@ -246,9 +243,13 @@ object AODNotificationHook {
         }
     }
 
-    private fun createContainerLayout(context: Context, lpparam: XC_LoadPackage.LoadPackageParam): LinearLayout {
-        val maxLines = XposedPrefs.getFeatureValue(lpparam, SYSTEMUI_PACKAGE, FEATURE_KEY, DEFAULT_MAX_LINES)
-        
+    private fun createContainerLayout(
+        context: Context,
+        lpparam: XC_LoadPackage.LoadPackageParam,
+        packageName: String
+    ): LinearLayout {
+        val maxLines = XposedPrefs.getFeatureValue(lpparam, packageName, "aod_notification", DEFAULT_MAX_LINES)
+
         return LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL

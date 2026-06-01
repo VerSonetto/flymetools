@@ -11,28 +11,31 @@ import android.widget.TextView
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 import com.karen.flymetool.util.FlymeVersionUtils
 
-object AODLyricHook {
+object AODLyricHook : FeatureHook {
 
     private const val AOD_BASIC_VIEW = "com.flyme.aod.view.AODBasicView"
     private const val ADVERT_TICKER_VIEW_OLD = "com.flyme.statusbar.ticker.AdvertTickerView"
     private const val ADVERT_TICKER_VIEW_NEW = "com.flyme.systemui.statusbar.ticker.AdvertTickerView"
     private const val HOOK_NAME = "AODLyric"
 
-    private val handler = Handler(Looper.getMainLooper())
+    private val handler: Handler by lazy { Handler(Looper.getMainLooper()) }
     private var lyricTextView: TextView? = null
     private var currentLyric: CharSequence = ""
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "aod_lyric")) return
         if (lpparam.packageName != "com.android.systemui") return
 
         hookAODBasicView(lpparam)
 
         when {
-            FlymeVersionUtils.isFlyme12() -> hookFlyme12(lpparam)
-            else -> hookFlyme10(lpparam)
+            FlymeVersionUtils.isFlyme12() -> hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_NEW, "Flyme 12")
+            else -> hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_OLD, "Flyme 10")
         }
     }
 
@@ -62,14 +65,6 @@ object AODLyricHook {
         }
     }
 
-    private fun hookFlyme12(lpparam: XC_LoadPackage.LoadPackageParam) {
-        hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_NEW, "Flyme 12")
-    }
-
-    private fun hookFlyme10(lpparam: XC_LoadPackage.LoadPackageParam) {
-        hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_OLD, "Flyme 10")
-    }
-
     private fun hookAdvertTickerView(lpparam: XC_LoadPackage.LoadPackageParam, className: String, versionTag: String) {
         try {
             val clazz = XposedHelpers.findClass(className, lpparam.classLoader)
@@ -83,7 +78,6 @@ object AODLyricHook {
                         val sbn = param.args[0]
                         val notification = XposedHelpers.getObjectField(sbn, "notification")
 
-                        // 只处理媒体通知
                         val isMediaNotification = XposedHelpers.callMethod(notification, "isMediaNotification") as? Boolean ?: false
                         if (!isMediaNotification) {
                             Logger.d(HOOK_NAME, "Skip non-media notification")

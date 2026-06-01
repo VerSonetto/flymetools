@@ -4,10 +4,12 @@ import android.view.View
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 import com.karen.flymetool.util.FlymeVersionUtils
 
-object HideKeyguardShortcutsHook {
+object HideKeyguardShortcutsHook : FeatureHook {
 
     private const val KEYGUARD_BOTTOM_AREA_VIEW = "com.flyme.systemui.affordance.MZKeyguardBottomAreaView"
     private const val HOOK_NAME = "HideKeyguardShortcut"
@@ -15,18 +17,21 @@ object HideKeyguardShortcutsHook {
     private var hideFlashlight: Boolean = false
     private var hideCamera: Boolean = false
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam, hideFlashlight: Boolean, hideCamera: Boolean) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (lpparam.packageName != "com.android.systemui") return
-        this.hideFlashlight = hideFlashlight
-        this.hideCamera = hideCamera
+
+        val flashlight = XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_keyguard_flashlight")
+        val camera = XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_keyguard_camera")
+        if (!flashlight && !camera) return
+
+        hideFlashlight = flashlight
+        hideCamera = camera
 
         when {
             FlymeVersionUtils.isFlyme12() -> hookFlyme12(lpparam)
             FlymeVersionUtils.isFlyme11() -> hookFlyme11(lpparam)
             FlymeVersionUtils.isFlyme10() -> hookFlyme10(lpparam)
-            else -> {
-                hookFlyme10(lpparam)
-            }
+            else -> hookFlyme10(lpparam)
         }
         Logger.i(HOOK_NAME, "Loaded, hideFlashlight=$hideFlashlight, hideCamera=$hideCamera")
     }

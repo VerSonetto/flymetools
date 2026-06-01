@@ -4,10 +4,12 @@ import android.telephony.SubscriptionManager
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 import com.karen.flymetool.util.FlymeVersionUtils
 
-object ShowDataSimOnlyHook {
+object ShowDataSimOnlyHook : FeatureHook {
 
     private const val MOBILE_SIGNAL_CONTROLLER = "com.android.systemui.statusbar.connectivity.MobileSignalController"
     private const val SIGNAL_CALLBACK = "com.android.systemui.statusbar.connectivity.SignalCallback"
@@ -17,14 +19,15 @@ object ShowDataSimOnlyHook {
     private const val CONNECTIVITY_CONSTANTS = "com.android.systemui.statusbar.pipeline.shared.ConnectivityConstants"
     private const val HOOK_NAME = "ShowDataSimOnly"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "show_data_sim_only")) return
         if (lpparam.packageName != "com.android.systemui") return
 
         when {
             FlymeVersionUtils.isFlyme12() -> hookFlyme12(lpparam)
-            FlymeVersionUtils.isFlyme11() -> hookFlyme11(lpparam)
-            FlymeVersionUtils.isFlyme10() -> hookFlyme10(lpparam)
-            else -> hookFlyme10(lpparam)
+            FlymeVersionUtils.isFlyme11() -> hookNotifyListeners(lpparam, "Flyme 11")
+            FlymeVersionUtils.isFlyme10() -> hookNotifyListeners(lpparam, "Flyme 10")
+            else -> hookNotifyListeners(lpparam, "Flyme 10")
         }
     }
 
@@ -71,14 +74,6 @@ object ShowDataSimOnlyHook {
         } catch (e: Throwable) {
             Logger.e(HOOK_NAME, "Pipeline hook failed for Flyme 12", e)
         }
-    }
-
-    private fun hookFlyme11(lpparam: XC_LoadPackage.LoadPackageParam) {
-        hookNotifyListeners(lpparam, "Flyme 11")
-    }
-
-    private fun hookFlyme10(lpparam: XC_LoadPackage.LoadPackageParam) {
-        hookNotifyListeners(lpparam, "Flyme 10")
     }
 
     private fun hookNotifyListeners(lpparam: XC_LoadPackage.LoadPackageParam, tag: String) {

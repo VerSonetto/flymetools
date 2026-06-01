@@ -3,12 +3,14 @@ package com.karen.flymetool.hook.feature.flymeupdate
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
-object CaptureUpdateLinkHook {
+object CaptureUpdateLinkHook : FeatureHook {
 
     private const val TAG = "CaptureUpdateLink"
     private const val TARGET_PACKAGE = "com.meizu.flyme.update"
@@ -16,7 +18,9 @@ object CaptureUpdateLinkHook {
 
     private const val NORMAL_CHECK_URL_PATTERN = "sysupgrade/v2.0/check"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "capture_update_link")) return
+        if (XposedPrefs.isFeatureEnabled(lpparam, packageName, "disable_update_check")) return
         if (lpparam.packageName != TARGET_PACKAGE) return
 
         hookBasicRequestDeliverResponse(lpparam)
@@ -87,7 +91,7 @@ object CaptureUpdateLinkHook {
                             Logger.i(TAG, "Captured update link: $updateUrl")
                             Logger.i(TAG, "Version: $latestVersion, Size: $fileSize, verType: $verType, packageType: $packageType")
 
-                            saveUpdateInfo(param, updateUrl, latestVersion, fileSize, systemVersion, verType, packageType)
+                            saveUpdateInfo(updateUrl, latestVersion, fileSize, systemVersion, verType, packageType)
                         } catch (e: Throwable) {
                             Logger.e(TAG, "Failed to extract update info", e)
                         }
@@ -102,7 +106,6 @@ object CaptureUpdateLinkHook {
     }
 
     private fun saveUpdateInfo(
-        param: XC_MethodHook.MethodHookParam,
         updateUrl: String,
         latestVersion: String,
         fileSize: String,

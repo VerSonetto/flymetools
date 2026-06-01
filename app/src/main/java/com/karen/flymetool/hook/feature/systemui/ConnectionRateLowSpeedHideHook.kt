@@ -3,19 +3,27 @@ package com.karen.flymetool.hook.feature.systemui
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object ConnectionRateLowSpeedHideHook {
+object ConnectionRateLowSpeedHideHook : FeatureHook {
 
     private const val CONNECTION_RATE_VIEW = "com.flyme.statusbar.connectionRateView.ConnectionRateView"
     private const val HOOK_NAME = "LowSpeedHide"
 
     private var thresholdKbPerS: Int = 10
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam, threshold: Int) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "connection_rate_low_speed_hide")) return
         if (lpparam.packageName != "com.android.systemui") return
-        thresholdKbPerS = threshold
 
+        val threshold = XposedPrefs.getFeatureValue(lpparam, packageName, "connection_rate_low_speed_hide", 10)
+        mount(lpparam, threshold)
+    }
+
+    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, threshold: Int) {
+        thresholdKbPerS = threshold
         hookOnConnectionRateChange(lpparam)
         Logger.i(HOOK_NAME, "Loaded, threshold=${thresholdKbPerS}KB/s")
     }

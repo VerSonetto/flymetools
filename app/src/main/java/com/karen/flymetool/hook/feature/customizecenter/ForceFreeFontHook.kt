@@ -7,20 +7,19 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-/**
- * 字体免费下载 Hook
- * 通过 Hook 字符串操作替换路径实现
- */
-object ForceFreeFontHook {
+object ForceFreeFontHook : FeatureHook {
 
     private const val TAG = "ForceFreeFont"
     private const val PACKAGE_NAME = "com.meizu.customizecenter"
     private const val TARGET_PATH = "/fonts/public/download"
     private const val REPLACEMENT_PATH = "/fonts/public/download/trial_url"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "force_free_font")) return
         if (lpparam.packageName != PACKAGE_NAME) return
 
         hookStringConcat(lpparam)
@@ -29,10 +28,6 @@ object ForceFreeFontHook {
         hookImeiPermission(lpparam)
     }
 
-    /**
-     * Hook String.concat 方法
-     * 当拼接 URL 时检测并替换路径
-     */
     private fun hookStringConcat(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
             XposedHelpers.findAndHookMethod(
@@ -44,11 +39,9 @@ object ForceFreeFontHook {
                         val thisStr = param.thisObject as String
                         val argStr = param.args[0] as String
 
-                        // 检测字体下载路径
                         if (thisStr.contains(TARGET_PATH) && !thisStr.contains("trial_url")) {
                             val newStr = thisStr.replace(TARGET_PATH, REPLACEMENT_PATH)
                             param.args[0] = argStr
-                            // 无法直接修改 thisObject，需要在结果中处理
                         }
 
                         if (argStr.contains(TARGET_PATH) && !argStr.contains("trial_url")) {
@@ -72,10 +65,6 @@ object ForceFreeFontHook {
         }
     }
 
-    /**
-     * Hook StringBuilder.toString
-     * URL 通常通过 StringBuilder 构建
-     */
     private fun hookStringBuilder(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
             XposedHelpers.findAndHookMethod(
@@ -97,7 +86,6 @@ object ForceFreeFontHook {
         }
 
         try {
-            // Hook StringBuffer.toString
             XposedHelpers.findAndHookMethod(
                 StringBuffer::class.java,
                 "toString",
@@ -117,12 +105,8 @@ object ForceFreeFontHook {
         }
     }
 
-    /**
-     * Hook 字体许可检查
-     */
     private fun hookFontLicenseCheck(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
-            // 通过类特征定位：类名包含 LicenseManager
             XposedHelpers.findAndHookMethod(
                 ClassLoader::class.java,
                 "loadClass",
@@ -132,7 +116,6 @@ object ForceFreeFontHook {
                         val className = param.args[0] as? String ?: return
                         val clazz = param.result as? Class<*> ?: return
 
-                        // 检查类名是否包含 LicenseManager（未混淆的部分）
                         if (className.contains("LicenseManager", ignoreCase = true)) {
                             for (method in clazz.declaredMethods) {
                                 if (method.returnType == Boolean::class.javaPrimitiveType &&
@@ -158,9 +141,6 @@ object ForceFreeFontHook {
         }
     }
 
-    /**
-     * Hook IMEI 权限检查
-     */
     private fun hookImeiPermission(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
             XposedBridge.hookAllMethods(

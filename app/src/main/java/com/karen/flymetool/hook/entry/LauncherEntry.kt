@@ -1,6 +1,7 @@
 package com.karen.flymetool.hook.entry
 
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.feature.launcher.FolderBlurHook
 import com.karen.flymetool.hook.feature.launcher.MemoryDisplayHook
 import com.karen.flymetool.hook.feature.launcher.TaskCardHook
@@ -9,43 +10,19 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 object LauncherEntry : HookEntry {
     override val targetPackage = "com.meizu.flyme.launcher"
 
+    private val hooks: List<FeatureHook> = listOf(
+        TaskCardHook,
+        MemoryDisplayHook,
+        FolderBlurHook,
+    )
+
     override fun initHooks(lpparam: XC_LoadPackage.LoadPackageParam) {
-        val radiusEnabled = XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "task_card_radius")
-        val blurEnabled = XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "task_blur_intensity")
-        val memoryDisplayEnabled = XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "memory_display")
-        val folderIconBlurEnabled = XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "folder_icon_blur")
-        val folderOpenBlurEnabled = XposedPrefs.isFeatureEnabled(lpparam, targetPackage, "folder_open_blur")
-
-        val radiusDp = if (radiusEnabled) {
-            XposedPrefs.getFeatureValue(lpparam, targetPackage, "task_card_radius", 24)
-        } else -1
-
-        val blurIntensity = if (blurEnabled) {
-            XposedPrefs.getFeatureValue(lpparam, targetPackage, "task_blur_intensity", 50)
-        } else -1
-
-        val memoryInterval = if (memoryDisplayEnabled) {
-            XposedPrefs.getFeatureValue(lpparam, targetPackage, "memory_display", 2000).toLong()
-        } else 0
-
-        val folderIconRadius = if (folderIconBlurEnabled) {
-            XposedPrefs.getFeatureValue(lpparam, targetPackage, "folder_icon_blur", 30)
-        } else -1
-
-        val folderOpenStrength = if (folderOpenBlurEnabled) {
-            XposedPrefs.getFeatureValue(lpparam, targetPackage, "folder_open_blur", 80) / 100f
-        } else -1f
-
-        if (radiusEnabled || blurEnabled) {
-            TaskCardHook.handleLoadPackage(lpparam, radiusDp, blurIntensity)
-        }
-
-        if (memoryDisplayEnabled) {
-            MemoryDisplayHook.handleLoadPackage(lpparam, memoryInterval)
-        }
-
-        if (folderIconBlurEnabled || folderOpenBlurEnabled) {
-            FolderBlurHook.handleLoadPackage(lpparam, folderIconRadius, folderOpenStrength)
+        for (hook in hooks) {
+            try {
+                hook.handle(lpparam, targetPackage)
+            } catch (e: Throwable) {
+                Logger.e(targetPackage, "Hook ${hook::class.simpleName} failed", e)
+            }
         }
     }
 }

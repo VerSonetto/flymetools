@@ -6,18 +6,27 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object StatusBarClockHook {
+object StatusBarClockHook : FeatureHook {
 
     private const val CLOCK_CLASS = "com.android.systemui.statusbar.policy.Clock"
     private const val HOOK_NAME = "StatusBarClock"
 
     private val CHINESE_WEEKDAYS = arrayOf("周日", "周一", "周二", "周三", "周四", "周五", "周六")
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam, format: Int = 0, position: Int = 0) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "statusbar_weekday")) return
         if (lpparam.packageName != "com.android.systemui") return
 
+        val format = XposedPrefs.getFeatureValue(lpparam, packageName, "statusbar_weekday", 0)
+        val position = XposedPrefs.getFeatureValue(lpparam, packageName, "statusbar_weekday_position", 0)
+        mount(lpparam, format, position)
+    }
+
+    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, format: Int, position: Int) {
         try {
             val clazz = XposedHelpers.findClass(CLOCK_CLASS, lpparam.classLoader)
 

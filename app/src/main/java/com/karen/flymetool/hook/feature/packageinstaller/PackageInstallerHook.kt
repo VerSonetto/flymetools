@@ -3,20 +3,22 @@ package com.karen.flymetool.hook.feature.packageinstaller
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 
-object PackageInstallerHook {
+object PackageInstallerHook : FeatureHook {
 
     private const val ACTIVITY_CLASS = "com.android.packageinstaller.FlymePackageInstallerActivity"
     private const val HOOK_NAME = "PackageInstaller"
 
     private var autoInstallEnabled = false
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "skip_install_scan")) return
         if (lpparam.packageName != "com.android.packageinstaller") return
 
-        autoInstallEnabled = XposedPrefs.isFeatureEnabled(lpparam, "com.android.packageinstaller", "auto_install")
+        autoInstallEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, "auto_install")
 
         try {
             hookStartInstallScan(lpparam)

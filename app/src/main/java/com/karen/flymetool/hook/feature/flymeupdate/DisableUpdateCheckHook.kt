@@ -1,11 +1,13 @@
 package com.karen.flymetool.hook.feature.flymeupdate
 
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
-object DisableUpdateCheckHook {
+object DisableUpdateCheckHook : FeatureHook {
 
     private const val TAG = "DisableUpdateCheck"
     private const val TARGET_PACKAGE = "com.meizu.flyme.update"
@@ -17,11 +19,12 @@ object DisableUpdateCheckHook {
 
     private const val FIRMWARE_CACHE_KEY = "key_check_new_upgrade_firmware_cache"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "disable_update_check")) return
         if (lpparam.packageName != TARGET_PACKAGE) return
 
         hookBasicRequestDeliverResponse(lpparam)
-        hookFirmwareCache(lpparam)
+        hookFirmwareCache()
     }
 
     private fun hookBasicRequestDeliverResponse(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -74,7 +77,7 @@ object DisableUpdateCheckHook {
         return BLOCKED_URL_PATTERNS.any { url.contains(it, ignoreCase = true) }
     }
 
-    private fun hookFirmwareCache(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookFirmwareCache() {
         try {
             val spImplClass = Class.forName("android.app.SharedPreferencesImpl")
 

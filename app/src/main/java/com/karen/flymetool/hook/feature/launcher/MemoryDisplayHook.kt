@@ -15,25 +15,33 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import java.lang.reflect.Proxy
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object MemoryDisplayHook {
+object MemoryDisplayHook : FeatureHook {
 
     private const val LAUNCHER_CLASS = "com.android.launcher3.Launcher"
     private const val LAUNCHER_STATE_CLASS = "com.android.launcher3.LauncherState"
     private const val STATE_MANAGER_CLASS = "com.android.launcher3.statemanager.StateManager"
     private const val HOOK_NAME = "MemoryDisplay"
 
-    private val handler = Handler(Looper.getMainLooper())
+    private val handler: Handler by lazy { Handler(Looper.getMainLooper()) }
     private var memoryContainer: LinearLayout? = null
     private var memoryTextView: TextView? = null
     private var isRunning = false
     private var updateInterval: Long = 2000
     private var overviewState: Any? = null
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam, interval: Long) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "memory_display")) return
         if (lpparam.packageName != "com.meizu.flyme.launcher") return
 
+        val interval = XposedPrefs.getFeatureValue(lpparam, packageName, "memory_display", 2000).toLong()
+        mount(lpparam, interval)
+    }
+
+    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, interval: Long) {
         updateInterval = if (interval > 0) interval else 2000
 
         try {
@@ -66,20 +74,18 @@ object MemoryDisplayHook {
                         val stateManager = XposedHelpers.callMethod(launcher, "getStateManager")
 
                         if (dragLayer != null && deviceProfile != null) {
-                            // 清除旧视图，确保重新创建
                             memoryContainer?.let {
                                 try {
                                     (it.parent as? ViewGroup)?.removeView(it)
                                 } catch (e: Throwable) {
-                                    // 忽略
                                 }
                             }
                             memoryContainer = null
                             memoryTextView = null
-                            
+
                             createMemoryView(dragLayer, context, deviceProfile)
                             Logger.i(HOOK_NAME, "Created memory view in DragLayer")
-                            
+
                             if (stateManager != null) {
                                 addStateListener(stateManager)
                                 Logger.i(HOOK_NAME, "Added state listener")
@@ -90,8 +96,7 @@ object MemoryDisplayHook {
                     }
                 }
             )
-            
-            // Hook onResume 确保视图始终存在
+
             XposedHelpers.findAndHookMethod(
                 launcherClass,
                 "onResume",
@@ -100,8 +105,7 @@ object MemoryDisplayHook {
                         val launcher = param.thisObject
                         val dragLayer = XposedHelpers.callMethod(launcher, "getDragLayer") as? ViewGroup
                         val deviceProfile = XposedHelpers.callMethod(launcher, "getDeviceProfile")
-                        
-                        // 如果视图不存在，重新创建
+
                         if (memoryContainer == null && dragLayer != null && deviceProfile != null) {
                             val context = XposedHelpers.callMethod(launcher, "getApplicationContext") as Context
                             createMemoryView(dragLayer, context, deviceProfile)
@@ -160,7 +164,7 @@ object MemoryDisplayHook {
 
         val density = context.resources.displayMetrics.density
         val marginEnd = (12 * density).toInt()
-        
+
         val taskTopMargin = XposedHelpers.getIntField(deviceProfile, "overviewTaskThumbnailTopMarginPx")
         val marginTop = (taskTopMargin * 0.1f).toInt()
 
@@ -201,7 +205,7 @@ object MemoryDisplayHook {
         memoryContainer?.addView(leftSpace)
         memoryContainer?.addView(memoryTextView)
         parent.addView(memoryContainer)
-        
+
         Logger.i(HOOK_NAME, "Memory view created with marginTop=$marginTop (taskTopMargin=$taskTopMargin)")
     }
 

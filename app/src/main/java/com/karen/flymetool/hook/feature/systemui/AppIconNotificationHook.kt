@@ -8,22 +8,20 @@ import android.graphics.drawable.Icon
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 
-object AppIconNotificationHook {
+object AppIconNotificationHook : FeatureHook {
 
     private const val TAG = "AppIconNotification"
     private const val ICON_DRAWING_SIZE_DP = 15f
 
     private val appIconPackages = mutableSetOf<String>()
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "app_icon_notification")) return
         if (lpparam.packageName != "com.android.systemui") return
-
-        if (!XposedPrefs.isFeatureEnabled(lpparam, "com.android.systemui", "app_icon_notification")) {
-            return
-        }
 
         Logger.i(TAG, "Hooking StatusBarIconView and Ticker")
 

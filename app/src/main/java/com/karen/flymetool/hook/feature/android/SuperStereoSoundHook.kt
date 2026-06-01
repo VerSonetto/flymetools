@@ -5,9 +5,11 @@ import android.provider.Settings
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object SuperStereoSoundHook {
+object SuperStereoSoundHook : FeatureHook {
     private const val TAG = "SuperStereoSound"
     private const val TARGET_PARAM = "stereo_sound_game_mode"
     private const val SETTING_KEY = "super_stereo_sound"
@@ -15,9 +17,11 @@ object SuperStereoSoundHook {
     private var mainSwitchEnabled = false
     private var contentResolver: ContentResolver? = null
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
-        val classLoader = lpparam.classLoader
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "force_super_stereo")) return
+        if (lpparam.packageName != "android") return
 
+        val classLoader = lpparam.classLoader
         hookSettingsSystem(classLoader)
         hookAudioSystem(classLoader)
     }
@@ -90,7 +94,7 @@ object SuperStereoSoundHook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val keyValue = param.args[0] as? String ?: return
-                        
+
                         if (keyValue.contains(TARGET_PARAM) && mainSwitchEnabled) {
                             val newValue = keyValue.replace(
                                 "$TARGET_PARAM=false",

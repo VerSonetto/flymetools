@@ -7,17 +7,34 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object TaskCardHook {
+object TaskCardHook : FeatureHook {
 
     private const val TAG = "TaskCard"
     private const val TASK_CORNER_RADIUS_CLASS = "com.android.quickstep.util.TaskCornerRadius"
     private const val BASE_DEPTH_CONTROLLER_CLASS = "com.android.quickstep.util.BaseDepthController"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int, blurIntensity: Int) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (lpparam.packageName != "com.meizu.flyme.launcher") return
 
+        val radiusEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, "task_card_radius")
+        val blurEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, "task_blur_intensity")
+        if (!radiusEnabled && !blurEnabled) return
+
+        val radiusDp = if (radiusEnabled) {
+            XposedPrefs.getFeatureValue(lpparam, packageName, "task_card_radius", 24)
+        } else -1
+        val blurIntensity = if (blurEnabled) {
+            XposedPrefs.getFeatureValue(lpparam, packageName, "task_blur_intensity", 50)
+        } else -1
+
+        mount(lpparam, radiusDp, blurIntensity)
+    }
+
+    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int, blurIntensity: Int) {
         hookTaskCornerRadius(lpparam, radiusDp)
         if (blurIntensity >= 0) {
             hookBlurIntensity(lpparam, blurIntensity)

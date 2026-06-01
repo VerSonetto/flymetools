@@ -7,7 +7,3 @@
 -keepclassmembers class * {
     @de.robv.android.xposed.* <methods>;
 }
-
--keepclassmembers class com.karen.flymetool.hook.** {
-    public static void handleLoadPackage(...);
-}

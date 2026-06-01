@@ -22,9 +22,47 @@ if (versionPropsFile.exists()) {
 
 val dateCode = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")).toInt()
 
+val featuresJsonFile = file("src/main/assets/features.json")
+val generatedScopeDir = layout.buildDirectory.dir("generated/scope")
+val generatedScopeResDir = layout.buildDirectory.dir("generated/scope_res")
+
+val generateScope by tasks.registering {
+    inputs.file(featuresJsonFile)
+    outputs.dir(generatedScopeDir)
+    outputs.dir(generatedScopeResDir)
+    doLast {
+        val text = featuresJsonFile.readText()
+        val packages = Regex("\"package\"\\s*:\\s*\"([^\"]+)\"")
+            .findAll(text)
+            .map { it.groupValues[1] }
+            .toList()
+
+        val scopeFile = generatedScopeDir.get().file("scope").asFile
+        scopeFile.parentFile.mkdirs()
+        scopeFile.writeText(packages.joinToString("\n") + "\n")
+
+        val resFile = generatedScopeResDir.get().file("values/scope_arr.xml").asFile
+        resFile.parentFile.mkdirs()
+        resFile.writeText(
+            "<resources>\n    <string-array name=\"xposed_scope\">\n" +
+                packages.joinToString("\n") { "        <item>$it</item>" } +
+                "\n    </string-array>\n</resources>\n"
+        )
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn(generateScope)
+}
+
 android {
     namespace = "com.karen.flymetool"
     compileSdk = 36
+
+    sourceSets["main"].apply {
+        assets.srcDir(generatedScopeDir)
+        res.srcDir(generatedScopeResDir)
+    }
 
     signingConfigs {
         create("release") {
@@ -47,7 +85,7 @@ android {
         versionName = versionProps.getProperty("versionName") ?: "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        
+
         ndk {
             abiFilters += listOf("arm64-v8a")
         }

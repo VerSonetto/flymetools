@@ -4,14 +4,17 @@ import android.view.View
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object HideKeyguardStatusBarHook {
+object HideKeyguardStatusBarHook : FeatureHook {
 
     private const val VIEW_CLASS = "com.android.systemui.statusbar.phone.KeyguardStatusBarView"
     private const val HOOK_NAME = "HideKeyguardStatusBar"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_keyguard_status_bar")) return
         if (lpparam.packageName != "com.android.systemui") return
 
         try {

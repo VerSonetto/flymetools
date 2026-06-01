@@ -5,15 +5,23 @@ import android.util.TypedValue
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object NotificationCardRadiusHook {
+object NotificationCardRadiusHook : FeatureHook {
 
     private const val HOOK_NAME = "NotificationCardRadius"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "notification_card_radius")) return
         if (lpparam.packageName != "com.android.systemui") return
 
+        val radiusDp = XposedPrefs.getFeatureValue(lpparam, packageName, "notification_card_radius", 24)
+        mount(lpparam, radiusDp)
+    }
+
+    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int) {
         hookResourcesDimension(lpparam, radiusDp)
         hookRoundableState(lpparam, radiusDp)
     }

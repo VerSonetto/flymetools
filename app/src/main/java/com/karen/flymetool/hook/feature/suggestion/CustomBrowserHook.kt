@@ -5,13 +5,14 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
-object CustomBrowserHook {
+object CustomBrowserHook : FeatureHook {
 
     private const val TAG = "CustomBrowser"
     private const val PACKAGE_NAME = "com.meizu.suggestion"
@@ -22,21 +23,15 @@ object CustomBrowserHook {
 
     private var customBrowserPackage: String = ""
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "custom_browser")) return
         if (lpparam.packageName != PACKAGE_NAME) return
 
-        loadCustomBrowserPackage(lpparam)
+        customBrowserPackage = XposedPrefs.getFeatureString(lpparam, packageName, "custom_browser", "")
+        Logger.i(TAG, "Loaded custom browser package: $customBrowserPackage")
+
         hookStartActivity()
         hookUriParse()
-    }
-
-    private fun loadCustomBrowserPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
-        try {
-            customBrowserPackage = XposedPrefs.getFeatureString(lpparam, PACKAGE_NAME, "custom_browser", "")
-            Logger.i(TAG, "Loaded custom browser package: $customBrowserPackage")
-        } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to load custom browser package", e)
-        }
     }
 
     private fun hookStartActivity() {

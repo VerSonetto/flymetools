@@ -7,16 +7,18 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object ForceFreeThemeHook {
+object ForceFreeThemeHook : FeatureHook {
 
     private const val TAG = "ForceFreeTheme"
-
     private const val PACKAGE_NAME = "com.meizu.customizecenter"
     private const val TARGET_CLASS = "com.meizu.customizecenter.model.info.home.CustomizerInfo"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "force_free_theme")) return
         if (lpparam.packageName != PACKAGE_NAME) return
 
         hookPriceToZero(lpparam)

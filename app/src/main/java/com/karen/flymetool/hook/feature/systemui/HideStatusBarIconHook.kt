@@ -4,11 +4,12 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 import com.karen.flymetool.util.FlymeVersionUtils
 
-object HideStatusBarIconHook {
+object HideStatusBarIconHook : FeatureHook {
 
     private const val HOOK_NAME = "HideStatusBarIcon"
 
@@ -65,25 +66,26 @@ object HideStatusBarIconHook {
     val iconOptions: List<Pair<String, String>>
         get() = SLOT_LABELS.entries.map { it.key to it.value }
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_status_bar_icon")) return
         if (lpparam.packageName != "com.android.systemui") return
 
         hiddenSlots = XposedPrefs.getFeatureStringSet(
-            lpparam, "com.android.systemui", "hide_status_bar_icon", emptySet()
+            lpparam, packageName, "hide_status_bar_icon", emptySet()
         )
         if (hiddenSlots.isEmpty()) return
 
         Logger.i(HOOK_NAME, "Hidden slots: $hiddenSlots")
 
         when {
-            FlymeVersionUtils.isFlyme12() -> hookFlyme12(lpparam)
-            FlymeVersionUtils.isFlyme11() -> hookFlyme11(lpparam)
-            FlymeVersionUtils.isFlyme10() -> hookFlyme10(lpparam)
-            else -> hookFlyme10(lpparam)
+            FlymeVersionUtils.isFlyme12() -> mountFlyme12(lpparam)
+            FlymeVersionUtils.isFlyme11() -> mountFlyme11(lpparam)
+            FlymeVersionUtils.isFlyme10() -> mountFlyme10(lpparam)
+            else -> mountFlyme10(lpparam)
         }
     }
 
-    private fun hookFlyme12(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun mountFlyme12(lpparam: XC_LoadPackage.LoadPackageParam) {
         val implClass = findClassByFeature(lpparam) ?: run {
             Logger.e(HOOK_NAME, "Flyme 12: Cannot find StatusBarIconControllerImpl")
             return
@@ -120,7 +122,7 @@ object HideStatusBarIconHook {
         Logger.i(HOOK_NAME, "Hooked Flyme 12: ${implClass.name}")
     }
 
-    private fun hookFlyme11(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun mountFlyme11(lpparam: XC_LoadPackage.LoadPackageParam) {
         val implClass = findClassByFeature(lpparam) ?: run {
             Logger.e(HOOK_NAME, "Flyme 11: Cannot find StatusBarIconControllerImpl")
             return
@@ -130,7 +132,7 @@ object HideStatusBarIconHook {
         Logger.i(HOOK_NAME, "Hooked Flyme 11: ${implClass.name}")
     }
 
-    private fun hookFlyme10(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun mountFlyme10(lpparam: XC_LoadPackage.LoadPackageParam) {
         val knownPath = "com.android.systemui.statusbar.phone.StatusBarIconControllerImpl"
         val implClass = try {
             XposedHelpers.findClass(knownPath, lpparam.classLoader)

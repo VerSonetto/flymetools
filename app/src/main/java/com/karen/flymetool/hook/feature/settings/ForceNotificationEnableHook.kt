@@ -5,14 +5,17 @@ import android.content.pm.ApplicationInfo
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object ForceNotificationEnableHook {
+object ForceNotificationEnableHook : FeatureHook {
 
     private const val NOTIFICATION_BACKEND = "com.android.settings.notification.NotificationBackend"
     private const val HOOK_NAME = "ForceNotificationEnable"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "force_notification_enable")) return
         if (lpparam.packageName != "com.android.settings") return
 
         try {

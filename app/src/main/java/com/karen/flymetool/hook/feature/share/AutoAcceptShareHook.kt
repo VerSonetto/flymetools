@@ -6,14 +6,19 @@ import android.widget.Button
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object AutoAcceptShareHook {
+object AutoAcceptShareHook : FeatureHook {
 
     private const val TAG = "AutoAcceptShare"
     private const val BASE_ACTIVITY_CLASS = "com.meizu.share.base.BaseBluetoothPermissionActivity"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "auto_accept_share")) return
+        if (lpparam.packageName != "com.meizu.share") return
+
         hookOnResume(lpparam)
     }
 

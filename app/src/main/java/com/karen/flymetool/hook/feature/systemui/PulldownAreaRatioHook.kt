@@ -3,15 +3,23 @@ package com.karen.flymetool.hook.feature.systemui
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object PulldownAreaRatioHook {
+object PulldownAreaRatioHook : FeatureHook {
 
     private const val HOOK_NAME = "PulldownAreaRatio"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam, controlCenterRatio: Int) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "pulldown_area_ratio")) return
         if (lpparam.packageName != "com.android.systemui") return
 
+        val ratio = XposedPrefs.getFeatureValue(lpparam, packageName, "pulldown_area_ratio", 50)
+        mount(lpparam, ratio)
+    }
+
+    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, controlCenterRatio: Int) {
         try {
             val centerControllerClass = XposedHelpers.findClass(
                 "com.flyme.systemui.controlcenter.phone.CenterController",

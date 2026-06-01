@@ -7,9 +7,11 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object AutoCopyVerifyCodeHook {
+object AutoCopyVerifyCodeHook : FeatureHook {
 
     private const val TAG = "AutoCopyVerifyCode"
     private const val PACKAGE_NAME = "com.android.mms"
@@ -20,7 +22,8 @@ object AutoCopyVerifyCodeHook {
 
     private var appContext: Context? = null
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "auto_copy_verify_code")) return
         if (lpparam.packageName != PACKAGE_NAME) return
 
         hookMmsAppOnCreate(lpparam)
@@ -58,7 +61,6 @@ object AutoCopyVerifyCodeHook {
         try {
             val dexUtilClass = lpparam.classLoader.loadClass(DEX_UTIL_CLASS)
 
-            // Hook parse method - returns ParseResult
             for (method in dexUtilClass.declaredMethods) {
                 if (method.name == "parse" && method.parameterTypes.size == 1) {
 

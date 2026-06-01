@@ -5,20 +5,35 @@ import android.util.Property
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object FolderBlurHook {
+object FolderBlurHook : FeatureHook {
 
     private const val TAG = "FolderBlur"
 
     private var iconBlurRadius = 30
     private var openBlurStrength = 0.8f
 
-    fun handleLoadPackage(
-        lpparam: XC_LoadPackage.LoadPackageParam,
-        iconRadius: Int,
-        openStrength: Float
-    ) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (lpparam.packageName != "com.meizu.flyme.launcher") return
+
+        val iconEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, "folder_icon_blur")
+        val openEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, "folder_open_blur")
+        if (!iconEnabled && !openEnabled) return
+
+        val iconRadius = if (iconEnabled) {
+            XposedPrefs.getFeatureValue(lpparam, packageName, "folder_icon_blur", 30)
+        } else -1
+        val openStrength = if (openEnabled) {
+            XposedPrefs.getFeatureValue(lpparam, packageName, "folder_open_blur", 80) / 100f
+        } else -1f
+
+        mount(lpparam, iconRadius, openStrength)
+    }
+
+    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, iconRadius: Int, openStrength: Float) {
         iconBlurRadius = iconRadius
         openBlurStrength = openStrength
 

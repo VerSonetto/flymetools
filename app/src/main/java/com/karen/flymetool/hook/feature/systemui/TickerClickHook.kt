@@ -10,14 +10,17 @@ import android.widget.TextSwitcher
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object TickerClickHook {
+object TickerClickHook : FeatureHook {
 
     private const val MARQUEE_TICKER = "com.flyme.statusbar.ticker.MarqueeTicker"
     private const val HOOK_NAME = "TickerClick"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "ticker_click")) return
         if (lpparam.packageName != "com.android.systemui") return
 
         hookMarqueeTicker(lpparam)

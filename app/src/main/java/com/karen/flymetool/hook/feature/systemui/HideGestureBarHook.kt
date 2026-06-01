@@ -3,14 +3,17 @@ package com.karen.flymetool.hook.feature.systemui
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 
-object HideGestureBarHook {
+object HideGestureBarHook : FeatureHook {
 
     private const val NAVIGATION_BAR_VIEW = "com.android.systemui.navigationbar.NavigationBarView"
     private const val HOOK_NAME = "HideGestureBar"
 
-    fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_gesture_bar")) return
         if (lpparam.packageName != "com.android.systemui") return
 
         try {
