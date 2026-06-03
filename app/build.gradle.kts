@@ -20,9 +20,10 @@ if (versionPropsFile.exists()) {
     versionProps.load(versionPropsFile.inputStream())
 }
 
+val featuresJsonFile = file("src/main/assets/features.json")
+
 val dateCode = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")).toInt()
 
-val featuresJsonFile = file("src/main/assets/features.json")
 val generatedScopeDir = layout.buildDirectory.dir("generated/scope")
 val generatedScopeResDir = layout.buildDirectory.dir("generated/scope_res")
 
@@ -137,13 +138,6 @@ tasks.register<Exec>("installSignedRelease") {
     }
     commandLine(installCmd)
 
-    doLast {
-        val name = versionProps.getProperty("versionName") ?: "1.0"
-        val parts = name.split(".")
-        val last = parts.last().toIntOrNull() ?: 0
-        parts.dropLast(1).let { versionProps.setProperty("versionName", (it + (last + 1).toString()).joinToString(".")) }
-        versionProps.store(versionPropsFile.outputStream(), null)
-    }
 }
 
 dependencies {

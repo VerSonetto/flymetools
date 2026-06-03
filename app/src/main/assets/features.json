@@ -117,6 +117,12 @@
           "label": "隐藏底部手势条",
           "description": "隐藏底部导航栏的手势指示条",
           "group": "其他"
+        },
+        {
+          "key": "custom_carrier_name",
+          "label": "自定义运营商名称",
+          "description": "自定义锁屏、通知中心和状态栏显示的运营商名称",
+          "group": "状态栏"
         }
       ]
     },
