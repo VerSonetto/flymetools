@@ -8,7 +8,11 @@ object PrefsHelper {
     private const val PREFS_NAME = "flymetool_prefs"
 
     private fun getPrefs(context: Context): SharedPreferences {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return try {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_WORLD_READABLE)
+        } catch (e: SecurityException) {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        }
     }
 
     fun isFeatureEnabled(context: Context, packageName: String, featureKey: String): Boolean {
