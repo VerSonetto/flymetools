@@ -10,6 +10,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.util.FlymeVersionUtils
 
 object ForceFreeFontHook : FeatureHook {
 
@@ -24,7 +25,12 @@ object ForceFreeFontHook : FeatureHook {
 
         hookStringConcat(lpparam)
         hookStringBuilder(lpparam)
-        hookFontLicenseCheck(lpparam)
+        // Flyme 12+ 字体LicenseManager混淆后类名不带LicenseManager，
+        // ClassLoader.loadClass 关键词匹配无法命中。许可检查由
+        // ForceFreeThemeHook 的 BaseLicenseManager.c() 统一处理
+        if (!FlymeVersionUtils.isFlyme12()) {
+            hookFontLicenseCheck(lpparam)
+        }
         hookImeiPermission(lpparam)
     }
 

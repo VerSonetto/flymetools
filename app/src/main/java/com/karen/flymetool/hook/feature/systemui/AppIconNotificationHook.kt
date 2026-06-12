@@ -5,12 +5,15 @@ import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
+import android.widget.ImageView
 import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.util.FlymeVersionUtils
 
 object AppIconNotificationHook : FeatureHook {
 
@@ -18,6 +21,7 @@ object AppIconNotificationHook : FeatureHook {
     private const val ICON_DRAWING_SIZE_DP = 15f
 
     private val appIconPackages = mutableSetOf<String>()
+    private var tickerSwitcher: android.widget.ImageSwitcher? = null
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "app_icon_notification")) return
@@ -103,11 +107,9 @@ object AppIconNotificationHook : FeatureHook {
     }
 
     private fun hookMarqueeTicker(lpparam: XC_LoadPackage.LoadPackageParam) {
+        val marqueeTickerClass = findMarqueeTickerClass(lpparam) ?: return
+
         try {
-            val marqueeTickerClass = XposedHelpers.findClass(
-                "com.flyme.statusbar.ticker.MarqueeTicker",
-                lpparam.classLoader
-            )
 
             XposedHelpers.findAndHookMethod(
                 marqueeTickerClass,
@@ -118,10 +120,9 @@ object AppIconNotificationHook : FeatureHook {
                         val sbn = param.args[0]
                         val pkgName = XposedHelpers.callMethod(sbn, "getPackageName") as String
 
-                        if (pkgName == "com.android.systemui" || pkgName == "android") {
-                            return
-                        }
+                        if (pkgName == "com.android.systemui" || pkgName == "android") return
 
+                        val notification = XposedHelpers.callMethod(sbn, "getNotification")
                         val context = XposedHelpers.getObjectField(param.thisObject, "mContext") as android.content.Context
                         val appIcon = getAppIcon(context, pkgName) ?: return
 
@@ -129,15 +130,13 @@ object AppIconNotificationHook : FeatureHook {
                         val iconSizePx = (ICON_DRAWING_SIZE_DP * density).toInt()
                         val newIcon = iconFromDrawable(appIcon, iconSizePx)
 
-                        val notification = XposedHelpers.callMethod(sbn, "getNotification")
                         XposedHelpers.callMethod(notification, "setSmallIcon", newIcon)
                     }
 
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        val iconSwitcher = XposedHelpers.getObjectField(param.thisObject, "mIconSwitcher") as? android.widget.ImageSwitcher
-                        iconSwitcher?.getCurrentView()?.let { view ->
-                            (view as? android.widget.ImageView)?.setColorFilter(null)
-                        }
+                        val sw = XposedHelpers.getObjectField(param.thisObject, "mIconSwitcher") as? android.widget.ImageSwitcher
+                        clearIconView(sw)
+                        sw?.post { clearIconView(sw) }
                     }
                 }
             )
@@ -148,18 +147,54 @@ object AppIconNotificationHook : FeatureHook {
                 ArrayList::class.java, Float::class.java, Int::class.java,
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        val iconSwitcher = XposedHelpers.getObjectField(param.thisObject, "mIconSwitcher") as? android.widget.ImageSwitcher
-                        iconSwitcher?.getCurrentView()?.let { view ->
-                            (view as? android.widget.ImageView)?.setColorFilter(null)
-                        }
+                        val sw = XposedHelpers.getObjectField(param.thisObject, "mIconSwitcher") as? android.widget.ImageSwitcher
+                        clearIconView(sw)
                     }
                 }
             )
+
+            if (FlymeVersionUtils.isFlyme12()) {
+                hookTickerIconColorFilter(lpparam)
+            }
 
             Logger.i(TAG, "Hooked MarqueeTicker.addEntry and onDarkChanged")
         } catch (e: Throwable) {
             Logger.w(TAG, "MarqueeTicker hook failed: ${e.message}")
         }
+    }
+
+    private fun findMarqueeTickerClass(lpparam: XC_LoadPackage.LoadPackageParam): Class<*>? {
+        try {
+            return XposedHelpers.findClass("com.flyme.systemui.statusbar.ticker.MarqueeTicker", lpparam.classLoader)
+        } catch (_: Throwable) {}
+        try {
+            return XposedHelpers.findClass("com.flyme.statusbar.ticker.MarqueeTicker", lpparam.classLoader)
+        } catch (_: Throwable) {}
+        Logger.w(TAG, "MarqueeTicker class not found")
+        return null
+    }
+
+    private fun clearIconView(switcher: android.widget.ImageSwitcher?) {
+        val sw = switcher ?: return
+        tickerSwitcher = sw
+        val view = sw.getCurrentView() as? ImageView ?: return
+        view.setColorFilter(null)
+        view.drawable?.mutate()?.clearColorFilter()
+    }
+
+    private fun hookTickerIconColorFilter(lpparam: XC_LoadPackage.LoadPackageParam) {
+        XposedBridge.hookAllMethods(
+            ImageView::class.java, "setColorFilter",
+            object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val iv = param.thisObject as? ImageView ?: return
+                    if (iv.parent !is android.widget.ImageSwitcher) return
+                    if (iv.parent == tickerSwitcher) {
+                        param.result = null
+                    }
+                }
+            }
+        )
     }
 
     private fun hookFlymeNotificationIconUtils(lpparam: XC_LoadPackage.LoadPackageParam) {
