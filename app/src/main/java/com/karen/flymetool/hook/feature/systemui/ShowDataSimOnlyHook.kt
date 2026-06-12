@@ -13,7 +13,7 @@ object ShowDataSimOnlyHook : FeatureHook {
 
     private const val MOBILE_SIGNAL_CONTROLLER = "com.android.systemui.statusbar.connectivity.MobileSignalController"
     private const val SIGNAL_CALLBACK = "com.android.systemui.statusbar.connectivity.SignalCallback"
-    private const val CELLULAR_ICON_VIEW_MODEL = "com.android.systemui.statusbar.pipeline.mobile.p114ui.viewmodel.CellularIconViewModel"
+    private const val CELLULAR_ICON_VIEW_MODEL = "com.android.systemui.statusbar.pipeline.mobile.ui.viewmodel.CellularIconViewModel"
     private const val MOBILE_ICON_INTERACTOR = "com.android.systemui.statusbar.pipeline.mobile.domain.interactor.MobileIconInteractor"
     private const val AIRPLANE_MODE_INTERACTOR = "com.android.systemui.statusbar.pipeline.airplane.domain.interactor.AirplaneModeInteractor"
     private const val CONNECTIVITY_CONSTANTS = "com.android.systemui.statusbar.pipeline.shared.ConnectivityConstants"
