@@ -65,13 +65,7 @@ object AppData {
     fun getScopedApps(context: Context): List<ScopedApp> {
         val pm = context.packageManager
         return load(context).apps.filter { app ->
-            if (app.packageName == "com.meizu.share" && !FlymeVersionUtils.isFlyme10()) {
-                return@filter false
-            }
-            if (app.packageName == "android" && !FlymeVersionUtils.isFlyme10()) {
-                return@filter false
-            }
-            true
+            FlymeVersionUtils.isScopeAvailable(app.packageName)
         }.map { app ->
             try {
                 val info = pm.getApplicationInfo(app.packageName, 0)

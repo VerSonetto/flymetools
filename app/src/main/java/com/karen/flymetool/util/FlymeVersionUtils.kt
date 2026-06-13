@@ -39,4 +39,10 @@ object FlymeVersionUtils {
     fun isFlyme12(): Boolean {
         return getFullVersion().startsWith("Flyme 12")
     }
+
+    private val versionHiddenScopes = setOf("com.meizu.share", "android")
+
+    fun isScopeAvailable(packageName: String): Boolean {
+        return if (packageName in versionHiddenScopes) isFlyme10() else true
+    }
 }

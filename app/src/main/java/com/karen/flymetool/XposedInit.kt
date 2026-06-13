@@ -13,6 +13,7 @@ import com.karen.flymetool.hook.entry.FlymeUpdateEntry
 import com.karen.flymetool.hook.entry.ShareEntry
 import com.karen.flymetool.hook.entry.SuggestionEntry
 import com.karen.flymetool.hook.entry.SystemUIEntry
+import com.karen.flymetool.util.FlymeVersionUtils
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
@@ -41,15 +42,17 @@ class XposedInit : IXposedHookLoadPackage {
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         val packageName = lpparam.packageName
 
-        val entry = ENTRY_MAP[packageName]
-        if (entry != null) {
-            Logger.i(TAG, "Loading hooks for $packageName")
-            try {
-                entry.initHooks(lpparam)
-                Logger.i(TAG, "Hooks loaded successfully for $packageName")
-            } catch (e: Throwable) {
-                Logger.e(TAG, "Failed to load hooks for $packageName", e)
-            }
+        val entry = ENTRY_MAP[packageName] ?: return
+        if (!FlymeVersionUtils.isScopeAvailable(packageName)) {
+            Logger.i(TAG, "Skipping $packageName - hidden on this version")
+            return
+        }
+        Logger.i(TAG, "Loading hooks for $packageName")
+        try {
+            entry.initHooks(lpparam)
+            Logger.i(TAG, "Hooks loaded successfully for $packageName")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "Failed to load hooks for $packageName", e)
         }
     }
 }
