@@ -11,6 +11,12 @@
           "group": "状态栏"
         },
         {
+          "key": "statusbar_clock_seconds",
+          "label": "状态栏显示秒数",
+          "description": "在状态栏时间上显示当前秒数",
+          "group": "状态栏"
+        },
+        {
           "key": "power_display",
           "label": "状态栏显示功率",
           "description": "在状态栏显示当前设备功率（充电/放电）",

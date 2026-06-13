@@ -19,6 +19,7 @@ import com.karen.flymetool.hook.feature.systemui.PowerDisplayHook
 import com.karen.flymetool.hook.feature.systemui.PulldownAreaRatioHook
 import com.karen.flymetool.hook.feature.systemui.ShowDataSimOnlyHook
 import com.karen.flymetool.hook.feature.systemui.StatusBarClockHook
+import com.karen.flymetool.hook.feature.systemui.StatusBarClockSecondsHook
 import com.karen.flymetool.hook.feature.systemui.TickerClickHook
 import com.karen.flymetool.hook.feature.systemui.CustomCarrierNameHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
@@ -28,6 +29,7 @@ object SystemUIEntry : HookEntry {
 
     private val hooks: List<FeatureHook> = listOf(
         StatusBarClockHook,
+        StatusBarClockSecondsHook,
         PowerDisplayHook,
         ConnectionRateLowSpeedHideHook,
         PulldownAreaRatioHook,
