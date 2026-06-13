@@ -68,6 +68,9 @@ object AppData {
             if (app.packageName == "com.meizu.share" && !FlymeVersionUtils.isFlyme10()) {
                 return@filter false
             }
+            if (app.packageName == "android" && !FlymeVersionUtils.isFlyme10()) {
+                return@filter false
+            }
             true
         }.map { app ->
             try {
