@@ -5,11 +5,14 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.widget.ImageView
 import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.util.FlymeVersionUtils
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
+import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
 object CustomBrowserHook : FeatureHook {
@@ -22,6 +25,7 @@ object CustomBrowserHook : FeatureHook {
     private const val ICON_URI_DEFAULT = "assistant.icon.app://com.android.browser"
 
     private var customBrowserPackage: String = ""
+    private var shareChooserResId = 0
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "custom_browser")) return
@@ -31,7 +35,21 @@ object CustomBrowserHook : FeatureHook {
         Logger.i(TAG, "Loaded custom browser package: $customBrowserPackage")
 
         hookStartActivity()
+        if (FlymeVersionUtils.isFlyme12()) {
+            resolveResourceIds(lpparam.classLoader)
+            hookShareIcon()
+        }
         hookUriParse()
+    }
+
+    private fun resolveResourceIds(classLoader: ClassLoader) {
+        try {
+            val drawableClass = XposedHelpers.findClass("com.meizu.suggestion.R\$drawable", classLoader)
+            shareChooserResId = XposedHelpers.getStaticIntField(drawableClass, "ic_share_chooser")
+            Logger.i(TAG, "Resolved ic_share_chooser: $shareChooserResId")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "Failed to resolve ic_share_chooser", e)
+        }
     }
 
     private fun hookStartActivity() {
@@ -42,22 +60,26 @@ object CustomBrowserHook : FeatureHook {
 
                     val intent = param.args[0] as? Intent ?: return
 
-                    if (!isBrowserIntent(intent)) return
-
-                    val targetPackage = intent.`package`
-                    val component = intent.component
-
-                    val isDefaultBrowser = targetPackage == DEFAULT_BROWSER_PACKAGE ||
-                        component?.packageName == DEFAULT_BROWSER_PACKAGE ||
-                        component?.className?.contains("com.android.browser", ignoreCase = true) == true
-
-                    if (isDefaultBrowser) {
-                        intent.component = null
-                        intent.setPackage(customBrowserPackage)
-
-                        Logger.i(TAG, "Redirected browser: $DEFAULT_BROWSER_PACKAGE -> $customBrowserPackage")
+                    if (intent.action == Intent.ACTION_VIEW && intent.data?.scheme in listOf("http", "https")) {
+                        val pkg = intent.`package` ?: intent.component?.packageName ?: ""
+                        if (pkg == DEFAULT_BROWSER_PACKAGE || intent.component?.className?.contains("com.android.browser") == true) {
+                            intent.component = null
+                            intent.setPackage(customBrowserPackage)
+                            Logger.i(TAG, "Redirected browser: $DEFAULT_BROWSER_PACKAGE -> $customBrowserPackage")
+                        }
+                    } else if (FlymeVersionUtils.isFlyme12() && intent.action == Intent.ACTION_CHOOSER) {
+                        val share = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return
+                        if (share.action == Intent.ACTION_SEND && "text/plain" == share.type) {
+                            val url = share.getStringExtra(Intent.EXTRA_TEXT) ?: return
+                            if (url.startsWith("http://") || url.startsWith("https://")) {
+                                param.args[0] = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                    setPackage(customBrowserPackage)
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                Logger.i(TAG, "Redirected share URL -> $customBrowserPackage")
+                            }
+                        }
                     }
-
                 } catch (e: Throwable) {
                     Logger.e(TAG, "Error in startActivity hook", e)
                 }
@@ -89,6 +111,41 @@ object CustomBrowserHook : FeatureHook {
 
         } catch (e: Throwable) {
             Logger.e(TAG, "Failed to hook startActivity", e)
+        }
+    }
+
+    private fun hookShareIcon() {
+        if (shareChooserResId == 0) return
+        try {
+            XposedBridge.hookAllMethods(ImageView::class.java, "setImageResource", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    try {
+                        if (customBrowserPackage.isBlank()) return
+                        val resId = param.args[0] as? Int ?: return
+                        if (resId != shareChooserResId) return
+
+                        val iv = param.thisObject as? ImageView ?: return
+                        val ctx = iv.context ?: return
+                        if (ctx.packageName != PACKAGE_NAME) return
+
+                        val size = ctx.resources.getDimensionPixelSize(
+                            ctx.resources.getIdentifier("float_ball_width", "dimen", PACKAGE_NAME)
+                        )
+                        XposedHelpers.callStaticMethod(
+                            XposedHelpers.findClass("com.meizu.suggestion.util.ImageUtil", ctx.classLoader),
+                            "displayCircleImage", iv,
+                            Uri.parse("assistant.icon.app://$customBrowserPackage"),
+                            size, size
+                        )
+                        Logger.i(TAG, "Replaced share icon with $customBrowserPackage")
+                    } catch (e: Throwable) {
+                        Logger.e(TAG, "Error replacing share icon", e)
+                    }
+                }
+            })
+            Logger.i(TAG, "Hooked ImageView.setImageResource for icon replacement")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "Failed to hook setImageResource", e)
         }
     }
 
@@ -128,14 +185,5 @@ object CustomBrowserHook : FeatureHook {
         } catch (e: Throwable) {
             Logger.e(TAG, "Failed to hook Uri.parse", e)
         }
-    }
-
-    private fun isBrowserIntent(intent: Intent): Boolean {
-        if (intent.action != Intent.ACTION_VIEW) return false
-
-        val uri = intent.data ?: return false
-        val scheme = uri.scheme ?: return false
-
-        return scheme == "http" || scheme == "https"
     }
 }
