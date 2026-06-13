@@ -2,6 +2,7 @@ package com.karen.flymetool.data
 
 import android.content.Context
 import android.content.pm.PackageManager
+import com.karen.flymetool.util.FlymeVersionUtils
 import org.json.JSONObject
 
 object AppData {
@@ -62,9 +63,13 @@ object AppData {
     }
 
     fun getScopedApps(context: Context): List<ScopedApp> {
-        val apps = load(context).apps
         val pm = context.packageManager
-        return apps.map { app ->
+        return load(context).apps.filter { app ->
+            if (app.packageName == "com.meizu.share" && !FlymeVersionUtils.isFlyme10()) {
+                return@filter false
+            }
+            true
+        }.map { app ->
             try {
                 val info = pm.getApplicationInfo(app.packageName, 0)
                 val label = pm.getApplicationLabel(info).toString()
