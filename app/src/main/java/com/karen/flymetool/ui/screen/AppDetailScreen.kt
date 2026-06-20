@@ -203,33 +203,33 @@ private fun AppHeaderSection(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 16.dp),
+                .padding(horizontal = 24.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(72.dp)
-                    .clip(RoundedCornerShape(18.dp))
+                    .size(64.dp)
+                    .clip(RoundedCornerShape(16.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
             ) {
                 AppIcon(
                     packageName = app.packageName,
-                    modifier = Modifier.size(48.dp)
+                    modifier = Modifier.size(32.dp)
                 )
             }
             Spacer(modifier = Modifier.width(20.dp))
             Column {
                 Text(
                     text = app.name,
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.onBackground,
                     fontWeight = FontWeight.Bold
                 )
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = app.packageName,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -274,23 +274,23 @@ private fun ExpandableGroupCard(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(20.dp))
             .background(MaterialTheme.colorScheme.surface)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onToggle)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(8.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.6f))
+                    .size(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(MaterialTheme.colorScheme.primary)
             )
-            Spacer(modifier = Modifier.width(10.dp))
+            Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleMedium,
@@ -318,14 +318,15 @@ private fun ExpandableGroupCard(
                     .fillMaxWidth()
                     .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
                     .graphicsLayer { clip = true },
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
-                groupFeatures.forEach { feature ->
+                groupFeatures.forEachIndexed { index, feature ->
                     FeatureEntryCompact(
                         packageName = packageName,
                         feature = feature,
                         featureStates = featureStates,
-                        context = context
+                        context = context,
+                        isLast = index == groupFeatures.lastIndex
                     )
                 }
             }
@@ -338,7 +339,8 @@ private fun FeatureEntryCompact(
     packageName: String,
     feature: HookFeature,
     featureStates: Map<String, MutableState<Boolean>>,
-    context: Context
+    context: Context,
+    isLast: Boolean = false
 ) {
     val dependsOnKey = feature.dependsOn
     val dependencyEnabled = if (dependsOnKey != null) {
@@ -360,9 +362,7 @@ private fun FeatureEntryCompact(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                .graphicsLayer { clip = true }
+                .background(Color.Transparent)
         ) {
             FeatureSwitch(
                 title = feature.label,
@@ -382,6 +382,16 @@ private fun FeatureEntryCompact(
                 FeatureConfig(
                     featureKey = feature.key,
                     packageName = packageName
+                )
+            }
+            
+            if (!isLast) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .height(0.5.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant)
                 )
             }
         }
@@ -420,9 +430,8 @@ private fun FeatureEntry(
         Column(
             modifier = modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(20.dp))
                 .background(MaterialTheme.colorScheme.surface)
-                .graphicsLayer { clip = true }
         ) {
             FeatureSwitch(
                 title = feature.label,
