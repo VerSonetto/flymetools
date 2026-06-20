@@ -65,7 +65,8 @@ import com.karen.flymetool.util.RootUtils
 @Composable
 fun AppDetailScreen(
     app: ScopedApp,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onNavigate: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val features = AppData.getFeatures(app.packageName)
@@ -121,7 +122,8 @@ fun AppDetailScreen(
                             packageName = app.packageName,
                             groupFeatures = groupFeatures,
                             featureStates = featureStates,
-                            context = context
+                            context = context,
+                            onNavigate = onNavigate
                         )
                     }
                 }
@@ -144,6 +146,7 @@ fun AppDetailScreen(
                         feature = feature,
                         featureStates = featureStates,
                         context = context,
+                        onNavigate = onNavigate,
                         modifier = Modifier.padding(horizontal = 20.dp)
                     )
                 }
@@ -262,6 +265,7 @@ private fun ExpandableGroupCard(
     groupFeatures: List<HookFeature>,
     featureStates: Map<String, MutableState<Boolean>>,
     context: Context,
+    onNavigate: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val rotation by animateFloatAsState(
@@ -326,6 +330,7 @@ private fun ExpandableGroupCard(
                         feature = feature,
                         featureStates = featureStates,
                         context = context,
+                        onNavigate = onNavigate,
                         isLast = index == groupFeatures.lastIndex
                     )
                 }
@@ -340,6 +345,7 @@ private fun FeatureEntryCompact(
     feature: HookFeature,
     featureStates: Map<String, MutableState<Boolean>>,
     context: Context,
+    onNavigate: (String) -> Unit,
     isLast: Boolean = false
 ) {
     val dependsOnKey = feature.dependsOn
@@ -381,10 +387,11 @@ private fun FeatureEntryCompact(
             ) {
                 FeatureConfig(
                     featureKey = feature.key,
-                    packageName = packageName
+                    packageName = packageName,
+                    onNavigate = onNavigate
                 )
             }
-            
+
             if (!isLast) {
                 Box(
                     modifier = Modifier
@@ -404,6 +411,7 @@ private fun FeatureEntry(
     feature: HookFeature,
     featureStates: Map<String, MutableState<Boolean>>,
     context: Context,
+    onNavigate: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val dependsOnKey = feature.dependsOn
@@ -450,7 +458,8 @@ private fun FeatureEntry(
             ) {
                 FeatureConfig(
                     featureKey = feature.key,
-                    packageName = packageName
+                    packageName = packageName,
+                    onNavigate = onNavigate
                 )
             }
         }

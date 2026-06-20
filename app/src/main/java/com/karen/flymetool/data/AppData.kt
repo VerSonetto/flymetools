@@ -52,7 +52,9 @@ object AppData {
                         description = f.optString("description", ""),
                         dependsOn = f.optString("dependsOn").takeIf { it.isNotEmpty() },
                         visibleUnless = f.optString("visibleUnless").takeIf { it.isNotEmpty() },
-                        group = f.optString("group").takeIf { it.isNotEmpty() }
+                        group = f.optString("group").takeIf { it.isNotEmpty() },
+                        requiresValues = f.optBoolean("requiresValues", false),
+                        minVersion = f.optString("minVersion").takeIf { it.isNotEmpty() }
                     )
                 )
             }
@@ -78,25 +80,23 @@ object AppData {
     }
 
     fun getFeatures(packageName: String): List<HookFeature> {
-        return cached?.features?.get(packageName) ?: emptyList()
+        val current = FlymeVersionUtils.getFullVersion()
+        return cached?.features?.get(packageName)
+            ?.filter { f -> f.minVersion == null || current.startsWith(f.minVersion) }
+            ?: emptyList()
     }
 
     fun getFeatureGroups(packageName: String): List<String> {
-        return cached?.features?.get(packageName)
-            ?.mapNotNull { it.group }
-            ?.distinct()
-            ?: emptyList()
+        return getFeatures(packageName)
+            .mapNotNull { it.group }
+            .distinct()
     }
 
     fun getFeaturesByGroup(packageName: String, group: String): List<HookFeature> {
-        return cached?.features?.get(packageName)
-            ?.filter { it.group == group }
-            ?: emptyList()
+        return getFeatures(packageName).filter { it.group == group }
     }
 
     fun getUngroupedFeatures(packageName: String): List<HookFeature> {
-        return cached?.features?.get(packageName)
-            ?.filter { it.group == null }
-            ?: emptyList()
+        return getFeatures(packageName).filter { it.group == null }
     }
 }

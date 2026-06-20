@@ -129,6 +129,14 @@
           "label": "自定义运营商名称",
           "description": "自定义锁屏、通知中心和状态栏显示的运营商名称",
           "group": "状态栏"
+        },
+        {
+          "key": "live_notification_force",
+          "label": "强制实况通知",
+          "description": "让任意应用的通知以胶囊形式显示在状态栏",
+          "group": "通知",
+          "requiresValues": true,
+          "minVersion": "Flyme 12"
         }
       ]
     },

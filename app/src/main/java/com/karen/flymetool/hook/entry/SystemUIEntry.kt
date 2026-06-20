@@ -22,6 +22,7 @@ import com.karen.flymetool.hook.feature.systemui.StatusBarClockHook
 import com.karen.flymetool.hook.feature.systemui.StatusBarClockSecondsHook
 import com.karen.flymetool.hook.feature.systemui.TickerClickHook
 import com.karen.flymetool.hook.feature.systemui.CustomCarrierNameHook
+import com.karen.flymetool.hook.feature.systemui.LiveNotificationForceHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
 object SystemUIEntry : HookEntry {
@@ -48,6 +49,7 @@ object SystemUIEntry : HookEntry {
         HideMediaAppIconBgHook,
         HideGestureBarHook,
         CustomCarrierNameHook,
+        LiveNotificationForceHook,
     )
 
     override fun initHooks(lpparam: XC_LoadPackage.LoadPackageParam) {

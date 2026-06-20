@@ -1,8 +1,7 @@
 package com.karen.flymetool.hook.feature.settings
 
-import android.content.Context
-import android.content.pm.ApplicationInfo
 import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
@@ -31,62 +30,36 @@ object ForceNotificationEnableHook : FeatureHook {
 
     private fun hookEnableSwitch(lpparam: XC_LoadPackage.LoadPackageParam) {
         val clazz = XposedHelpers.findClass(NOTIFICATION_BACKEND, lpparam.classLoader)
-
-        XposedHelpers.findAndHookMethod(
-            clazz,
-            "enableSwitch",
-            Context::class.java,
-            ApplicationInfo::class.java,
-            object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    param.result = true
-                    Logger.d(HOOK_NAME, "enableSwitch forced to true")
-                }
+        XposedBridge.hookAllMethods(clazz, "enableSwitch", object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                param.result = true
             }
-        )
-
+        })
         Logger.i(HOOK_NAME, "Hooked enableSwitch")
     }
 
     private fun hookRecordCanBeBlocked(lpparam: XC_LoadPackage.LoadPackageParam) {
         val clazz = XposedHelpers.findClass(NOTIFICATION_BACKEND, lpparam.classLoader)
-        val appRowClass = XposedHelpers.findClass("com.android.settings.notification.NotificationBackend\$AppRow", lpparam.classLoader)
-
-        XposedHelpers.findAndHookMethod(
-            clazz,
-            "recordCanBeBlocked",
-            android.content.pm.PackageInfo::class.java,
-            appRowClass,
-            object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val appRow = param.args[1]
+        XposedBridge.hookAllMethods(clazz, "recordCanBeBlocked", object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                val appRow = param.args.lastOrNull() ?: return
+                try {
                     XposedHelpers.setBooleanField(appRow, "lockedImportance", false)
                     XposedHelpers.setBooleanField(appRow, "permissionStateLocked", false)
                     XposedHelpers.setBooleanField(appRow, "systemApp", false)
-                    Logger.d(HOOK_NAME, "recordCanBeBlocked: unlocked importance and permission")
-                }
+                } catch (_: Throwable) {}
             }
-        )
-
+        })
         Logger.i(HOOK_NAME, "Hooked recordCanBeBlocked")
     }
 
     private fun hookGetNotificationsBanned(lpparam: XC_LoadPackage.LoadPackageParam) {
         val clazz = XposedHelpers.findClass(NOTIFICATION_BACKEND, lpparam.classLoader)
-
-        XposedHelpers.findAndHookMethod(
-            clazz,
-            "getNotificationsBanned",
-            String::class.java,
-            Int::class.java,
-            object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    param.result = false
-                    Logger.d(HOOK_NAME, "getNotificationsBanned forced to false for ${param.args[0]}")
-                }
+        XposedBridge.hookAllMethods(clazz, "getNotificationsBanned", object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                param.result = false
             }
-        )
-
+        })
         Logger.i(HOOK_NAME, "Hooked getNotificationsBanned")
     }
 }
