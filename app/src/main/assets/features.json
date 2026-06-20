@@ -291,6 +291,22 @@
           "visibleUnless": "disable_update_check"
         }
       ]
+    },
+    {
+      "package": "com.meizu.battery",
+      "name": "电池",
+      "features": [
+        {
+          "key": "health_monitor",
+          "label": "电池健康监控",
+          "description": "在电池健康页面显示电池健康百分比和充电循环次数"
+        },
+        {
+          "key": "custom_charge_limit",
+          "label": "自定义充电上限",
+          "description": "将充电上限选择替换为自定义数值输入（50-100%）"
+        }
+      ]
     }
   ]
 }

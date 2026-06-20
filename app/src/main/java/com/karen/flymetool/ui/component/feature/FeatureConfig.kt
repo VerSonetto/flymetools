@@ -26,5 +26,6 @@ fun FeatureConfig(
         "folder_open_blur" -> FolderOpenBlurConfig(packageName, featureKey)
         "custom_carrier_name" -> CustomCarrierNameConfig(packageName, featureKey)
         "live_notification_force" -> LiveNotificationForceConfig(packageName, featureKey, onNavigate)
+        "custom_charge_limit" -> ChargeLimitConfig(packageName, featureKey)
     }
 }

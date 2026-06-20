@@ -2,6 +2,7 @@ package com.karen.flymetool
 
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.entry.AndroidEntry
+import com.karen.flymetool.hook.entry.BatteryEntry
 import com.karen.flymetool.hook.entry.CustomizeCenterEntry
 import com.karen.flymetool.hook.entry.HookEntry
 import com.karen.flymetool.hook.entry.LauncherEntry
@@ -33,7 +34,8 @@ class XposedInit : IXposedHookLoadPackage {
             ShareEntry,
             SuggestionEntry,
             PickerEntry,
-            FlymeUpdateEntry
+            FlymeUpdateEntry,
+            BatteryEntry
         )
 
         private val ENTRY_MAP: Map<String, HookEntry> = ENTRIES.associateBy { it.targetPackage }
