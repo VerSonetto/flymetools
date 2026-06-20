@@ -475,6 +475,13 @@ private fun EmptyState(
 
 private fun restartScopedApp(context: android.content.Context, app: ScopedApp) {
     Thread {
+        if (!RootUtils.isRootGranted()) {
+            (context as? android.app.Activity)?.runOnUiThread {
+                Toast.makeText(context, "未授予 Root 权限，无法重启", Toast.LENGTH_SHORT).show()
+            }
+            return@Thread
+        }
+
         if (app.packageName == "android") {
             val result = RootUtils.reboot()
             (context as? android.app.Activity)?.runOnUiThread {

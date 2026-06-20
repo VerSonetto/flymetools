@@ -19,6 +19,10 @@ object RootUtils {
         }
     }
 
+    fun isRootGranted(): Boolean {
+        return runRootCommand("id")
+    }
+
     fun killPackage(packageName: String): Boolean {
         return runRootCommand("pid=\$(pidof $packageName); if [ -n \"\$pid\" ]; then kill -9 \$pid; fi")
     }

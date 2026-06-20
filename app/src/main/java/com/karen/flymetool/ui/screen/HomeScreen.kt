@@ -414,6 +414,13 @@ private fun restartScopedApps(context: android.content.Context, apps: List<Scope
     if (apps.isEmpty()) return
 
     Thread {
+        if (!RootUtils.isRootGranted()) {
+            (context as? android.app.Activity)?.runOnUiThread {
+                Toast.makeText(context, "未授予 Root 权限，无法重启", Toast.LENGTH_SHORT).show()
+            }
+            return@Thread
+        }
+
         if (apps.any { it.packageName == "android" }) {
             val result = RootUtils.reboot()
             (context as? android.app.Activity)?.runOnUiThread {
