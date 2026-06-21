@@ -8,13 +8,14 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.util.FlymeVersionUtils
+import java.util.WeakHashMap
 
 object FolderBlurHook : FeatureHook {
 
     private const val TAG = "FolderBlur"
 
-    private var iconBlurRadius = 30
-    private var openBlurStrength = 0.8f
+    private val maxBlurRadiusMap = WeakHashMap<Any, Int>()
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (lpparam.packageName != "com.meizu.flyme.launcher") return
@@ -30,22 +31,100 @@ object FolderBlurHook : FeatureHook {
             XposedPrefs.getFeatureValue(lpparam, packageName, "folder_open_blur", 80) / 100f
         } else -1f
 
-        mount(lpparam, iconRadius, openStrength)
-    }
-
-    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, iconRadius: Int, openStrength: Float) {
-        iconBlurRadius = iconRadius
-        openBlurStrength = openStrength
-
-        if (iconRadius >= 0) {
-            hookIconBlurRadius(lpparam, iconRadius)
-        }
-        if (openStrength >= 0f) {
-            hookOpenBlurStrength(lpparam, openStrength)
+        when {
+            FlymeVersionUtils.isFlyme12() -> hookFlyme12(lpparam, iconRadius, openStrength)
+            else -> hookLegacy(lpparam, iconRadius, openStrength)
         }
     }
 
-    private fun hookIconBlurRadius(lpparam: XC_LoadPackage.LoadPackageParam, radius: Int) {
+    private fun hookFlyme12(lpparam: XC_LoadPackage.LoadPackageParam, iconRadius: Int, openStrength: Float) {
+        if (iconRadius >= 0) hookIconBlurRadius12(lpparam, iconRadius)
+        if (openStrength >= 0f) hookOpenBlurStrength12(lpparam, openStrength)
+    }
+
+    private fun hookLegacy(lpparam: XC_LoadPackage.LoadPackageParam, iconRadius: Int, openStrength: Float) {
+        if (iconRadius >= 0) hookIconBlurRadiusLegacy(lpparam, iconRadius)
+        if (openStrength >= 0f) hookOpenBlurStrengthLegacy(lpparam, openStrength)
+    }
+
+    // Flyme 12: setBlurRadius 只在创建时调一次，后续帧直接读 mBlurRadius 字段
+    // 必须 afterHook 里把字段也改掉
+    private fun hookIconBlurRadius12(lpparam: XC_LoadPackage.LoadPackageParam, radius: Int) {
+        try {
+            val clazz = XposedHelpers.findClass(
+                "com.meizu.flyme.launcher.utils.BackgroundBlurDrawable",
+                lpparam.classLoader
+            )
+            XposedHelpers.findAndHookMethod(clazz, "setBlurRadius", Int::class.javaPrimitiveType,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        XposedHelpers.setIntField(param.thisObject, "mBlurRadius", radius)
+                    }
+                }
+            )
+            Logger.i(TAG, "图标毛玻璃半径(Flyme12): $radius")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "图标毛玻璃半径Hook失败(Flyme12)", e)
+        }
+    }
+
+    // Flyme 12: 背景模糊强度最终由 BaseDepthController.applyDepthAndBlur 里的 mMaxBlurRadius 决定
+    // folderDepth 动画到 0.8 时通常已被 clamp 到最大，直接改动画目标值看不出来
+    // 改为在 folderDepth > 0 期间临时缩放 mMaxBlurRadius
+    private fun hookOpenBlurStrength12(lpparam: XC_LoadPackage.LoadPackageParam, strength: Float) {
+        try {
+            val controllerClass = XposedHelpers.findClass(
+                "com.android.quickstep.util.BaseDepthController",
+                lpparam.classLoader
+            )
+            val launcherClass = XposedHelpers.findClass(
+                "com.android.launcher3.Launcher",
+                lpparam.classLoader
+            )
+
+            XposedHelpers.findAndHookConstructor(
+                controllerClass,
+                launcherClass,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val controller = param.thisObject
+                        maxBlurRadiusMap[controller] = XposedHelpers.getIntField(controller, "mMaxBlurRadius")
+                    }
+                }
+            )
+
+            XposedHelpers.findAndHookMethod(
+                controllerClass,
+                "applyDepthAndBlur",
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val controller = param.thisObject
+                        val folderDepth = XposedHelpers.callMethod(
+                            XposedHelpers.getObjectField(controller, "folderDepth"),
+                            "getValue"
+                        ) as? Float ?: return
+                        if (folderDepth <= 0f) return
+
+                        val original = maxBlurRadiusMap[controller] ?: return
+                        val scale = strength / 0.8f
+                        XposedHelpers.setIntField(controller, "mMaxBlurRadius", (original * scale).toInt())
+                    }
+
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val controller = param.thisObject
+                        val original = maxBlurRadiusMap[controller] ?: return
+                        XposedHelpers.setIntField(controller, "mMaxBlurRadius", original)
+                    }
+                }
+            )
+            Logger.i(TAG, "文件夹展开模糊强度(Flyme12): $strength")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "文件夹展开模糊强度Hook失败(Flyme12)", e)
+        }
+    }
+
+    // 旧版: beforeHookedMethod 改参数即可
+    private fun hookIconBlurRadiusLegacy(lpparam: XC_LoadPackage.LoadPackageParam, radius: Int) {
         try {
             val clazz = XposedHelpers.findClass(
                 "com.meizu.flyme.launcher.utils.BackgroundBlurDrawable",
@@ -64,7 +143,8 @@ object FolderBlurHook : FeatureHook {
         }
     }
 
-    private fun hookOpenBlurStrength(lpparam: XC_LoadPackage.LoadPackageParam, strength: Float) {
+    // 旧版: Property 名 "blur"
+    private fun hookOpenBlurStrengthLegacy(lpparam: XC_LoadPackage.LoadPackageParam, strength: Float) {
         try {
             XposedHelpers.findAndHookMethod(
                 ObjectAnimator::class.java, "ofFloat",
