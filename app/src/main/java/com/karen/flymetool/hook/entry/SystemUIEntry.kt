@@ -22,6 +22,7 @@ import com.karen.flymetool.hook.feature.systemui.StatusBarClockHook
 import com.karen.flymetool.hook.feature.systemui.StatusBarClockSecondsHook
 import com.karen.flymetool.hook.feature.systemui.TickerClickHook
 import com.karen.flymetool.hook.feature.systemui.CustomCarrierNameHook
+import com.karen.flymetool.hook.feature.systemui.MediaCardRadiusHook
 import com.karen.flymetool.hook.feature.systemui.LiveNotificationForceHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
@@ -47,6 +48,7 @@ object SystemUIEntry : HookEntry {
         TickerClickHook,
         NotificationManageHook,
         HideMediaAppIconBgHook,
+        MediaCardRadiusHook,
         HideGestureBarHook,
         CustomCarrierNameHook,
         LiveNotificationForceHook,

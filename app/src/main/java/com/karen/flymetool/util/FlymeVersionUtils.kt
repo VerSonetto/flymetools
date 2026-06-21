@@ -44,6 +44,7 @@ object FlymeVersionUtils {
     private val scopeVisibleOn: Map<String, List<String>> = mapOf(
         "com.meizu.share" to listOf("Flyme 10"),
         "android" to listOf("Flyme 10"),
+        "com.meizu.battery" to listOf("Flyme 12"),
     )
 
     fun isScopeAvailable(packageName: String): Boolean {

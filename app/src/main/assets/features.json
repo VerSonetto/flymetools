@@ -113,6 +113,12 @@
           "group": "通知"
         },
         {
+          "key": "media_card_radius",
+          "label": "媒体播放器卡片圆角",
+          "description": "自定义通知中心媒体播放器卡片的圆角大小",
+          "group": "通知"
+        },
+        {
           "key": "hide_media_app_icon_bg",
           "label": "隐藏媒体播放器应用图标背景",
           "description": "隐藏媒体播放器卡片上应用图标的白色背景",
