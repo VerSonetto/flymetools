@@ -131,6 +131,12 @@
           "group": "其他"
         },
         {
+          "key": "background_blur_strength",
+          "label": "背景模糊强度",
+          "description": "自定义通知面板和控制中心背景模糊的强度",
+          "group": "其他"
+        },
+        {
           "key": "custom_carrier_name",
           "label": "自定义运营商名称",
           "description": "自定义锁屏、通知中心和状态栏显示的运营商名称",
