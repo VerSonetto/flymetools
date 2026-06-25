@@ -143,12 +143,10 @@
           "group": "状态栏"
         },
         {
-          "key": "live_notification_force",
+          "key": "force_live_notification",
           "label": "强制实况通知",
-          "description": "让任意应用的通知以胶囊形式显示在状态栏",
-          "group": "通知",
-          "requiresValues": true,
-          "minVersion": "Flyme 12"
+          "description": "选择应用强制以实况通知胶囊显示在状态栏，点击胶囊展开通知卡片（含操作按钮）",
+          "group": "通知"
         }
       ]
     },

@@ -23,8 +23,8 @@ import com.karen.flymetool.hook.feature.systemui.StatusBarClockSecondsHook
 import com.karen.flymetool.hook.feature.systemui.TickerClickHook
 import com.karen.flymetool.hook.feature.systemui.CustomCarrierNameHook
 import com.karen.flymetool.hook.feature.systemui.MediaCardRadiusHook
-import com.karen.flymetool.hook.feature.systemui.LiveNotificationForceHook
 import com.karen.flymetool.hook.feature.systemui.BackgroundBlurStrengthHook
+import com.karen.flymetool.hook.feature.systemui.ForceLiveNotificationHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
 object SystemUIEntry : HookEntry {
@@ -52,8 +52,8 @@ object SystemUIEntry : HookEntry {
         MediaCardRadiusHook,
         HideGestureBarHook,
         CustomCarrierNameHook,
-        LiveNotificationForceHook,
         BackgroundBlurStrengthHook,
+        ForceLiveNotificationHook,
     )
 
     override fun initHooks(lpparam: XC_LoadPackage.LoadPackageParam) {

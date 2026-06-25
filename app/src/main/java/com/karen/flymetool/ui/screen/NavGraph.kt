@@ -18,8 +18,8 @@ sealed class Screen(val route: String) {
     data object AppDetail : Screen("app_detail/{packageName}") {
         fun createRoute(packageName: String) = "app_detail/$packageName"
     }
-    data object LiveNotifAppSelect : Screen("live_notif_app_select/{packageName}") {
-        fun createRoute(packageName: String) = "live_notif_app_select/$packageName"
+    data object AppSelect : Screen("app_select/{packageName}/{featureKey}") {
+        fun createRoute(packageName: String, featureKey: String) = "app_select/$packageName/$featureKey"
     }
 }
 
@@ -90,7 +90,7 @@ fun AppNavHost(
             )
         }
         composable(
-            route = Screen.LiveNotifAppSelect.route,
+            route = Screen.AppSelect.route,
             enterTransition = {
                 slideIntoContainer(
                     towards = AnimatedContentTransitionScope.SlideDirection.Left,
@@ -111,9 +111,10 @@ fun AppNavHost(
             }
         ) { backStackEntry ->
             val packageName = backStackEntry.arguments?.getString("packageName") ?: return@composable
-            LiveNotificationForceAppSelectScreen(
+            val featureKey = backStackEntry.arguments?.getString("featureKey") ?: return@composable
+            AppSelectScreen(
                 packageName = packageName,
-                featureKey = "live_notification_force",
+                featureKey = featureKey,
                 onBack = { navController.popBackStack() }
             )
         }
