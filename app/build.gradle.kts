@@ -60,6 +60,10 @@ android {
     namespace = "com.karen.flymetool"
     compileSdk = 36
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     sourceSets["main"].apply {
         assets.srcDir(generatedScopeDir)
         res.srcDir(generatedScopeResDir)

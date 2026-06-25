@@ -62,6 +62,12 @@ import com.karen.flymetool.data.PrefsHelper
 import com.karen.flymetool.data.ScopedApp
 import com.karen.flymetool.ui.component.AppIcon
 import com.karen.flymetool.util.RootUtils
+import com.karen.flymetool.util.UpdateManager
+import com.karen.flymetool.util.UpdateInfo
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,10 +78,27 @@ fun HomeScreen(
     val apps = AppData.getScopedApps(context)
     var showRestartDialog by remember { mutableStateOf(false) }
     var showIntroDialog by remember { mutableStateOf(false) }
+    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+    var checkingUpdate by remember { mutableStateOf(true) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    var downloading by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf(0) }
+    var downloadError by remember { mutableStateOf<String?>(null) }
+    var downloadedFile by remember { mutableStateOf<File?>(null) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         if (!PrefsHelper.isIntroShown(context)) {
             showIntroDialog = true
+        }
+
+        val info = UpdateManager.check(context)
+        checkingUpdate = false
+        if (info != null) {
+            updateInfo = info
+            showUpdateDialog = true
+        } else {
+            UpdateManager.cleanup(context)
         }
     }
 
@@ -104,7 +127,11 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            HeaderSection()
+            HeaderSection(
+                updateInfo = updateInfo,
+                checkingUpdate = checkingUpdate,
+                onCheckUpdate = { showUpdateDialog = true },
+            )
 
             LazyColumn(
                 modifier = Modifier
@@ -126,6 +153,44 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    if (showUpdateDialog && updateInfo != null) {
+        UpdateDialog(
+            info = updateInfo!!,
+            downloading = downloading,
+            progress = downloadProgress,
+            error = downloadError,
+            onDismiss = { showUpdateDialog = false },
+            onDownload = {
+                downloading = true
+                downloadError = null
+                scope.launch {
+                    try {
+                        val file = UpdateManager.download(
+                            context, updateInfo!!.downloadUrl
+                        ) { pct -> downloadProgress = pct }
+                        downloading = false
+                        showUpdateDialog = false
+                        downloadedFile = file
+                    } catch (e: Exception) {
+                        downloadError = e.message
+                        downloading = false
+                    }
+                }
+            },
+        )
+    }
+
+    if (downloadedFile != null) {
+        InstallConfirmDialog(
+            fileName = downloadedFile!!.name,
+            onInstall = {
+                UpdateManager.install(context, downloadedFile!!)
+                downloadedFile = null
+            },
+            onDismiss = { downloadedFile = null },
+        )
     }
 
     if (showRestartDialog) {
@@ -316,7 +381,129 @@ private fun IntroDialog(
 }
 
 @Composable
-private fun HeaderSection() {
+private fun UpdateDialog(
+    info: UpdateInfo,
+    downloading: Boolean,
+    progress: Int,
+    error: String?,
+    onDismiss: () -> Unit,
+    onDownload: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "发现新版本 v${info.latestVersion}",
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        },
+        text = {
+            Column {
+                if (info.releaseNotes.isNotBlank()) {
+                    Text(
+                        text = info.releaseNotes,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (info.apkSize > 0) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "大小: ${info.apkSize / 1024 / 1024} MB",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (downloading) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    LinearProgressIndicator(
+                        progress = { progress / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "下载中 $progress%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (error != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "下载失败: $error",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (error != null) {
+                TextButton(onClick = onDownload) {
+                    Text("重试", color = MaterialTheme.colorScheme.primary)
+                }
+            } else if (!downloading) {
+                TextButton(onClick = onDownload) {
+                    Text("下载更新", color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        },
+        dismissButton = {
+            if (!downloading) {
+                TextButton(onClick = onDismiss) {
+                    Text("稍后再说", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
+        shape = RoundedCornerShape(20.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+    )
+}
+
+@Composable
+private fun InstallConfirmDialog(
+    fileName: String,
+    onInstall: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "下载完成",
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        },
+        text = {
+            Text(
+                text = "安装包已下载完毕，是否立即安装？",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onInstall) {
+                Text("安装", color = MaterialTheme.colorScheme.primary)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        shape = RoundedCornerShape(20.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+    )
+}
+
+@Composable
+private fun HeaderSection(
+    updateInfo: UpdateInfo?,
+    checkingUpdate: Boolean,
+    onCheckUpdate: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -350,6 +537,39 @@ private fun HeaderSection() {
                     )
                 )
         )
+    }
+
+    if (updateInfo != null) {
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f))
+                .clickable(onClick = onCheckUpdate)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "发现新版本 v${updateInfo.latestVersion}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "点击更新",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+            )
+        }
     }
 }
 
