@@ -11,6 +11,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.util.FlymeVersionUtils
 
 object ForceLiveNotificationHook : FeatureHook {
 
@@ -19,6 +20,7 @@ object ForceLiveNotificationHook : FeatureHook {
     private var systemColor = -1
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+        if (!FlymeVersionUtils.isFlyme12()) return
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "force_live_notification")) return
 
         val targetApps = XposedPrefs.getFeatureStringSet(

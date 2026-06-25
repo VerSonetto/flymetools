@@ -10,70 +10,33 @@ object AppData {
     private const val ASSET_FILE = "features.json"
 
     @Volatile
-    private var cached: CachedData? = null
+    private var cachedApps: List<ScopedApp>? = null
 
-    private data class CachedData(
-        val apps: List<ScopedApp>,
-        val features: Map<String, List<HookFeature>>
-    )
-
-    private fun load(context: Context): CachedData {
-        cached?.let { return it }
+    private fun loadApps(context: Context): List<ScopedApp> {
+        cachedApps?.let { return it }
         synchronized(this) {
-            cached?.let { return it }
+            cachedApps?.let { return it }
             val text = context.assets.open(ASSET_FILE).bufferedReader().use { it.readText() }
-            val parsed = parse(text)
-            cached = parsed
-            return parsed
-        }
-    }
-
-    private fun parse(text: String): CachedData {
-        val root = JSONObject(text)
-        val appsJson = root.getJSONArray("apps")
-
-        val apps = mutableListOf<ScopedApp>()
-        val features = mutableMapOf<String, List<HookFeature>>()
-
-        for (i in 0 until appsJson.length()) {
-            val appJson = appsJson.getJSONObject(i)
-            val pkg = appJson.getString("package")
-            val name = appJson.getString("name")
-            apps.add(ScopedApp(pkg, name))
-
-            val featuresJson = appJson.optJSONArray("features") ?: continue
-            val list = mutableListOf<HookFeature>()
-            for (j in 0 until featuresJson.length()) {
-                val f = featuresJson.getJSONObject(j)
-                list.add(
-                    HookFeature(
-                        key = f.getString("key"),
-                        label = f.getString("label"),
-                        description = f.optString("description", ""),
-                        dependsOn = f.optString("dependsOn").takeIf { it.isNotEmpty() },
-                        visibleUnless = f.optString("visibleUnless").takeIf { it.isNotEmpty() },
-                        group = f.optString("group").takeIf { it.isNotEmpty() },
-                        requiresValues = f.optBoolean("requiresValues", false),
-                        minVersion = f.optString("minVersion").takeIf { it.isNotEmpty() }
-                    )
-                )
+            val root = JSONObject(text)
+            val appsJson = root.getJSONArray("apps")
+            cachedApps = (0 until appsJson.length()).map { i ->
+                val app = appsJson.getJSONObject(i)
+                ScopedApp(app.getString("package"), app.getString("name"))
             }
-            features[pkg] = list
+            return cachedApps!!
         }
-
-        return CachedData(apps, features)
     }
 
     fun getScopedApps(context: Context): List<ScopedApp> {
         val pm = context.packageManager
-        return load(context).apps.filter { app ->
+        return loadApps(context).filter { app ->
             FlymeVersionUtils.isScopeAvailable(app.packageName)
         }.map { app ->
             try {
                 val info = pm.getApplicationInfo(app.packageName, 0)
                 val label = pm.getApplicationLabel(info).toString()
                 app.copy(name = label)
-            } catch (e: PackageManager.NameNotFoundException) {
+            } catch (_: PackageManager.NameNotFoundException) {
                 app
             }
         }
@@ -81,7 +44,7 @@ object AppData {
 
     fun getFeatures(packageName: String): List<HookFeature> {
         val current = FlymeVersionUtils.getFullVersion()
-        return cached?.features?.get(packageName)
+        return builtInFeatures[packageName]
             ?.filter { f -> f.minVersion == null || current.startsWith(f.minVersion) }
             ?: emptyList()
     }
