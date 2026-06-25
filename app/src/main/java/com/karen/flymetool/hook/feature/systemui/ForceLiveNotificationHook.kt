@@ -110,7 +110,11 @@ object ForceLiveNotificationHook : FeatureHook {
                 "com.flyme.systemui.statusbar.ticker.NotificationTickController",
                 lpparam.classLoader
             )
-            XposedHelpers.findAndHookMethod(clazz, "tick", object : XC_MethodHook() {
+            val entryClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.collection.NotificationEntry",
+                lpparam.classLoader
+            )
+            XposedHelpers.findAndHookMethod(clazz, "tick", entryClass, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val entry = param.args[0] ?: return
                     val sbn = XposedHelpers.callMethod(entry, "getSbn") ?: return
@@ -118,7 +122,7 @@ object ForceLiveNotificationHook : FeatureHook {
                     if (pkg in targetApps) param.result = null
                 }
             })
-            XposedHelpers.findAndHookMethod(clazz, "updateNotificationTicker", object : XC_MethodHook() {
+            XposedHelpers.findAndHookMethod(clazz, "updateNotificationTicker", entryClass, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val entry = param.args[0] ?: return
                     val sbn = XposedHelpers.callMethod(entry, "getSbn") ?: return
@@ -126,7 +130,10 @@ object ForceLiveNotificationHook : FeatureHook {
                     if (pkg in targetApps) param.result = false
                 }
             })
-        } catch (_: Throwable) { }
+            Logger.i(TAG, "Ticker hook registered for NotificationTickController")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "Ticker hook failed", e)
+        }
     }
 
     private fun loadAppIconBitmap(pkg: String): android.graphics.Bitmap? {
