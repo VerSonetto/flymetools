@@ -75,14 +75,29 @@ object TaskCardHook : FeatureHook {
 
     private fun hookBlurIntensity(lpparam: XC_LoadPackage.LoadPackageParam, intensity: Int) {
         try {
-            val clazz = XposedHelpers.findClass(BASE_DEPTH_CONTROLLER_CLASS, lpparam.classLoader)
+            val bdcClass = XposedHelpers.findClass(BASE_DEPTH_CONTROLLER_CLASS, lpparam.classLoader)
+            val transClass = XposedHelpers.findClass("android.view.SurfaceControl\$Transaction", lpparam.classLoader)
+            val scClass = XposedHelpers.findClass("android.view.SurfaceControl", lpparam.classLoader)
 
-            XposedBridge.hookAllConstructors(clazz, object : XC_MethodHook() {
+            // 从 BaseDepthController 实例读取原始 mMaxBlurRadius 作为缩放基准
+            var maxBlur = 180
+            XposedBridge.hookAllConstructors(bdcClass, object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    XposedHelpers.setIntField(param.thisObject, "mMaxBlurRadius", intensity)
-                    Logger.i(TAG, "背景模糊强度Hook完成: mMaxBlurRadius -> $intensity")
+                    maxBlur = XposedHelpers.getIntField(param.thisObject, "mMaxBlurRadius")
                 }
             })
+
+            XposedHelpers.findAndHookMethod(transClass, "setBackgroundBlurRadius",
+                scClass, Int::class.javaPrimitiveType,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val radius = param.args[1] as? Int ?: return
+                        if (radius <= 0) return
+                        val scale = intensity.toFloat() / maxBlur.toFloat()
+                        param.args[1] = (radius * scale).toInt().coerceAtLeast(0)
+                    }
+                })
+            Logger.i(TAG, "背景模糊强度Hook完成: $intensity (基准=$maxBlur)")
         } catch (e: Throwable) {
             Logger.e(TAG, "背景模糊强度Hook失败", e)
         }
