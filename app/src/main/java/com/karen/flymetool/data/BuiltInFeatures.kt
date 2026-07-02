@@ -107,6 +107,9 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
     "com.meizu.flyme.update" to listOf(
         HookFeature("disable_update_check", "禁用更新检查",
             description = "阻止系统更新检查，始终判定为最新版"),
+        HookFeature("force_full_package", "强制全量包",
+            description = "第一次检查获取新版mask id，第二次检查趁机领取新版全量包，配合「抓取更新包链接」使用",
+            minVersion = "Flyme 12"),
         HookFeature("capture_update_link", "抓取更新包链接",
             description = "抓取常规更新检查返回的更新包下载链接",
             visibleUnless = "disable_update_check"),

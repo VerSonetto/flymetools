@@ -14,7 +14,8 @@ object DisableUpdateCheckHook : FeatureHook {
 
     private val BLOCKED_URL_PATTERNS = listOf(
         "sysupgrade",
-        "sysupgradeex"
+        "sysupgradeex",
+        "v4/firmware"
     )
 
     private const val FIRMWARE_CACHE_KEY = "key_check_new_upgrade_firmware_cache"

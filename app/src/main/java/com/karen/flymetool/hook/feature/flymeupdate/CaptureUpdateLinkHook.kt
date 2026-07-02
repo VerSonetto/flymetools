@@ -16,7 +16,10 @@ object CaptureUpdateLinkHook : FeatureHook {
     private const val TARGET_PACKAGE = "com.meizu.flyme.update"
     private const val PROVIDER_AUTHORITY = "com.karen.flymetool.captured_update_provider"
 
-    private const val NORMAL_CHECK_URL_PATTERN = "sysupgrade/v2.0/check"
+    private val CHECK_URL_PATTERNS = listOf(
+        "sysupgrade/v2.0/check",
+        "v4/firmware/check"
+    )
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "capture_update_link")) return
@@ -47,7 +50,7 @@ object CaptureUpdateLinkHook : FeatureHook {
                             null
                         } ?: return
 
-                        if (!url.contains(NORMAL_CHECK_URL_PATTERN, ignoreCase = true)) return
+                        if (!CHECK_URL_PATTERNS.any { url.contains(it, ignoreCase = true) }) return
 
                         Logger.i(TAG, "Detected update check response: $url")
 
