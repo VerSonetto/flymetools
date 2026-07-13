@@ -3,6 +3,7 @@ package com.karen.flymetool.hook.entry
 import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.feature.launcher.FolderBlurHook
+import com.karen.flymetool.hook.feature.launcher.IosStackedRecentsHook
 import com.karen.flymetool.hook.feature.launcher.MemoryDisplayHook
 import com.karen.flymetool.hook.feature.launcher.TaskCardHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
@@ -12,6 +13,7 @@ object LauncherEntry : HookEntry {
 
     private val hooks: List<FeatureHook> = listOf(
         TaskCardHook,
+        IosStackedRecentsHook,
         MemoryDisplayHook,
         FolderBlurHook,
     )

@@ -81,6 +81,8 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
             description = "自定义最近任务卡片的圆角大小"),
         HookFeature("task_blur_intensity", "最近任务模糊强度",
             description = "自定义进入最近任务时背景模糊的强度"),
+        HookFeature("ios_stacked_recents", "iOS 堆叠后台",
+            description = "最近任务卡片改为 iOS 风格堆叠布局（仅列表模式，网格模式不生效）"),
         HookFeature("memory_display", "最近任务显示内存",
             description = "在最近任务界面右上角显示内存占用信息"),
         HookFeature("folder_icon_blur", "文件夹图标毛玻璃",
