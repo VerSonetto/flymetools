@@ -2,6 +2,8 @@ package com.karen.flymetool.hook.feature.launcher
 
 import android.graphics.Canvas
 import android.graphics.Rect
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.util.FloatProperty
 import android.view.View
 import android.view.ViewGroup
@@ -13,6 +15,7 @@ import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import java.lang.reflect.Method
+import kotlin.math.roundToInt
 
 
 object IosStackedRecentsHook : FeatureHook {
@@ -39,6 +42,15 @@ object IosStackedRecentsHook : FeatureHook {
     private val TAG_PLACEHOLDER_SUPPRESSED = Int.MAX_VALUE - 714
     private val TAG_PLACEHOLDER_INSPECTED = Int.MAX_VALUE - 715
     private val TAG_REFRESH_POSTED = Int.MAX_VALUE - 716
+    private val TAG_HEADER_STATE = Int.MAX_VALUE - 717
+
+    private const val HEADER_HIDE_ALPHA_THRESHOLD = 0.02f
+    private const val HEADER_ALPHA_EPSILON = 0.001f
+    private const val ICON_MAX_BLUR_DP = 10f
+    private const val ICON_BLUR_STEPS = 16
+
+    private val HEADER_NOT_FOUND = Any()
+    private val iconBlurEffectCache = mutableMapOf<Int, RenderEffect>()
 
     private val math = IosRecentsMath()
     private var offsetXMethod: Method? = null
@@ -432,6 +444,7 @@ object IosStackedRecentsHook : FeatureHook {
             var remoteDepth = 0
             var runningPrimary: Float? = null
             var runningSecondary: Float? = null
+            val stackedTasks = ArrayList<StackedTaskState>()
             val runningTask = if (recents.getTag(TAG_REMOTE_TARGETS) == true) getRunningTaskView(recents) else null
             for (i in 0 until recents.childCount) {
                 val task = recents.getChildAt(i) ?: continue
@@ -449,6 +462,7 @@ object IosStackedRecentsHook : FeatureHook {
                     -depth.toFloat()
                 }
                 val transform = calculateTransform(recents, task) ?: continue
+                val visualDepth = if (isRunning) 0 else depth
                 task.setTag(TAG_ACTIVE, true)
                 task.setTag(TAG_SCALE, transform.scale)
                 task.rotationY = transform.rotationY
@@ -459,6 +473,7 @@ object IosStackedRecentsHook : FeatureHook {
                 }
                 reapplyNativeOffsets(task)
                 applyScaleMethod?.invoke(task)
+                stackedTasks += StackedTaskState(task, visualDepth)
                 if (isRunning) {
                     val landscape = isLandscape(recents)
                     runningPrimary = if (landscape) task.translationY else task.translationX
@@ -466,6 +481,7 @@ object IosStackedRecentsHook : FeatureHook {
                 }
                 index++
             }
+            applyHeaderOcclusion(stackedTasks, isLandscape(recents))
             if (runningPrimary != null && runningSecondary != null) {
                 syncLiveTile(recents, runningPrimary, runningSecondary)
             }
@@ -577,7 +593,206 @@ object IosStackedRecentsHook : FeatureHook {
             task.translationZ = 0f
             reapplyNativeOffsets(task)
             applyScaleMethod?.invoke(task)
+            resetHeaderOcclusion(task)
         }
+    }
+
+    /**
+     * Flyme 的 task_head 自己承载全屏、手势结束和关闭动画的透明度。这里不覆盖父容器 alpha，
+     * 而是在所有卡片完成本帧变换后，根据相邻前景卡片的真实覆盖比例分别处理标题元素：
+     * 应用名称连续淡入淡出，应用图标保持原透明度并逐级增加模糊。锁标识保持 Flyme 原样。
+     */
+    private fun applyHeaderOcclusion(tasks: List<StackedTaskState>, landscape: Boolean) {
+        val taskBoundsByDepth = tasks.associate { stackedTask ->
+            stackedTask.depth to Rect().also { stackedTask.task.getGlobalVisibleRect(it) }
+        }
+        val headers = tasks.mapNotNull { stackedTask ->
+            resolveHeaderState(stackedTask.task)?.let { state ->
+                prepareHeaderState(state)
+                StackedHeader(
+                    stackedTask = stackedTask,
+                    state = state,
+                )
+            }
+        }
+        if (headers.isEmpty()) return
+
+        headers.forEach { current ->
+            val frontBounds = taskBoundsByDepth[current.stackedTask.depth - 1]
+            current.state.textChildren.forEach { child ->
+                val visibleFraction = if (frontBounds == null) {
+                    1f
+                } else {
+                    calculateHeaderVisibleFraction(child, frontBounds, landscape)
+                }
+                applyHeaderTextAlpha(current.state, child, smoothStep(visibleFraction))
+            }
+            current.state.iconChildren.forEach { child ->
+                val visibleFraction = if (frontBounds == null) {
+                    1f
+                } else {
+                    calculateHeaderVisibleFraction(child, frontBounds, landscape)
+                }
+                applyHeaderIconBlur(current.state, child, smoothStep(visibleFraction))
+            }
+        }
+    }
+
+    private fun prepareHeaderState(state: HeaderState) {
+        restoreHeaderVisibility(state)
+        if (!state.active) {
+            state.baseAlphas.clear()
+            state.lastAppliedAlphas.clear()
+            state.textChildren.forEach { child -> state.baseAlphas[child] = child.alpha }
+            state.active = true
+            return
+        }
+        state.textChildren.forEach { child ->
+            val lastApplied = state.lastAppliedAlphas[child]
+            if (lastApplied != null &&
+                kotlin.math.abs(child.alpha - lastApplied) > HEADER_ALPHA_EPSILON
+            ) {
+                // 分屏等原生流程可能在两次堆叠刷新之间更新子节点 alpha，保留它作为新基线。
+                state.baseAlphas[child] = child.alpha
+            }
+        }
+    }
+
+    private fun calculateHeaderVisibleFraction(
+        child: View,
+        frontTaskBounds: Rect,
+        landscape: Boolean,
+    ): Float {
+        val childBounds = Rect().also { child.getGlobalVisibleRect(it) }
+        val secondaryOverlaps = if (landscape) {
+            childBounds.right > frontTaskBounds.left && childBounds.left < frontTaskBounds.right
+        } else {
+            childBounds.bottom > frontTaskBounds.top && childBounds.top < frontTaskBounds.bottom
+        }
+        if (!secondaryOverlaps) return 1f
+
+        val childStart = if (landscape) childBounds.top else childBounds.left
+        val childEnd = if (landscape) childBounds.bottom else childBounds.right
+        val frontStart = if (landscape) frontTaskBounds.top else frontTaskBounds.left
+        val frontEnd = if (landscape) frontTaskBounds.bottom else frontTaskBounds.right
+        val childSize = (childEnd - childStart).coerceAtLeast(1)
+        val coveredSize = (minOf(childEnd, frontEnd) - maxOf(childStart, frontStart)).coerceAtLeast(0)
+        return (1f - coveredSize.toFloat() / childSize).coerceIn(0f, 1f)
+    }
+
+    private fun smoothStep(value: Float): Float {
+        val bounded = value.coerceIn(0f, 1f)
+        return bounded * bounded * (3f - 2f * bounded)
+    }
+
+    private fun applyHeaderTextAlpha(state: HeaderState, child: View, occlusionAlpha: Float) {
+        val applied = (state.baseAlphas[child] ?: child.alpha) * occlusionAlpha
+        if (kotlin.math.abs(child.alpha - applied) > HEADER_ALPHA_EPSILON) {
+            child.alpha = applied
+        }
+        state.lastAppliedAlphas[child] = applied
+
+        if (occlusionAlpha <= HEADER_HIDE_ALPHA_THRESHOLD) {
+            if (child.visibility == View.VISIBLE) {
+                child.visibility = View.INVISIBLE
+                state.hiddenByOcclusion += child
+            }
+        }
+    }
+
+    private fun applyHeaderIconBlur(state: HeaderState, child: View, visibleFraction: Float) {
+        val blurStep = ((1f - visibleFraction.coerceIn(0f, 1f)) * ICON_BLUR_STEPS)
+            .roundToInt()
+            .coerceIn(0, ICON_BLUR_STEPS)
+        if (state.iconBlurSteps[child] == blurStep) return
+
+        if (blurStep == 0) {
+            child.setRenderEffect(null)
+        } else {
+            val radiusPx = ICON_MAX_BLUR_DP * child.resources.displayMetrics.density *
+                blurStep / ICON_BLUR_STEPS
+            val radiusKey = (radiusPx * 10f).roundToInt().coerceAtLeast(1)
+            val effect = iconBlurEffectCache.getOrPut(radiusKey) {
+                val cachedRadius = radiusKey / 10f
+                RenderEffect.createBlurEffect(
+                    cachedRadius,
+                    cachedRadius,
+                    // 图标 View 没有小米整块 Header 那样的外围留白。CLAMP 会把边缘像素
+                    // 复制到矩形边界，形成一块方形色斑；DECAL 让边缘向透明色自然衰减。
+                    Shader.TileMode.DECAL,
+                )
+            }
+            child.setRenderEffect(effect)
+        }
+        state.iconBlurSteps[child] = blurStep
+    }
+
+    private fun resetHeaderOcclusion(task: View) {
+        val state = task.getTag(TAG_HEADER_STATE) as? HeaderState ?: return
+        if (!state.active && state.hiddenByOcclusion.isEmpty() && state.iconBlurSteps.isEmpty()) return
+
+        state.textChildren.forEach { child ->
+            val lastApplied = state.lastAppliedAlphas[child]
+            if (lastApplied != null &&
+                kotlin.math.abs(child.alpha - lastApplied) > HEADER_ALPHA_EPSILON
+            ) {
+                state.baseAlphas[child] = child.alpha
+            }
+            val baseAlpha = state.baseAlphas[child] ?: 1f
+            if (kotlin.math.abs(child.alpha - baseAlpha) > HEADER_ALPHA_EPSILON) {
+                child.alpha = baseAlpha
+            }
+        }
+        restoreHeaderVisibility(state)
+        state.iconChildren.forEach { child -> child.setRenderEffect(null) }
+        state.baseAlphas.clear()
+        state.lastAppliedAlphas.clear()
+        state.iconBlurSteps.clear()
+        state.active = false
+    }
+
+    /** 只依赖稳定资源 ID 与视图结构定位普通/分组任务标题栏。 */
+    private fun resolveHeaderState(task: View): HeaderState? {
+        when (val cached = task.getTag(TAG_HEADER_STATE)) {
+            is HeaderState -> return cached
+            HEADER_NOT_FOUND -> return null
+        }
+
+        val packageName = task.context.packageName
+        val resources = task.resources
+        val taskHeadId = resources.getIdentifier("task_head", "id", packageName)
+        val iconId = resources.getIdentifier("icon", "id", packageName)
+        val bottomRightIconId = resources.getIdentifier("bottomRight_icon", "id", packageName)
+        val appNameId = resources.getIdentifier("app_name", "id", packageName)
+        if (taskHeadId == 0 || iconId == 0) {
+            task.setTag(TAG_HEADER_STATE, HEADER_NOT_FOUND)
+            return null
+        }
+
+        val header = task.findViewById<View>(taskHeadId) as? ViewGroup
+        if (header == null) {
+            task.setTag(TAG_HEADER_STATE, HEADER_NOT_FOUND)
+            return null
+        }
+        val children = List(header.childCount) { header.getChildAt(it) }
+        if (children.none { it.id == iconId }) {
+            task.setTag(TAG_HEADER_STATE, HEADER_NOT_FOUND)
+            return null
+        }
+        val iconIds = setOf(iconId, bottomRightIconId).filter { it != 0 }.toSet()
+        return HeaderState(
+            textChildren = children.filter { it.id == appNameId },
+            iconChildren = children.filter { it.id in iconIds },
+        ).also { task.setTag(TAG_HEADER_STATE, it) }
+    }
+
+    private fun restoreHeaderVisibility(state: HeaderState) {
+        state.hiddenByOcclusion.forEach { child ->
+            if (child.visibility == View.INVISIBLE) {
+                child.visibility = View.VISIBLE
+            }
+        }
+        state.hiddenByOcclusion.clear()
     }
 
     private fun isLandscape(recents: ViewGroup): Boolean = try {
@@ -690,6 +905,26 @@ object IosStackedRecentsHook : FeatureHook {
         val scale: Float,
         val rotationY: Float,
         val progress: Float,
+    )
+
+    private data class HeaderState(
+        val textChildren: List<View>,
+        val iconChildren: List<View>,
+        val baseAlphas: MutableMap<View, Float> = mutableMapOf(),
+        val lastAppliedAlphas: MutableMap<View, Float> = mutableMapOf(),
+        val iconBlurSteps: MutableMap<View, Int> = mutableMapOf(),
+        val hiddenByOcclusion: MutableSet<View> = mutableSetOf(),
+        var active: Boolean = false,
+    )
+
+    private data class StackedTaskState(
+        val task: View,
+        val depth: Int,
+    )
+
+    private data class StackedHeader(
+        val stackedTask: StackedTaskState,
+        val state: HeaderState,
     )
 
     // --- cubic spline math (from Reverse-FlymeLauncher IosRecentsMath) ---

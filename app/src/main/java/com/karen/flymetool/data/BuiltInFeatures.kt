@@ -49,8 +49,6 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
             group = "通知", minVersion = "Flyme 12"),
         HookFeature("hide_gesture_bar", "隐藏底部手势条",
             description = "隐藏底部导航栏的手势指示条", group = "界面"),
-        HookFeature("background_blur_strength", "背景模糊强度",
-            description = "自定义控制中心背景模糊的强度", group = "界面"),
     ),
     "com.android.settings" to listOf(
         HookFeature("never_lock_screen", "永不锁屏",
