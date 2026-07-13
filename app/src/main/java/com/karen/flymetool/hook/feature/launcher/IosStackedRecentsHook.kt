@@ -185,6 +185,7 @@ object IosStackedRecentsHook : FeatureHook {
                 recents.setTag(TAG_REMOTE_TARGETS, true)
                 recents.setTag(TAG_PAGE_ANIMATION_SEEN, false)
                 recents.setTag(TAG_PAGE_PROGRESS, 0f)
+                mergeTransitionTargetIds(recents, param.args[1])
             }
 
             override fun afterHookedMethod(param: MethodHookParam) {
@@ -201,6 +202,7 @@ object IosStackedRecentsHook : FeatureHook {
                 recents.setTag(TAG_REMOTE_TARGETS, false)
                 recents.setTag(TAG_PAGE_ANIMATION_SEEN, false)
                 recents.setTag(TAG_PAGE_PROGRESS, null)
+                clearTransitionTask(recents, taskCl, refresh = false)
                 refreshStack(recents, taskCl)
             }
         })
@@ -233,34 +235,9 @@ object IosStackedRecentsHook : FeatureHook {
             }
         })
 
-        val animationComplete = recentsCl.declaredMethods.firstOrNull {
-            it.name == "onRecentsAnimationComplete" && it.parameterTypes.isEmpty() && it.returnType == Void.TYPE
-        }
-        if (animationComplete != null) {
-            XposedBridge.hookMethod(animationComplete, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    clearTransitionTask(param.thisObject as ViewGroup, taskCl)
-                }
-            })
-        }
-
-        val showScreenshot = taskCl.declaredMethods.firstOrNull {
-            it.name == "setShouldShowScreenshot" &&
-                it.parameterTypes.isNotEmpty() &&
-                it.parameterTypes[0] == Boolean::class.javaPrimitiveType
-        }
-        if (showScreenshot != null) {
-            XposedBridge.hookMethod(showScreenshot, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (param.args[0] as? Boolean != true) return
-                    val task = param.thisObject as View
-                    val recents = task.parent as? ViewGroup ?: return
-                    if (!isTransitionTask(recents, task)) return
-                    // 缩略图切换会在原方法返回后的绘制帧才完成，下一帧再让它加入堆叠。
-                    recents.post { clearTransitionTask(recents, taskCl) }
-                }
-            })
-        }
+        // 不在 setShouldShowScreenshot()/onRecentsAnimationComplete() 释放标记：这两个回调
+        // 都发生在远端 Surface 与截图交接的同一帧，立刻重排会让下层卡闪到最顶层。
+        // 远端 target 清理（或下一次手势开始）才是安全的释放边界。
     }
 
     /** 原生 updatePageOffsets 结束后再同步 Live Tile，确保不会被 f5 原始偏移覆盖。 */
@@ -316,21 +293,43 @@ object IosStackedRecentsHook : FeatureHook {
             if (first.measuredWidth == 0) return
 
             var index = 0
+            var remoteDepth = 0
             var runningPrimary: Float? = null
             var runningSecondary: Float? = null
             val runningTask = if (recents.getTag(TAG_REMOTE_TARGETS) == true) getRunningTaskView(recents) else null
             for (i in 0 until recents.childCount) {
                 val task = recents.getChildAt(i) ?: continue
                 if (!taskCl.isInstance(task)) continue
-                if (task === runningTask || isTransitionTask(recents, task)) {
-                    resetTaskToNative(task)
+                if (recents.getTag(TAG_REMOTE_TARGETS) == true && hasNoThumbnail(task)) {
+                    // 任务缩略图 View 在无 ThumbnailData 时只绘制浅/深色主题底板，正是用户看到的占位卡。
+                    task.setTag(TAG_TRANSITION_STUB, true)
+                }
+                val isRunning = task === runningTask
+                val depth = if (recents.getTag(TAG_REMOTE_TARGETS) == true && !isRunning) {
+                    ++remoteDepth
+                } else {
+                    index
+                }
+                val z = if (recents.getTag(TAG_REMOTE_TARGETS) == true) {
+                    if (isRunning) 0f else -depth.toFloat()
+                } else {
+                    -depth.toFloat()
+                }
+                if (isRunning || isTransitionTask(recents, task)) {
+                    // 即使暂不参与位移，也必须保留其本应处于的负 Z，不能让下层占位卡抢到顶层。
+                    resetTaskToNative(task, z)
+                    index++
                     continue
                 }
                 val transform = calculateTransform(recents, task) ?: continue
                 task.setTag(TAG_ACTIVE, true)
                 task.setTag(TAG_SCALE, transform.scale)
                 task.rotationY = transform.rotationY
-                task.translationZ = -index.toFloat() * transform.progress
+                task.translationZ = if (recents.getTag(TAG_REMOTE_TARGETS) == true) {
+                    z * transform.progress
+                } else {
+                    -index.toFloat() * transform.progress
+                }
                 reapplyNativeOffsets(task)
                 applyScaleMethod?.invoke(task)
                 if (task === runningTask) {
@@ -359,14 +358,15 @@ object IosStackedRecentsHook : FeatureHook {
     }
 
     /** 释放模块写入的视觉属性，让中央运行卡完全由 Flyme 的远端动画控制。 */
-    private fun resetTaskToNative(task: View) {
-        if (task.getTag(TAG_ACTIVE) != true) return
-        task.setTag(TAG_ACTIVE, false)
-        task.setTag(TAG_SCALE, null)
-        task.rotationY = 0f
-        task.translationZ = 0f
-        reapplyNativeOffsets(task)
-        applyScaleMethod?.invoke(task)
+    private fun resetTaskToNative(task: View, translationZ: Float = 0f) {
+        if (task.getTag(TAG_ACTIVE) == true) {
+            task.setTag(TAG_ACTIVE, false)
+            task.setTag(TAG_SCALE, null)
+            task.rotationY = 0f
+            reapplyNativeOffsets(task)
+            applyScaleMethod?.invoke(task)
+        }
+        task.translationZ = translationZ
     }
 
     private fun calculateTransform(recents: ViewGroup, task: View): Transform? {
@@ -494,6 +494,31 @@ object IosStackedRecentsHook : FeatureHook {
         XposedHelpers.callMethod(task, "getTaskIds") as? IntArray ?: IntArray(0)
     } catch (_: Throwable) {
         IntArray(0)
+    }
+
+    /** 从 RecentsAnimationTargets.apps 收集 Quick Switch / split 分支的全部远端任务 ID。 */
+    private fun mergeTransitionTargetIds(recents: ViewGroup, targets: Any?) {
+        try {
+            val ids = LinkedHashSet<Int>()
+            (recents.getTag(TAG_TRANSITION_TASK_IDS) as? IntArray)?.forEach { ids += it }
+            val apps = XposedHelpers.getObjectField(targets, "apps") as? Array<*> ?: emptyArray<Any>()
+            for (app in apps) {
+                val taskId = app?.let { XposedHelpers.getIntField(it, "taskId") } ?: -1
+                if (taskId >= 0) ids += taskId
+            }
+            if (ids.isNotEmpty()) recents.setTag(TAG_TRANSITION_TASK_IDS, ids.toIntArray())
+        } catch (e: Throwable) {
+            Logger.w(TAG, "读取远端任务 ID 失败: ${e.message}")
+        }
+    }
+
+    /** TaskThumbnailViewDeprecated 没有 Bitmap 时会显示随深色模式变化的纯色底板。 */
+    private fun hasNoThumbnail(task: View): Boolean = try {
+        val container = XposedHelpers.callMethod(task, "getFirstTaskContainer") ?: return false
+        val thumbnailView = XposedHelpers.callMethod(container, "getThumbnailViewDeprecated") ?: return false
+        XposedHelpers.callMethod(thumbnailView, "getThumbnail") == null
+    } catch (_: Throwable) {
+        false
     }
 
     private fun clearTransitionTask(recents: ViewGroup, taskCl: Class<*>, refresh: Boolean = true) {
