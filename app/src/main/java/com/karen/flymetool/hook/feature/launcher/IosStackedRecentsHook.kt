@@ -1,315 +1,449 @@
 package com.karen.flymetool.hook.feature.launcher
 
 import android.graphics.Rect
+import android.util.FloatProperty
 import android.view.View
 import android.view.ViewGroup
-import java.lang.reflect.Method
+import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.XposedPrefs
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
-import com.karen.flymetool.hook.base.FeatureHook
-import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import java.lang.reflect.Method
 
-/**
- * iOS 风格最近任务堆叠卡片。
- *
- * 等价于 Reverse-FlymeLauncher 半成品项目给 TaskView 加 curveTransX/Y 字段 + 修改
- * updateCurveProperties 用样条曲线计算变换。由于 Xposed 无法加字段，改为用 View.setTag
- * 存曲线值。
- *
- * 通过 after-hook applyTranslationX/Y/applyScale 叠加曲线值，而非直接覆盖 translationX/Y。
- * 这样 dismiss 动画的 dismissTranslationX/Y 被保留，曲线效果叠加在上面。
- *
- * 关键：hook setDismissTranslationX/Y，每帧触发 applyStack 重算曲线，并将 dismissTranslation
- * 加入 dist 计算，使曲线值随 dismiss 动画位置平滑变化，避免动画结束时跳变。
- *
- * 特征定位：RecentsView.updateCurveProperties / dispatchScrollChanged /
- * updatePageOffsetsForFlyme（无参 public 方法名），TaskView.applyScale / applyTranslationX /
- * applyTranslationY / setDismissTranslationX / setDismissTranslationY（按方法名+参数特征定位）。
- */
+
 object IosStackedRecentsHook : FeatureHook {
 
     private const val TAG = "IosStackedRecents"
     private const val FEATURE_KEY = "ios_stacked_recents"
     private const val RECENTS_VIEW = "com.android.quickstep.views.RecentsView"
     private const val TASK_VIEW = "com.android.quickstep.views.TaskView"
+    private const val PAGE_OFFSET_EPSILON = 0.001f
 
-    // ponytail: 用 View.setTag 存曲线值，等价于半成品的 curveTransX/Y 字段
-    private val TAG_SCALE = Int.MAX_VALUE - 701
-    private val TAG_TX = Int.MAX_VALUE - 702
-    private val TAG_TY = Int.MAX_VALUE - 703
-    private val TAG_ALPHA = Int.MAX_VALUE - 704
-    private val TAG_ROT_Y = Int.MAX_VALUE - 705
-    private val TAG_TZ = Int.MAX_VALUE - 706
-    private val TAG_ACTIVE = Int.MAX_VALUE - 707
-    // dismiss 动画期间的平移值（由 setDismissTranslationX/Y before-hook 捕获）
-    private val TAG_DISMISS_TX = Int.MAX_VALUE - 708
-    private val TAG_DISMISS_TY = Int.MAX_VALUE - 709
+    private val TAG_ACTIVE = Int.MAX_VALUE - 701
+    private val TAG_SCALE = Int.MAX_VALUE - 702
+    private val TAG_DISMISS_X = Int.MAX_VALUE - 703
+    private val TAG_DISMISS_Y = Int.MAX_VALUE - 704
+    private val TAG_NATIVE_OFFSET_X = Int.MAX_VALUE - 705
+    private val TAG_NATIVE_OFFSET_Y = Int.MAX_VALUE - 706
+    private val TAG_FULLSCREEN_PROGRESS = Int.MAX_VALUE - 707
+    private val TAG_REMOTE_TARGETS = Int.MAX_VALUE - 708
+    private val TAG_PAGE_PROGRESS = Int.MAX_VALUE - 709
+    private val TAG_PAGE_ANIMATION_SEEN = Int.MAX_VALUE - 710
+    private val TAG_REAPPLYING_OFFSET = Int.MAX_VALUE - 711
 
     private val math = IosRecentsMath()
-
-    // 缓存 TaskView private apply 方法
+    private var offsetXMethod: Method? = null
+    private var offsetYMethod: Method? = null
     private var applyScaleMethod: Method? = null
-    private var applyTranslationXMethod: Method? = null
-    private var applyTranslationYMethod: Method? = null
+    private var adjacentPageOffsetProperty: FloatProperty<Any>? = null
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (lpparam.packageName != "com.meizu.flyme.launcher") return
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
-        mount(lpparam)
+        try {
+            mount(lpparam)
+            Logger.i(TAG, "iOS 堆叠后台 Hook 完成")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "iOS 堆叠后台 Hook 挂载失败", e)
+        }
     }
 
     private fun mount(lpparam: XC_LoadPackage.LoadPackageParam) {
         val recentsCl = XposedHelpers.findClass(RECENTS_VIEW, lpparam.classLoader)
         val taskCl = XposedHelpers.findClass(TASK_VIEW, lpparam.classLoader)
-
+        offsetXMethod = findFloatMethod(taskCl, "setTaskOffsetTranslationX")
+        offsetYMethod = findFloatMethod(taskCl, "setTaskOffsetTranslationY")
         applyScaleMethod = taskCl.getDeclaredMethod("applyScale").also { it.isAccessible = true }
-        applyTranslationXMethod = taskCl.getDeclaredMethod("applyTranslationX").also { it.isAccessible = true }
-        applyTranslationYMethod = taskCl.getDeclaredMethod("applyTranslationY").also { it.isAccessible = true }
+        adjacentPageOffsetProperty = findAdjacentPageOffsetProperty(recentsCl)
 
-        hookApplyTransforms(taskCl)
-        hookDismissTranslation(taskCl)
-        hookUpdateCurve(recentsCl, taskCl)
-        hookDispatchScroll(recentsCl, taskCl)
-        hookDisableDefaultOffsets(recentsCl)
-        Logger.i(TAG, "iOS 堆叠后台 Hook 完成")
+        hookOffsetChannel(taskCl)
+        hookScaleChannel()
+        hookDismissChannel(taskCl)
+        hookFullscreenProgress(recentsCl, taskCl)
+        hookRemoteTargets(recentsCl, taskCl)
+        hookPageOffsetUpdates(recentsCl, taskCl)
+        hookRefreshSources(recentsCl, taskCl)
+        hookLiveTileEnable(recentsCl, taskCl)
     }
 
-    /**
-     * after-hook applyTranslationX/Y/applyScale：在系统计算的组合值上叠加曲线值。
-     *
-     * 系统的 applyTranslationX 设置 translationX = dismissTranslationX + taskOffsetTranslationX + ...
-     * after-hook 再加上 curveTx，结果 = dismissTranslationX + ... + curveTx。
-     */
-    private fun hookApplyTransforms(taskCl: Class<*>) {
-        val scaleM = applyScaleMethod ?: return
-        XposedBridge.hookMethod(scaleM, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val view = param.thisObject as View
-                if (view.getTag(TAG_ACTIVE) != true) return
-                val scale = view.getTag(TAG_SCALE) as? Float ?: return
-                view.scaleX *= scale
-                view.scaleY *= scale
-            }
-        })
-
-        val txM = applyTranslationXMethod ?: return
-        XposedBridge.hookMethod(txM, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val view = param.thisObject as View
-                if (view.getTag(TAG_ACTIVE) != true) return
-                val tx = view.getTag(TAG_TX) as? Float ?: return
-                view.translationX += tx
-            }
-        })
-
-        val tyM = applyTranslationYMethod ?: return
-        XposedBridge.hookMethod(tyM, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val view = param.thisObject as View
-                if (view.getTag(TAG_ACTIVE) != true) return
-                val ty = view.getTag(TAG_TY) as? Float ?: return
-                view.translationY += ty
-            }
-        })
-    }
-
-    /**
-     * Hook setDismissTranslationX/Y：dismiss 动画每帧调用它们来平移剩余卡片。
-     *
-     * before：把 dismissTranslation 值存入 tag，供 applyStack 读取。
-     * after：触发 applyStack 重算曲线——使 curveTx 随 dismiss 动画位置平滑变化，
-     * 而非用上次 applyStack 的过时值。
-     */
-    private fun hookDismissTranslation(taskCl: Class<*>) {
+    private fun findFloatMethod(type: Class<*>, name: String): Method? {
         val floatType = Float::class.javaPrimitiveType
-        for ((name, tagId) in arrayOf(
-            "setDismissTranslationX" to TAG_DISMISS_TX,
-            "setDismissTranslationY" to TAG_DISMISS_TY,
+        return type.declaredMethods.firstOrNull {
+            it.name == name && it.parameterTypes.contentEquals(arrayOf(floatType))
+        }?.also { it.isAccessible = true }
+    }
+
+    /** 把样条曲线写进 Flyme 原生 taskOffsetTranslation，而不是追加 View.translation。 */
+    private fun hookOffsetChannel(taskCl: Class<*>) {
+        val floatType = Float::class.javaPrimitiveType
+        for ((method, nativeTag, isX) in listOf(
+            Triple(offsetXMethod, TAG_NATIVE_OFFSET_X, true),
+            Triple(offsetYMethod, TAG_NATIVE_OFFSET_Y, false),
         )) {
-            val m = taskCl.declaredMethods.firstOrNull {
-                it.name == name && it.parameterTypes.size == 1 && it.parameterTypes[0] == floatType
-            } ?: continue
-            XposedBridge.hookMethod(m, object : XC_MethodHook() {
+            val target = method ?: continue
+            if (target.parameterTypes.singleOrNull() != floatType) continue
+            XposedBridge.hookMethod(target, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
-                    (param.thisObject as View).setTag(tagId, param.args[0] as Float)
-                }
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val view = param.thisObject as View
-                    val recents = view.parent as? ViewGroup ?: return
-                    applyStack(recents, taskCl)
+                    val task = param.thisObject as View
+                    val nativeValue = param.args[0] as Float
+                    if (task.getTag(TAG_REAPPLYING_OFFSET) != true) {
+                        task.setTag(nativeTag, nativeValue)
+                    }
+                    val recents = task.parent as? ViewGroup ?: return
+                    val transform = calculateTransform(recents, task) ?: return
+                    val isLandscape = isLandscape(recents)
+                    val replacement = when {
+                        isX && !isLandscape -> transform.primary
+                        !isX && isLandscape -> transform.primary
+                        isX -> transform.secondary
+                        else -> transform.secondary
+                    }
+                    param.args[0] = replacement
                 }
             })
         }
     }
 
-    /** 更新曲线变换（等价于半成品 updateCurveProperties 里的 spline 计算） */
-    private fun hookUpdateCurve(recentsCl: Class<*>, taskCl: Class<*>) {
-        val m = recentsCl.declaredMethods.firstOrNull {
-            it.name == "updateCurveProperties" && it.parameterTypes.isEmpty()
-        } ?: run { Logger.w(TAG, "updateCurveProperties 未找到"); return }
-        XposedBridge.hookMethod(m, object : XC_MethodHook() {
+    /** scale 沿用 TaskView 的原生复合缩放，再叠加样条目标。 */
+    private fun hookScaleChannel() {
+        val method = applyScaleMethod ?: return
+        XposedBridge.hookMethod(method, object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
-                applyStack(param.thisObject as ViewGroup, taskCl)
+                val task = param.thisObject as View
+                if (task.getTag(TAG_ACTIVE) != true) return
+                val scale = task.getTag(TAG_SCALE) as? Float ?: return
+                task.scaleX *= scale
+                task.scaleY *= scale
             }
         })
     }
 
-    /** 滚动时重新应用（Flyme 滚动不触发 updateCurveProperties，需补） */
-    private fun hookDispatchScroll(recentsCl: Class<*>, taskCl: Class<*>) {
-        val m = recentsCl.declaredMethods.firstOrNull {
-            it.name == "dispatchScrollChanged" && it.parameterTypes.isEmpty()
+    private fun hookDismissChannel(taskCl: Class<*>) {
+        for ((name, tag) in listOf(
+            "setDismissTranslationX" to TAG_DISMISS_X,
+            "setDismissTranslationY" to TAG_DISMISS_Y,
+        )) {
+            val method = findFloatMethod(taskCl, name) ?: continue
+            XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    (param.thisObject as View).setTag(tag, param.args[0] as Float)
+                }
+
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val task = param.thisObject as View
+                    (task.parent as? ViewGroup)?.let { refreshStack(it, taskCl) }
+                }
+            })
+        }
+    }
+
+    private fun hookFullscreenProgress(recentsCl: Class<*>, taskCl: Class<*>) {
+        val floatType = Float::class.javaPrimitiveType
+        val method = recentsCl.declaredMethods.firstOrNull {
+            it.name == "setFullscreenProgress" &&
+                it.parameterTypes.contentEquals(arrayOf(floatType)) &&
+                it.returnType == Void.TYPE
+        } ?: run {
+            Logger.w(TAG, "setFullscreenProgress(float) 未找到")
+            return
+        }
+        XposedBridge.hookMethod(method, object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                (param.thisObject as ViewGroup).setTag(
+                    TAG_FULLSCREEN_PROGRESS,
+                    (1f - (param.args[0] as Float)).coerceIn(0f, 1f),
+                )
+            }
+
+            override fun afterHookedMethod(param: MethodHookParam) {
+                refreshStack(param.thisObject as ViewGroup, taskCl)
+            }
+        })
+    }
+
+    private fun hookRemoteTargets(recentsCl: Class<*>, taskCl: Class<*>) {
+        val setTargets = recentsCl.declaredMethods.firstOrNull {
+            it.name == "setRecentsAnimationTargets" && it.parameterTypes.size == 2 && it.returnType == Void.TYPE
+        } ?: run {
+            Logger.w(TAG, "setRecentsAnimationTargets 未找到")
+            return
+        }
+        XposedBridge.hookMethod(setTargets, object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                if (param.args[1] == null) return
+                val recents = param.thisObject as ViewGroup
+                recents.setTag(TAG_REMOTE_TARGETS, true)
+                recents.setTag(TAG_PAGE_ANIMATION_SEEN, false)
+                recents.setTag(TAG_PAGE_PROGRESS, 0f)
+            }
+
+            override fun afterHookedMethod(param: MethodHookParam) {
+                refreshStack(param.thisObject as ViewGroup, taskCl)
+            }
+        })
+
+        val cleanup = recentsCl.declaredMethods.firstOrNull {
+            it.name == "cleanupRemoteTargets" && it.parameterTypes.isEmpty() && it.returnType == Void.TYPE
         } ?: return
-        XposedBridge.hookMethod(m, object : XC_MethodHook() {
+        XposedBridge.hookMethod(cleanup, object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
-                applyStack(param.thisObject as ViewGroup, taskCl)
+                val recents = param.thisObject as ViewGroup
+                recents.setTag(TAG_REMOTE_TARGETS, false)
+                recents.setTag(TAG_PAGE_ANIMATION_SEEN, false)
+                recents.setTag(TAG_PAGE_PROGRESS, null)
+                refreshStack(recents, taskCl)
             }
         })
     }
 
-    /** 禁用 Flyme 默认页偏移，避免与曲线 translation 冲突（等价于半成品 updatePageOffsets return） */
-    private fun hookDisableDefaultOffsets(recentsCl: Class<*>) {
-        for (name in arrayOf("updatePageOffsetsForFlyme", "updatePageOffsets")) {
-            val m = recentsCl.declaredMethods.firstOrNull {
+    /** 原生 updatePageOffsets 结束后再同步 Live Tile，确保不会被 f5 原始偏移覆盖。 */
+    private fun hookPageOffsetUpdates(recentsCl: Class<*>, taskCl: Class<*>) {
+        for (name in listOf("updatePageOffsets", "updatePageOffsetsForFlyme")) {
+            val method = recentsCl.declaredMethods.firstOrNull {
+                it.name == name && it.parameterTypes.isEmpty() && it.returnType == Void.TYPE
+            } ?: continue
+            XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    refreshStack(param.thisObject as ViewGroup, taskCl)
+                }
+            })
+        }
+    }
+
+    /** 滚动、布局与手势结束后的兜底刷新；这些入口均是 RecentsView 的公开语义回调。 */
+    private fun hookRefreshSources(recentsCl: Class<*>, taskCl: Class<*>) {
+        for (name in listOf("updateCurveProperties", "dispatchScrollChanged")) {
+            val method = recentsCl.declaredMethods.firstOrNull {
                 it.name == name && it.parameterTypes.isEmpty()
             } ?: continue
-            XposedBridge.hookMethod(m, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!shouldStack(param.thisObject as ViewGroup)) return
-                    param.result = null
+            XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    refreshStack(param.thisObject as ViewGroup, taskCl)
                 }
             })
         }
     }
 
-    private fun shouldStack(recents: ViewGroup): Boolean {
-        return try {
-            if (XposedHelpers.callMethod(recents, "showAsGrid") as? Boolean == true) return false
-            (XposedHelpers.callMethod(recents, "getTaskViewCount") as? Int ?: 0) > 0
-        } catch (_: Throwable) { false }
+    private fun hookLiveTileEnable(recentsCl: Class<*>, taskCl: Class<*>) {
+        val booleanType = Boolean::class.javaPrimitiveType
+        val method = recentsCl.declaredMethods.firstOrNull {
+            it.name == "setEnableDrawingLiveTile" &&
+                it.parameterTypes.contentEquals(arrayOf(booleanType)) &&
+                it.returnType == Void.TYPE
+        } ?: return
+        XposedBridge.hookMethod(method, object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                if (param.args[0] as Boolean) refreshStack(param.thisObject as ViewGroup, taskCl)
+            }
+        })
     }
 
-    /** 核心：计算每个 TaskView 的曲线变换并写入 tag，再触发 apply 刷新 */
-    private fun applyStack(recents: ViewGroup, taskCl: Class<*>) {
+    private fun refreshStack(recents: ViewGroup, taskCl: Class<*>) {
         try {
-            if (!shouldStack(recents)) { clearStack(recents, taskCl); return }
-            val pageCount = XposedHelpers.callMethod(recents, "getPageCount") as? Int ?: return
-            if (pageCount == 0) return
+            if (!shouldStack(recents)) {
+                clearStack(recents, taskCl)
+                return
+            }
+            if (recents.childCount == 0) return
             val first = XposedHelpers.callMethod(recents, "getPageAt", 0) as? View ?: return
             if (first.measuredWidth == 0) return
 
-            val isLandscape = try {
-                val handler = XposedHelpers.callMethod(recents, "getPagedOrientationHandler")
-                handler::class.java.name.contains("Landscape")
-            } catch (_: Throwable) { false }
-            // 滚动方向：竖屏 X（PagedView 默认），横屏 Y（LandscapePagedViewHandler）
-            val scroll = if (isLandscape) recents.scrollY else recents.scrollX
-            val screenPrimary = if (isLandscape) recents.measuredHeight else recents.measuredWidth
-            val screenSecondary = if (isLandscape) recents.measuredWidth else recents.measuredHeight
-            val taskPrimarySize = taskSizeInScrollDir(recents, isLandscape).coerceAtLeast(1)
-
-            val centerScale = math.getValue(IosRecentsMath.SPLINE_SCALE, 3.0).toFloat()
-            val centerY = math.getValue(IosRecentsMath.SPLINE_Y_COORD, 3.0).toFloat()
-            val centerX = math.getValue(IosRecentsMath.SPLINE_X_COORD, 3.0).toFloat()
-
-            var taskIndex = 0
+            var index = 0
+            var runningPrimary: Float? = null
+            var runningSecondary: Float? = null
+            val runningTask = if (recents.getTag(TAG_REMOTE_TARGETS) == true) getRunningTaskView(recents) else null
             for (i in 0 until recents.childCount) {
-                val child = recents.getChildAt(i) ?: continue
-                if (!taskCl.isInstance(child)) continue
-
-                // 读取 dismiss 动画平移值，加入 childCenter 计算
-                // 使曲线随 dismiss 动画位置平滑变化，而非用布局位置（动画期间不变）
-                val dismissTx = child.getTag(TAG_DISMISS_TX) as? Float ?: 0f
-                val dismissTy = child.getTag(TAG_DISMISS_TY) as? Float ?: 0f
-                val dismissPrimary = if (isLandscape) dismissTy else dismissTx
-
-                val childCenter = if (isLandscape)
-                    child.top + child.measuredHeight / 2 + dismissPrimary
-                else
-                    child.left + child.measuredWidth / 2 + dismissPrimary
-                val screenCenter = scroll + screenPrimary / 2
-                val dist = (childCenter - screenCenter).toFloat()
-                val f2 = 3.0 + dist / taskPrimarySize
-
-                val rawScale = math.getValue(IosRecentsMath.SPLINE_SCALE, f2).toFloat()
-                val rawAlpha = math.getValue(IosRecentsMath.SPLINE_ALPHA, f2).toFloat().coerceIn(0f, 1f)
-                // 主方向（滚动方向）始终用 SPLINE_X_COORD，次方向用 SPLINE_Y_COORD
-                // 横屏下滚动方向是 Y，需交换到 translationY；竖屏滚动方向是 X，用 translationX
-                val rawPrimary = math.getValue(IosRecentsMath.SPLINE_X_COORD, f2).toFloat()
-                val rawSecondary = math.getValue(IosRecentsMath.SPLINE_Y_COORD, f2).toFloat()
-                val rotationY = math.getValue(IosRecentsMath.SPLINE_ROTATION_Y, f2).toFloat()
-
-                val scale = if (centerScale != 0f) rawScale / centerScale else 1f
-                val curvePrimary = (rawPrimary - centerX) * screenPrimary - dist
-                val curveSecondary = (rawSecondary - centerY) * screenSecondary
-                val curveTx = if (isLandscape) curveSecondary else curvePrimary
-                val curveTy = if (isLandscape) curvePrimary else curveSecondary
-
-                child.setTag(TAG_ACTIVE, true)
-                child.setTag(TAG_SCALE, scale)
-                child.setTag(TAG_TX, curveTx)
-                child.setTag(TAG_TY, curveTy)
-                child.setTag(TAG_ALPHA, rawAlpha)
-                child.setTag(TAG_ROT_Y, rotationY)
-                child.setTag(TAG_TZ, -taskIndex.toFloat())
-
-                // 直接设 alpha/rotationY/translationZ（无 apply* 会覆盖它们）
-                child.alpha = rawAlpha
-                child.rotationY = rotationY
-                child.translationZ = -taskIndex.toFloat()
-
-                // 触发 apply 方法，after-hook 叠加曲线值（保留 dismissTranslation 等基础平移）
-                applyScaleMethod?.invoke(child)
-                applyTranslationXMethod?.invoke(child)
-                applyTranslationYMethod?.invoke(child)
-                taskIndex++
+                val task = recents.getChildAt(i) ?: continue
+                if (!taskCl.isInstance(task)) continue
+                val transform = calculateTransform(recents, task) ?: continue
+                task.setTag(TAG_ACTIVE, true)
+                task.setTag(TAG_SCALE, transform.scale)
+                task.rotationY = transform.rotationY
+                task.translationZ = -index.toFloat() * transform.progress
+                reapplyNativeOffsets(task)
+                applyScaleMethod?.invoke(task)
+                if (task === runningTask) {
+                    val landscape = isLandscape(recents)
+                    runningPrimary = if (landscape) task.translationY else task.translationX
+                    runningSecondary = if (landscape) task.translationX else task.translationY
+                }
+                index++
+            }
+            if (runningPrimary != null && runningSecondary != null) {
+                syncLiveTile(recents, runningPrimary, runningSecondary)
             }
         } catch (e: Throwable) {
-            Logger.e(TAG, "applyStack 失败", e)
+            Logger.e(TAG, "堆叠刷新失败", e)
         }
+    }
+
+    private fun reapplyNativeOffsets(task: View) {
+        task.setTag(TAG_REAPPLYING_OFFSET, true)
+        try {
+            offsetXMethod?.invoke(task, task.getTag(TAG_NATIVE_OFFSET_X) as? Float ?: 0f)
+            offsetYMethod?.invoke(task, task.getTag(TAG_NATIVE_OFFSET_Y) as? Float ?: 0f)
+        } finally {
+            task.setTag(TAG_REAPPLYING_OFFSET, false)
+        }
+    }
+
+    private fun calculateTransform(recents: ViewGroup, task: View): Transform? {
+        if (!shouldStack(recents)) return null
+        val landscape = isLandscape(recents)
+        val primarySize = taskSizeInScrollDirection(recents, landscape).coerceAtLeast(1)
+        val screenPrimary = if (landscape) recents.measuredHeight else recents.measuredWidth
+        val screenSecondary = if (landscape) recents.measuredWidth else recents.measuredHeight
+        if (screenPrimary == 0 || screenSecondary == 0) return null
+
+        val scroll = if (landscape) recents.scrollY else recents.scrollX
+        val dismissPrimary = if (landscape) {
+            task.getTag(TAG_DISMISS_Y) as? Float ?: 0f
+        } else {
+            task.getTag(TAG_DISMISS_X) as? Float ?: 0f
+        }
+        val center = if (landscape) {
+            task.top + task.measuredHeight / 2 + dismissPrimary
+        } else {
+            task.left + task.measuredWidth / 2 + dismissPrimary
+        }
+        val distance = (center - (scroll + screenPrimary / 2)).toFloat()
+        val splinePosition = 3.0 + distance / primarySize
+        val centerScale = math.getValue(IosRecentsMath.SPLINE_SCALE, 3.0).toFloat()
+        val centerX = math.getValue(IosRecentsMath.SPLINE_X_COORD, 3.0).toFloat()
+        val centerY = math.getValue(IosRecentsMath.SPLINE_Y_COORD, 3.0).toFloat()
+        val targetPrimary = (math.getValue(IosRecentsMath.SPLINE_X_COORD, splinePosition).toFloat() - centerX) *
+            screenPrimary - distance
+        val targetSecondary = (math.getValue(IosRecentsMath.SPLINE_Y_COORD, splinePosition).toFloat() - centerY) *
+            screenSecondary
+        val targetScale = math.getValue(IosRecentsMath.SPLINE_SCALE, splinePosition).toFloat() /
+            centerScale.coerceAtLeast(0.0001f)
+
+        val isRemote = recents.getTag(TAG_REMOTE_TARGETS) == true
+        val progress = resolveProgress(recents, isRemote)
+        val nativeX = task.getTag(TAG_NATIVE_OFFSET_X) as? Float ?: 0f
+        val nativeY = task.getTag(TAG_NATIVE_OFFSET_Y) as? Float ?: 0f
+        val nativePrimary = if (landscape) nativeY else nativeX
+        val nativeSecondary = if (landscape) nativeX else nativeY
+        // 应用路径将原生页偏移与堆叠目标写入同一个 taskOffset 字段：p=0 保持原轨迹，p=1 到目标。
+        val primary = if (isRemote) {
+            nativePrimary + (targetPrimary - nativePrimary) * progress
+        } else {
+            nativePrimary + targetPrimary * progress
+        }
+        val secondary = nativeSecondary + targetSecondary * progress
+        return Transform(
+            primary = primary,
+            secondary = secondary,
+            scale = 1f + (targetScale - 1f) * progress,
+            rotationY = math.getValue(IosRecentsMath.SPLINE_ROTATION_Y, splinePosition).toFloat() * progress,
+            progress = progress,
+        )
+    }
+
+    private fun resolveProgress(recents: ViewGroup, isRemote: Boolean): Float {
+        val fullscreen = (recents.getTag(TAG_FULLSCREEN_PROGRESS) as? Float ?: 1f).coerceIn(0f, 1f)
+        if (!isRemote) return fullscreen
+        val adjacentOffset = readAdjacentPageOffset(recents)
+        if (kotlin.math.abs(adjacentOffset) > PAGE_OFFSET_EPSILON) {
+            recents.setTag(TAG_PAGE_ANIMATION_SEEN, true)
+        }
+        if (recents.getTag(TAG_PAGE_ANIMATION_SEEN) != true) return fullscreen
+        val previous = recents.getTag(TAG_PAGE_PROGRESS) as? Float ?: 0f
+        val pageProgress = maxOf(previous, (1f - adjacentOffset).coerceIn(0f, 1f))
+        recents.setTag(TAG_PAGE_PROGRESS, pageProgress)
+        return minOf(fullscreen, pageProgress)
+    }
+
+    private fun shouldStack(recents: ViewGroup): Boolean = try {
+        (XposedHelpers.callMethod(recents, "showAsGrid") as? Boolean != true) &&
+            (XposedHelpers.callMethod(recents, "getTaskViewCount") as? Int ?: 0) > 0
+    } catch (_: Throwable) {
+        false
     }
 
     private fun clearStack(recents: ViewGroup, taskCl: Class<*>) {
         for (i in 0 until recents.childCount) {
-            val child = recents.getChildAt(i) ?: continue
-            if (!taskCl.isInstance(child)) continue
-            if (child.getTag(TAG_ACTIVE) != true) continue
-            // 先清 TAG_ACTIVE，使 after-hook 不再叠加曲线值
-            child.setTag(TAG_ACTIVE, false)
-            child.setTag(TAG_SCALE, null)
-            child.setTag(TAG_TX, null)
-            child.setTag(TAG_TY, null)
-            child.setTag(TAG_ALPHA, null)
-            child.setTag(TAG_ROT_Y, null)
-            child.setTag(TAG_TZ, null)
-            child.setTag(TAG_DISMISS_TX, null)
-            child.setTag(TAG_DISMISS_TY, null)
-            child.rotationY = 0f
-            child.alpha = 1f
-            child.translationZ = 0f
-            // 恢复基础变换（after-hook 看到 TAG_ACTIVE=false，不叠加曲线）
-            applyScaleMethod?.invoke(child)
-            applyTranslationXMethod?.invoke(child)
-            applyTranslationYMethod?.invoke(child)
+            val task = recents.getChildAt(i) ?: continue
+            if (!taskCl.isInstance(task) || task.getTag(TAG_ACTIVE) != true) continue
+            task.setTag(TAG_ACTIVE, false)
+            task.setTag(TAG_SCALE, null)
+            task.rotationY = 0f
+            task.translationZ = 0f
+            reapplyNativeOffsets(task)
+            applyScaleMethod?.invoke(task)
         }
     }
 
-    private fun taskSizeInScrollDir(recents: ViewGroup, isLandscape: Boolean): Int {
-        return try {
-            val size = XposedHelpers.callMethod(recents, "getLastComputedTaskSize") as? Rect
-            val primary = if (isLandscape) size?.height() else size?.width()
-            primary?.takeIf { it > 0 } ?: (if (isLandscape) recents.measuredHeight else recents.measuredWidth) / 2
-        } catch (_: Throwable) { recents.measuredWidth / 2 }
+    private fun isLandscape(recents: ViewGroup): Boolean = try {
+        val handler = XposedHelpers.callMethod(recents, "getPagedOrientationHandler")
+        handler::class.java.name.contains("Landscape")
+    } catch (_: Throwable) {
+        false
     }
+
+    private fun taskSizeInScrollDirection(recents: ViewGroup, landscape: Boolean): Int = try {
+        val size = XposedHelpers.callMethod(recents, "getLastComputedTaskSize") as? Rect
+        (if (landscape) size?.height() else size?.width())?.takeIf { it > 0 }
+            ?: (if (landscape) recents.measuredHeight else recents.measuredWidth) / 2
+    } catch (_: Throwable) {
+        recents.measuredWidth / 2
+    }
+
+    private fun getRunningTaskView(recents: ViewGroup): View? = try {
+        XposedHelpers.callMethod(recents, "getRunningTaskView") as? View
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun syncLiveTile(recents: ViewGroup, primary: Float, secondary: Float) {
+        try {
+            if (XposedHelpers.callMethod(recents, "getEnableDrawingLiveTile") as? Boolean != true) return
+            val handles = XposedHelpers.callMethod(recents, "getRemoteTargetHandles") as? Array<*> ?: return
+            for (handle in handles) {
+                val simulator = handle?.let { XposedHelpers.callMethod(it, "getTaskViewSimulator") } ?: continue
+                val primaryFloat = XposedHelpers.getObjectField(simulator, "taskPrimaryTranslation") ?: continue
+                val secondaryFloat = XposedHelpers.getObjectField(simulator, "taskSecondaryTranslation") ?: continue
+                XposedHelpers.setFloatField(primaryFloat, "value", primary)
+                XposedHelpers.setFloatField(secondaryFloat, "value", secondary)
+            }
+            XposedHelpers.callMethod(recents, "redrawLiveTile")
+        } catch (e: Throwable) {
+            Logger.w(TAG, "Live Tile 坐标同步失败: ${e.message}")
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun findAdjacentPageOffsetProperty(recentsCl: Class<*>): FloatProperty<Any>? = try {
+        recentsCl.fields.firstOrNull {
+            it.name == "ADJACENT_PAGE_HORIZONTAL_OFFSET" && FloatProperty::class.java.isAssignableFrom(it.type)
+        }?.get(null) as? FloatProperty<Any>
+    } catch (e: Throwable) {
+        Logger.w(TAG, "ADJACENT_PAGE_HORIZONTAL_OFFSET 未找到: ${e.message}")
+        null
+    }
+
+    private fun readAdjacentPageOffset(recents: ViewGroup): Float = try {
+        adjacentPageOffsetProperty?.get(recents) ?: 0f
+    } catch (_: Throwable) {
+        0f
+    }
+
+    private data class Transform(
+        val primary: Float,
+        val secondary: Float,
+        val scale: Float,
+        val rotationY: Float,
+        val progress: Float,
+    )
 
     // --- cubic spline math (from Reverse-FlymeLauncher IosRecentsMath) ---
     private class IosRecentsMath {
         companion object {
             const val SPLINE_X_COORD = 0
             const val SPLINE_Y_COORD = 1
-            const val SPLINE_ALPHA = 2
             const val SPLINE_SCALE = 3
             const val SPLINE_ROTATION_Y = 13
             private const val DATA =
@@ -328,7 +462,7 @@ object IosStackedRecentsHook : FeatureHook {
                 for (j in 0 until 6) {
                     y[j] = (values.getOrNull(i * 6 + j)?.toIntOrNull() ?: 0) / 100.0
                 }
-                splines.add(SplineHelper().also { it.init(y) })
+                splines += SplineHelper().also { it.init(y) }
             }
         }
 
@@ -373,17 +507,20 @@ object IosStackedRecentsHook : FeatureHook {
 
         fun getValue(xv: Double): Double {
             val n = x.size - 1
-            var idx = -1
+            var index = -1
             for (i in 0 until n) {
-                if (xv in x[i]..x[i + 1]) { idx = i; break }
+                if (xv in x[i]..x[i + 1]) {
+                    index = i
+                    break
+                }
             }
-            if (idx == -1) {
-                val i2 = if (xv < x[0]) 0 else 4
-                val diff = xv - x[i2]
-                return a[i2] + (b[i2] + c[i2] + d[i2]) * diff
+            if (index == -1) {
+                val i = if (xv < x[0]) 0 else 4
+                val diff = xv - x[i]
+                return a[i] + (b[i] + c[i] + d[i]) * diff
             }
-            val diff = xv - x[idx]
-            return a[idx] + b[idx] * diff + c[idx] * diff * diff + d[idx] * diff * diff * diff
+            val diff = xv - x[index]
+            return a[index] + b[index] * diff + c[index] * diff * diff + d[index] * diff * diff * diff
         }
     }
 }
