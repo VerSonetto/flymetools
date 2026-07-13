@@ -1,6 +1,7 @@
 package com.karen.flymetool.hook.feature.launcher
 
 import android.graphics.Rect
+import android.graphics.Canvas
 import android.util.FloatProperty
 import android.view.View
 import android.view.ViewGroup
@@ -20,6 +21,8 @@ object IosStackedRecentsHook : FeatureHook {
     private const val FEATURE_KEY = "ios_stacked_recents"
     private const val RECENTS_VIEW = "com.android.quickstep.views.RecentsView"
     private const val TASK_VIEW = "com.android.quickstep.views.TaskView"
+    private const val TASK_THUMBNAIL_VIEW = "com.android.quickstep.views.TaskThumbnailViewDeprecated"
+    private const val SWIPE_UP_HANDLER = "com.android.quickstep.AbsSwipeUpHandler"
     private const val PAGE_OFFSET_EPSILON = 0.001f
 
     private val TAG_ACTIVE = Int.MAX_VALUE - 701
@@ -36,6 +39,8 @@ object IosStackedRecentsHook : FeatureHook {
     // 当前应用从远端 Surface 切到截图期间的 TaskView / 异步回填副本都携带同一组 taskId。
     private val TAG_TRANSITION_TASK_IDS = Int.MAX_VALUE - 712
     private val TAG_TRANSITION_STUB = Int.MAX_VALUE - 713
+    // 无 ThumbnailData 时 TaskThumbnailViewDeprecated 会主动绘制主题色底板；仅在远端交接时抑制它。
+    private val TAG_PLACEHOLDER_SUPPRESSED = Int.MAX_VALUE - 714
 
     private val math = IosRecentsMath()
     private var offsetXMethod: Method? = null
@@ -65,9 +70,11 @@ object IosStackedRecentsHook : FeatureHook {
         hookOffsetChannel(taskCl)
         hookScaleChannel()
         hookDismissChannel(taskCl)
+        hookPlaceholderDrawing(lpparam.classLoader)
         hookFullscreenProgress(recentsCl, taskCl)
         hookRemoteTargets(recentsCl, taskCl)
         hookTransitionStubLifecycle(recentsCl, taskCl)
+        hookContinuousGestureProgress(lpparam, taskCl)
         hookPageOffsetUpdates(recentsCl, taskCl)
         hookRefreshSources(recentsCl, taskCl)
         hookLiveTileEnable(recentsCl, taskCl)
@@ -202,10 +209,53 @@ object IosStackedRecentsHook : FeatureHook {
                 recents.setTag(TAG_REMOTE_TARGETS, false)
                 recents.setTag(TAG_PAGE_ANIMATION_SEEN, false)
                 recents.setTag(TAG_PAGE_PROGRESS, null)
+                clearPlaceholderSuppression(recents, taskCl)
                 clearTransitionTask(recents, taskCl, refresh = false)
                 refreshStack(recents, taskCl)
             }
         })
+    }
+
+    /**
+     * 占位卡的可见白/深色块来自 TaskThumbnailViewDeprecated.onDraw，而不是 TaskView 本身。
+     * 因此保持 TaskView 的连续几何变换，仅在远端交接期间跳过这一次无缩略图绘制；一旦
+     * 缩略图回填，setThumbnail() 会立刻恢复绘制，不需要把整张普通卡排除在堆叠之外。
+     */
+    private fun hookPlaceholderDrawing(classLoader: ClassLoader) {
+        try {
+            val thumbnailCl = XposedHelpers.findClass(TASK_THUMBNAIL_VIEW, classLoader)
+            val onDraw = thumbnailCl.declaredMethods.firstOrNull {
+                it.name == "onDraw" &&
+                    it.parameterTypes.contentEquals(arrayOf(Canvas::class.java)) &&
+                    it.returnType == Void.TYPE
+            } ?: run {
+                Logger.w(TAG, "TaskThumbnailViewDeprecated.onDraw(Canvas) 未找到")
+                return
+            }
+            XposedBridge.hookMethod(onDraw, object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    if ((param.thisObject as View).getTag(TAG_PLACEHOLDER_SUPPRESSED) == true) {
+                        param.result = null
+                    }
+                }
+            })
+
+            thumbnailCl.declaredMethods.filter {
+                it.name == "setThumbnail" && it.parameterTypes.size in 2..3 && it.returnType == Void.TYPE
+            }.forEach { method ->
+                XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val thumbnail = param.thisObject as View
+                        // 有真实缩略图的帧必须立即恢复，避免被动等待下一次 Recents 刷新。
+                        if (XposedHelpers.callMethod(thumbnail, "getThumbnail") != null) {
+                            thumbnail.setTag(TAG_PLACEHOLDER_SUPPRESSED, false)
+                        }
+                    }
+                })
+            }
+        } catch (e: Throwable) {
+            Logger.w(TAG, "占位缩略图绘制 Hook 挂载失败: ${e.message}")
+        }
     }
 
     /**
@@ -222,7 +272,8 @@ object IosStackedRecentsHook : FeatureHook {
         }
         XposedBridge.hookMethod(gestureStart, object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
-                clearTransitionTask(recents = param.thisObject as ViewGroup, taskCl = taskCl, refresh = false)
+                val recents = param.thisObject as ViewGroup
+                clearTransitionTask(recents = recents, taskCl = taskCl, refresh = false)
             }
 
             override fun afterHookedMethod(param: MethodHookParam) {
@@ -238,6 +289,42 @@ object IosStackedRecentsHook : FeatureHook {
         // 不在 setShouldShowScreenshot()/onRecentsAnimationComplete() 释放标记：这两个回调
         // 都发生在远端 Surface 与截图交接的同一帧，立刻重排会让下层卡闪到最顶层。
         // 远端 target 清理（或下一次手势开始）才是安全的释放边界。
+    }
+
+    /**
+     * mCurrentShift 是 AbsSwipeUpHandler 唯一逐帧更新的手势值。FULLSCREEN_PROGRESS 在
+     * Quick Switch 的侧边起手分支会滞后更新，直接以该值刷新可消除卡片先停住后靠拢。
+     */
+    private fun hookContinuousGestureProgress(
+        lpparam: XC_LoadPackage.LoadPackageParam,
+        taskCl: Class<*>,
+    ) {
+        try {
+            val handlerCl = XposedHelpers.findClass(SWIPE_UP_HANDLER, lpparam.classLoader)
+            val method = handlerCl.declaredMethods.firstOrNull {
+                it.name == "onCurrentShiftUpdated" && it.parameterTypes.isEmpty() && it.returnType == Void.TYPE
+            } ?: run {
+                Logger.w(TAG, "onCurrentShiftUpdated() 未找到")
+                return
+            }
+            XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    try {
+                        val handler = param.thisObject
+                        val recents = XposedHelpers.getObjectField(handler, "mRecentsView") as? ViewGroup ?: return
+                        if (recents.getTag(TAG_REMOTE_TARGETS) != true) return
+                        val currentShift = XposedHelpers.getObjectField(handler, "mCurrentShift") ?: return
+                        val progress = XposedHelpers.getFloatField(currentShift, "value").coerceIn(0f, 1f)
+                        recents.setTag(TAG_FULLSCREEN_PROGRESS, progress)
+                        refreshStack(recents, taskCl)
+                    } catch (e: Throwable) {
+                        Logger.w(TAG, "读取连续手势进度失败: ${e.message}")
+                    }
+                }
+            })
+        } catch (e: Throwable) {
+            Logger.w(TAG, "AbsSwipeUpHandler 连续进度 Hook 挂载失败: ${e.message}")
+        }
     }
 
     /** 原生 updatePageOffsets 结束后再同步 Live Tile，确保不会被 f5 原始偏移覆盖。 */
@@ -300,9 +387,21 @@ object IosStackedRecentsHook : FeatureHook {
             for (i in 0 until recents.childCount) {
                 val task = recents.getChildAt(i) ?: continue
                 if (!taskCl.isInstance(task)) continue
-                if (recents.getTag(TAG_REMOTE_TARGETS) == true && hasNoThumbnail(task)) {
-                    // 任务缩略图 View 在无 ThumbnailData 时只绘制浅/深色主题底板，正是用户看到的占位卡。
+                val hasNoThumbnail = hasNoThumbnail(task)
+                setPlaceholderSuppressed(
+                    task = task,
+                    suppress = recents.getTag(TAG_REMOTE_TARGETS) == true && hasNoThumbnail,
+                )
+                if (recents.getTag(TAG_REMOTE_TARGETS) == true &&
+                    hasNoThumbnail &&
+                    isKnownTransitionTarget(recents, task)
+                ) {
+                    // 只有当前远端 Surface 对应的无缩略图 TaskView 才是交接占位卡。
+                    // 普通下层卡在刚打开最近任务时也可能还未拿到 ThumbnailData，绝不能因此
+                    // 暂停它的堆叠变换，否则远端结束时会从留缝位置瞬间跳到最终堆叠。
                     task.setTag(TAG_TRANSITION_STUB, true)
+                } else if (!isKnownTransitionTarget(recents, task)) {
+                    task.setTag(TAG_TRANSITION_STUB, false)
                 }
                 val isRunning = task === runningTask
                 val depth = if (recents.getTag(TAG_REMOTE_TARGETS) == true && !isRunning) {
@@ -425,15 +524,9 @@ object IosStackedRecentsHook : FeatureHook {
     private fun resolveProgress(recents: ViewGroup, isRemote: Boolean): Float {
         val fullscreen = (recents.getTag(TAG_FULLSCREEN_PROGRESS) as? Float ?: 1f).coerceIn(0f, 1f)
         if (!isRemote) return fullscreen
-        val adjacentOffset = readAdjacentPageOffset(recents)
-        if (kotlin.math.abs(adjacentOffset) > PAGE_OFFSET_EPSILON) {
-            recents.setTag(TAG_PAGE_ANIMATION_SEEN, true)
-        }
-        if (recents.getTag(TAG_PAGE_ANIMATION_SEEN) != true) return fullscreen
-        val previous = recents.getTag(TAG_PAGE_PROGRESS) as? Float ?: 0f
-        val pageProgress = maxOf(previous, (1f - adjacentOffset).coerceIn(0f, 1f))
-        recents.setTag(TAG_PAGE_PROGRESS, pageProgress)
-        return minOf(fullscreen, pageProgress)
+        // 单通道 taskOffset 已把原生页偏移作为插值起点，不再以相邻页弹簧限速。
+        // 后者只在松手后才补到终点，会造成“先留缝、再瞬间靠拢”。
+        return fullscreen
     }
 
     private fun shouldStack(recents: ViewGroup): Boolean = try {
@@ -485,6 +578,12 @@ object IosStackedRecentsHook : FeatureHook {
         // 桌面路径不会创建远端 target，绝不能因旧的 runningTask 记录而跳过卡片。
         if (recents.getTag(TAG_REMOTE_TARGETS) != true) return false
         if (task.getTag(TAG_TRANSITION_STUB) == true) return true
+        return isKnownTransitionTarget(recents, task)
+    }
+
+    /** 仅运行任务及 RecentsAnimationTargets.apps 中的 Surface 需要保持原生交接轨迹。 */
+    private fun isKnownTransitionTarget(recents: ViewGroup, task: View): Boolean {
+        if (task === getRunningTaskView(recents)) return true
         val transitionIds = recents.getTag(TAG_TRANSITION_TASK_IDS) as? IntArray ?: return false
         val taskIds = taskIdsOf(task)
         return taskIds.any { taskId -> transitionIds.any { it == taskId } }
@@ -519,6 +618,23 @@ object IosStackedRecentsHook : FeatureHook {
         XposedHelpers.callMethod(thumbnailView, "getThumbnail") == null
     } catch (_: Throwable) {
         false
+    }
+
+    private fun setPlaceholderSuppressed(task: View, suppress: Boolean) {
+        try {
+            val container = XposedHelpers.callMethod(task, "getFirstTaskContainer") ?: return
+            val thumbnail = XposedHelpers.callMethod(container, "getThumbnailViewDeprecated") as? View ?: return
+            thumbnail.setTag(TAG_PLACEHOLDER_SUPPRESSED, suppress)
+        } catch (_: Throwable) {
+            // 缩略图容器在 TaskView 复用/回收帧中可能暂不可用，下一次刷新会重试。
+        }
+    }
+
+    private fun clearPlaceholderSuppression(recents: ViewGroup, taskCl: Class<*>) {
+        for (i in 0 until recents.childCount) {
+            val task = recents.getChildAt(i) ?: continue
+            if (taskCl.isInstance(task)) setPlaceholderSuppressed(task, suppress = false)
+        }
     }
 
     private fun clearTransitionTask(recents: ViewGroup, taskCl: Class<*>, refresh: Boolean = true) {
