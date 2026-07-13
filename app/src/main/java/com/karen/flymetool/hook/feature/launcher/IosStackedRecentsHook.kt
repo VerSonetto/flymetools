@@ -33,6 +33,9 @@ object IosStackedRecentsHook : FeatureHook {
     private val TAG_PAGE_PROGRESS = Int.MAX_VALUE - 709
     private val TAG_PAGE_ANIMATION_SEEN = Int.MAX_VALUE - 710
     private val TAG_REAPPLYING_OFFSET = Int.MAX_VALUE - 711
+    // 当前应用从远端 Surface 切到截图期间的 TaskView / 异步回填副本都携带同一组 taskId。
+    private val TAG_TRANSITION_TASK_IDS = Int.MAX_VALUE - 712
+    private val TAG_TRANSITION_STUB = Int.MAX_VALUE - 713
 
     private val math = IosRecentsMath()
     private var offsetXMethod: Method? = null
@@ -64,6 +67,7 @@ object IosStackedRecentsHook : FeatureHook {
         hookDismissChannel(taskCl)
         hookFullscreenProgress(recentsCl, taskCl)
         hookRemoteTargets(recentsCl, taskCl)
+        hookTransitionStubLifecycle(recentsCl, taskCl)
         hookPageOffsetUpdates(recentsCl, taskCl)
         hookRefreshSources(recentsCl, taskCl)
         hookLiveTileEnable(recentsCl, taskCl)
@@ -93,6 +97,9 @@ object IosStackedRecentsHook : FeatureHook {
                         task.setTag(nativeTag, nativeValue)
                     }
                     val recents = task.parent as? ViewGroup ?: return
+                    // 应用上滑的运行任务由远端 Surface 锚定在中央；不能再让模块改写它的
+                    // taskOffset，否则 TaskView 与 Surface 会走出两条相交轨迹。
+                    if (isRemoteRunningTask(recents, task) || isTransitionTask(recents, task)) return
                     val transform = calculateTransform(recents, task) ?: return
                     val isLandscape = isLandscape(recents)
                     val replacement = when {
@@ -199,6 +206,63 @@ object IosStackedRecentsHook : FeatureHook {
         })
     }
 
+    /**
+     * Flyme 在 onGestureAnimationStart() 内用 showCurrentTask() 创建/复用运行任务占位卡，
+     * 任务列表随后异步回填时可能出现同 taskId 的第二个 TaskView。按 taskId 而不是按
+     * getRunningTaskView() 标记，才能覆盖慢速悬停和快速松手两个交接窗口。
+     */
+    private fun hookTransitionStubLifecycle(recentsCl: Class<*>, taskCl: Class<*>) {
+        val gestureStart = recentsCl.declaredMethods.firstOrNull {
+            it.name == "onGestureAnimationStart" && it.parameterTypes.size == 1 && it.returnType == Void.TYPE
+        } ?: run {
+            Logger.w(TAG, "onGestureAnimationStart(...) 未找到")
+            return
+        }
+        XposedBridge.hookMethod(gestureStart, object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                clearTransitionTask(recents = param.thisObject as ViewGroup, taskCl = taskCl, refresh = false)
+            }
+
+            override fun afterHookedMethod(param: MethodHookParam) {
+                val recents = param.thisObject as ViewGroup
+                val runningTask = getRunningTaskView(recents) ?: return
+                val taskIds = taskIdsOf(runningTask)
+                if (taskIds.isEmpty()) return
+                runningTask.setTag(TAG_TRANSITION_STUB, true)
+                recents.setTag(TAG_TRANSITION_TASK_IDS, taskIds)
+            }
+        })
+
+        val animationComplete = recentsCl.declaredMethods.firstOrNull {
+            it.name == "onRecentsAnimationComplete" && it.parameterTypes.isEmpty() && it.returnType == Void.TYPE
+        }
+        if (animationComplete != null) {
+            XposedBridge.hookMethod(animationComplete, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    clearTransitionTask(param.thisObject as ViewGroup, taskCl)
+                }
+            })
+        }
+
+        val showScreenshot = taskCl.declaredMethods.firstOrNull {
+            it.name == "setShouldShowScreenshot" &&
+                it.parameterTypes.isNotEmpty() &&
+                it.parameterTypes[0] == Boolean::class.javaPrimitiveType
+        }
+        if (showScreenshot != null) {
+            XposedBridge.hookMethod(showScreenshot, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    if (param.args[0] as? Boolean != true) return
+                    val task = param.thisObject as View
+                    val recents = task.parent as? ViewGroup ?: return
+                    if (!isTransitionTask(recents, task)) return
+                    // 缩略图切换会在原方法返回后的绘制帧才完成，下一帧再让它加入堆叠。
+                    recents.post { clearTransitionTask(recents, taskCl) }
+                }
+            })
+        }
+    }
+
     /** 原生 updatePageOffsets 结束后再同步 Live Tile，确保不会被 f5 原始偏移覆盖。 */
     private fun hookPageOffsetUpdates(recentsCl: Class<*>, taskCl: Class<*>) {
         for (name in listOf("updatePageOffsets", "updatePageOffsetsForFlyme")) {
@@ -258,6 +322,10 @@ object IosStackedRecentsHook : FeatureHook {
             for (i in 0 until recents.childCount) {
                 val task = recents.getChildAt(i) ?: continue
                 if (!taskCl.isInstance(task)) continue
+                if (task === runningTask || isTransitionTask(recents, task)) {
+                    resetTaskToNative(task)
+                    continue
+                }
                 val transform = calculateTransform(recents, task) ?: continue
                 task.setTag(TAG_ACTIVE, true)
                 task.setTag(TAG_SCALE, transform.scale)
@@ -288,6 +356,17 @@ object IosStackedRecentsHook : FeatureHook {
         } finally {
             task.setTag(TAG_REAPPLYING_OFFSET, false)
         }
+    }
+
+    /** 释放模块写入的视觉属性，让中央运行卡完全由 Flyme 的远端动画控制。 */
+    private fun resetTaskToNative(task: View) {
+        if (task.getTag(TAG_ACTIVE) != true) return
+        task.setTag(TAG_ACTIVE, false)
+        task.setTag(TAG_SCALE, null)
+        task.rotationY = 0f
+        task.translationZ = 0f
+        reapplyNativeOffsets(task)
+        applyScaleMethod?.invoke(task)
     }
 
     private fun calculateTransform(recents: ViewGroup, task: View): Transform? {
@@ -396,6 +475,35 @@ object IosStackedRecentsHook : FeatureHook {
         XposedHelpers.callMethod(recents, "getRunningTaskView") as? View
     } catch (_: Throwable) {
         null
+    }
+
+    private fun isRemoteRunningTask(recents: ViewGroup, task: View): Boolean {
+        return recents.getTag(TAG_REMOTE_TARGETS) == true && task === getRunningTaskView(recents)
+    }
+
+    private fun isTransitionTask(recents: ViewGroup, task: View): Boolean {
+        // 桌面路径不会创建远端 target，绝不能因旧的 runningTask 记录而跳过卡片。
+        if (recents.getTag(TAG_REMOTE_TARGETS) != true) return false
+        if (task.getTag(TAG_TRANSITION_STUB) == true) return true
+        val transitionIds = recents.getTag(TAG_TRANSITION_TASK_IDS) as? IntArray ?: return false
+        val taskIds = taskIdsOf(task)
+        return taskIds.any { taskId -> transitionIds.any { it == taskId } }
+    }
+
+    private fun taskIdsOf(task: View): IntArray = try {
+        XposedHelpers.callMethod(task, "getTaskIds") as? IntArray ?: IntArray(0)
+    } catch (_: Throwable) {
+        IntArray(0)
+    }
+
+    private fun clearTransitionTask(recents: ViewGroup, taskCl: Class<*>, refresh: Boolean = true) {
+        val hadTransition = recents.getTag(TAG_TRANSITION_TASK_IDS) != null
+        recents.setTag(TAG_TRANSITION_TASK_IDS, null)
+        for (i in 0 until recents.childCount) {
+            val task = recents.getChildAt(i) ?: continue
+            if (taskCl.isInstance(task)) task.setTag(TAG_TRANSITION_STUB, false)
+        }
+        if (hadTransition && refresh) refreshStack(recents, taskCl)
     }
 
     private fun syncLiveTile(recents: ViewGroup, primary: Float, secondary: Float) {
