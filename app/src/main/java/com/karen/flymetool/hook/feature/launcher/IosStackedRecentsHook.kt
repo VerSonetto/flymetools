@@ -400,9 +400,16 @@ object IosStackedRecentsHook : FeatureHook {
     /**
      * 应用上滑的一帧可同时经过 FULLSCREEN_PROGRESS、mCurrentShift、滚动和页偏移回调。
      * 位置 setter 仍同步替换当前卡的 offset；完整的缩放/旋转/Z 重算则合并到下一显示帧，
-     * 防止同帧多次反射和 applyScale 互相抢占主线程。
+     * 防止同帧多次反射和 applyScale 互相抢占主线程。桌面路径没有远端 Surface 的多路
+     * 回调，必须保持同步刷新，否则位置已更新而缩放要等下一帧，手势结束时会明显停顿。
      */
     private fun requestStackRefresh(recents: ViewGroup, taskCl: Class<*>) {
+        if (recents.getTag(TAG_REMOTE_TARGETS) != true &&
+            recents.getTag(TAG_OFFSET_HANDOFF) != true
+        ) {
+            refreshStack(recents, taskCl)
+            return
+        }
         if (recents.getTag(TAG_REFRESH_POSTED) == true) return
         recents.setTag(TAG_REFRESH_POSTED, true)
         recents.postOnAnimation {
