@@ -1,11 +1,8 @@
 package com.karen.flymetool.ui.screen
 
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -15,6 +12,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,13 +21,16 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -62,6 +64,7 @@ import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.FloatingActionButton
+import top.yukonga.miuix.kmp.basic.IconButton as MiuixIconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -72,10 +75,11 @@ import androidx.compose.ui.state.ToggleableState
 
 @Composable
 fun HomeScreen(
-    onAppClick: (ScopedApp) -> Unit
+    onAppClick: (ScopedApp) -> Unit,
+    onAboutClick: () -> Unit
 ) {
     val context = LocalContext.current
-    val apps = AppData.getScopedApps(context)
+    val apps = remember(context) { AppData.getScopedApps(context) }
     var showRestartDialog by remember { mutableStateOf(false) }
     var showIntroDialog by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
@@ -109,6 +113,7 @@ fun HomeScreen(
 
     Scaffold(
         containerColor = MiuixTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets.systemBars.exclude(WindowInsets.navigationBars),
         floatingActionButton = {
             FloatingActionButton(
                 onClick = { showRestartDialog = true }
@@ -131,6 +136,7 @@ fun HomeScreen(
                 updateInfo = updateInfo,
                 checkingUpdate = checkingUpdate,
                 onCheckUpdate = { showUpdateDialog = true },
+                onAboutClick = onAboutClick,
             )
 
             LazyColumn(
@@ -139,17 +145,15 @@ fun HomeScreen(
                     .padding(horizontal = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                itemsIndexed(apps) { index, app ->
-                    AnimatedVisibility(
-                        visible = true,
-                        enter = fadeIn(tween(300, delayMillis = index * 80)) +
-                                slideInVertically(tween(300, delayMillis = index * 80)) { it / 2 }
-                    ) {
-                        AppListItem(
-                            app = app,
-                            onClick = { onAppClick(app) }
-                        )
-                    }
+                items(
+                    items = apps,
+                    key = { app -> app.packageName },
+                    contentType = { "scoped_app" }
+                ) { app ->
+                    AppListItem(
+                        app = app,
+                        onClick = { onAppClick(app) }
+                    )
                 }
             }
         }
@@ -483,25 +487,41 @@ private fun HeaderSection(
     updateInfo: UpdateInfo?,
     checkingUpdate: Boolean,
     onCheckUpdate: () -> Unit,
+    onAboutClick: () -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 24.dp, end = 24.dp, top = 32.dp, bottom = 8.dp)
     ) {
-        Text(
-            text = "FlymeTool",
-            style = MiuixTheme.textStyles.title1,
-            color = MiuixTheme.colorScheme.onBackground,
-            fontWeight = FontWeight.ExtraBold
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "Flyme 系统增强工具",
-            style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.onBackgroundVariant,
-            fontWeight = FontWeight.Medium
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "FlymeTool",
+                    style = MiuixTheme.textStyles.title1,
+                    color = MiuixTheme.colorScheme.onBackground,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Flyme 系统增强工具",
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onBackgroundVariant,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            MiuixIconButton(onClick = onAboutClick) {
+                Icon(
+                    imageVector = Icons.Outlined.Info,
+                    contentDescription = "关于",
+                    tint = MiuixTheme.colorScheme.onBackground,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
         Spacer(modifier = Modifier.height(24.dp))
         Box(
             modifier = Modifier

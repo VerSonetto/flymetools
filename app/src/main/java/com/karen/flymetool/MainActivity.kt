@@ -1,29 +1,27 @@
 package com.karen.flymetool
 
+import android.graphics.Color
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.karen.flymetool.ui.screen.AppNavHost
 import com.karen.flymetool.ui.theme.FlymeToolTheme
-import com.karen.flymetool.util.FlymeVersionUtils
+import com.karen.flymetool.util.GithubAvatarLoader
 
 class MainActivity : ComponentActivity() {
 
-    companion object {
-        private var hasShownToast = false
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT)
+        )
+        window.isNavigationBarContrastEnforced = false
 
-        if (!hasShownToast) {
-            hasShownToast = true
-            val flymeVersion = FlymeVersionUtils.getFullVersion()
-            Toast.makeText(this, flymeVersion, Toast.LENGTH_LONG).show()
-        }
+        // 在首屏显示期间提前获取头像，进入关于页时直接使用缓存。
+        GithubAvatarLoader.preload()
 
         setContent {
             FlymeToolTheme {

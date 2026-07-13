@@ -11,12 +11,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -71,7 +75,7 @@ fun AppSelectScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    var selectedPackages by remember {
+    var selectedPackages by remember(packageName, featureKey) {
         mutableStateOf(PrefsHelper.getFeatureStringSet(context, packageName, featureKey, emptySet()))
     }
     var query by remember { mutableStateOf("") }
@@ -95,6 +99,7 @@ fun AppSelectScreen(
 
     Scaffold(
         containerColor = MiuixTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets.systemBars.exclude(WindowInsets.navigationBars),
         topBar = {
             SmallTopAppBar(
                 title = "选择应用",
@@ -127,7 +132,7 @@ fun AppSelectScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                AppFilter.values().forEach { f ->
+                AppFilter.entries.forEach { f ->
                     val isSelected = filter == f
                     val shape = RoundedCornerShape(12.dp)
                     Row(
@@ -179,7 +184,11 @@ fun AppSelectScreen(
                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    items(filtered, key = { it.packageName }) { app ->
+                    items(
+                        items = filtered,
+                        key = { app -> app.packageName },
+                        contentType = { "selectable_app" }
+                    ) { app ->
                         val checked = app.packageName in selectedPackages
                         AppItem(
                             app = app,

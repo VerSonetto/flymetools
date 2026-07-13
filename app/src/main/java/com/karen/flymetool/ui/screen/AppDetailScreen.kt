@@ -17,12 +17,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -67,22 +71,26 @@ fun AppDetailScreen(
     onNavigate: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
-    val features = AppData.getFeatures(app.packageName)
-    val groups = AppData.getFeatureGroups(app.packageName)
-    val ungroupedFeatures = AppData.getUngroupedFeatures(app.packageName)
+    val features = remember(app.packageName) { AppData.getFeatures(app.packageName) }
+    val groupedFeatures = remember(features) {
+        features.filter { it.group != null }.groupBy { it.group!! }
+    }
+    val groups = remember(groupedFeatures) { groupedFeatures.keys.toList() }
+    val ungroupedFeatures = remember(features) { features.filter { it.group == null } }
 
-    val featureStates = remember {
+    val featureStates = remember(app.packageName, features) {
         features.associate { feature ->
             feature.key to mutableStateOf(PrefsHelper.isFeatureEnabled(context, app.packageName, feature.key))
         }
     }
 
-    val expandedStates = remember {
+    val expandedStates = remember(app.packageName, groups) {
         groups.associateWith { mutableStateOf(false) }
     }
 
     Scaffold(
         containerColor = MiuixTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets.systemBars.exclude(WindowInsets.navigationBars),
         topBar = {
             SmallTopAppBar(
                 title = app.name,
@@ -132,14 +140,12 @@ fun AppDetailScreen(
 
                 groups.forEach { group ->
                     item(key = "group_$group") {
-                        val groupFeatures = AppData.getFeaturesByGroup(app.packageName, group)
-
                         ExpandableGroupCard(
                             title = group,
                             isExpanded = expandedStates[group]?.value ?: false,
                             onToggle = { expandedStates[group]?.value = !(expandedStates[group]?.value ?: false) },
                             packageName = app.packageName,
-                            groupFeatures = groupFeatures,
+                            groupFeatures = groupedFeatures[group].orEmpty(),
                             featureStates = featureStates,
                             context = context,
                             onNavigate = onNavigate
@@ -159,7 +165,11 @@ fun AppDetailScreen(
                     )
                 }
 
-                items(ungroupedFeatures) { feature ->
+                items(
+                    items = ungroupedFeatures,
+                    key = { feature -> feature.key },
+                    contentType = { "feature" }
+                ) { feature ->
                     FeatureEntry(
                         packageName = app.packageName,
                         feature = feature,
