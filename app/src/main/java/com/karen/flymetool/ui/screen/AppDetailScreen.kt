@@ -59,6 +59,8 @@ import com.karen.flymetool.ui.component.AppIcon
 import com.karen.flymetool.ui.component.FeatureSwitch
 import com.karen.flymetool.ui.component.feature.FeatureConfig
 import com.karen.flymetool.util.RootUtils
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
@@ -244,12 +246,14 @@ private fun ExpandableGroupCard(
         label = "arrow_rotation"
     )
 
-    Column(
+    Card(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp)
-            .clip(RoundedCornerShape(20.dp))
-            .background(MiuixTheme.colorScheme.surface)
+            .padding(horizontal = 20.dp),
+        cornerRadius = 16.dp,
+        colors = CardDefaults.defaultColors(
+            color = MiuixTheme.colorScheme.surfaceContainer
+        )
     ) {
         Row(
             modifier = Modifier
