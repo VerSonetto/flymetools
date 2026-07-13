@@ -604,7 +604,7 @@ object IosStackedRecentsHook : FeatureHook {
     /**
      * Flyme 的 task_head 自己承载全屏、手势结束和关闭动画的透明度。这里不覆盖父容器 alpha，
      * 而是在所有卡片完成本帧变换后，根据相邻前景卡片的真实覆盖比例分别处理标题元素：
-     * 应用名称连续淡入淡出，应用图标保持原透明度并逐级增加模糊。锁标识保持 Flyme 原样。
+     * 应用名称连续淡入淡出，真锁标识复用名称透明度；应用图标保持原透明度并逐级增加模糊。
      */
     private fun applyHeaderOcclusion(tasks: List<StackedTaskState>, landscape: Boolean) {
         val taskBoundsByDepth = tasks.associate { stackedTask ->
@@ -612,6 +612,11 @@ object IosStackedRecentsHook : FeatureHook {
         }
         val headers = tasks.mapNotNull { stackedTask ->
             resolveHeaderState(stackedTask.task)?.let { state ->
+                // 未锁任务异常时来自 XML 默认的 VISIBLE；同步一次后会变为 INVISIBLE。
+                // 真正锁定的任务保持 VISIBLE，后续仍完全由 Flyme 原生状态维护。
+                if (state.lockChild?.visibility == View.VISIBLE) {
+                    refreshNativeLockState(stackedTask.task)
+                }
                 prepareHeaderState(state)
                 StackedHeader(
                     stackedTask = stackedTask,
@@ -623,13 +628,21 @@ object IosStackedRecentsHook : FeatureHook {
 
         headers.forEach { current ->
             val frontBounds = taskBoundsByDepth[current.stackedTask.depth - 1]
+            var titleOcclusionAlpha: Float? = null
             current.state.textChildren.forEach { child ->
                 val visibleFraction = if (frontBounds == null) {
                     1f
                 } else {
                     calculateHeaderVisibleFraction(child, frontBounds, landscape)
                 }
-                applyHeaderTextAlpha(current.state, child, smoothStep(visibleFraction))
+                val occlusionAlpha = smoothStep(visibleFraction)
+                titleOcclusionAlpha = occlusionAlpha
+                applyHeaderTextAlpha(current.state, child, occlusionAlpha)
+            }
+            titleOcclusionAlpha?.let { alpha ->
+                current.state.lockChild?.let { lock ->
+                    applyHeaderFollowerAlpha(current.state, lock, alpha)
+                }
             }
             current.state.iconChildren.forEach { child ->
                 val visibleFraction = if (frontBounds == null) {
@@ -642,16 +655,29 @@ object IosStackedRecentsHook : FeatureHook {
         }
     }
 
+    /**
+     * activity_lock 在 Flyme 布局中的初始状态是 VISIBLE，TaskView 复用或桌面刚重启时可能
+     * 尚未完成状态回填。复用 TaskView 的公开更新入口，让原生 isTaskLocked() 决定显隐。
+     */
+    private fun refreshNativeLockState(task: View) {
+        try {
+            XposedHelpers.callMethod(task, "updateAppLockStatus")
+        } catch (e: Throwable) {
+            Logger.once(TAG, "同步原生任务锁状态失败: ${e.message}")
+        }
+    }
+
     private fun prepareHeaderState(state: HeaderState) {
         restoreHeaderVisibility(state)
+        val alphaChildren = state.textChildren + listOfNotNull(state.lockChild)
         if (!state.active) {
             state.baseAlphas.clear()
             state.lastAppliedAlphas.clear()
-            state.textChildren.forEach { child -> state.baseAlphas[child] = child.alpha }
+            alphaChildren.forEach { child -> state.baseAlphas[child] = child.alpha }
             state.active = true
             return
         }
-        state.textChildren.forEach { child ->
+        alphaChildren.forEach { child ->
             val lastApplied = state.lastAppliedAlphas[child]
             if (lastApplied != null &&
                 kotlin.math.abs(child.alpha - lastApplied) > HEADER_ALPHA_EPSILON
@@ -690,11 +716,7 @@ object IosStackedRecentsHook : FeatureHook {
     }
 
     private fun applyHeaderTextAlpha(state: HeaderState, child: View, occlusionAlpha: Float) {
-        val applied = (state.baseAlphas[child] ?: child.alpha) * occlusionAlpha
-        if (kotlin.math.abs(child.alpha - applied) > HEADER_ALPHA_EPSILON) {
-            child.alpha = applied
-        }
-        state.lastAppliedAlphas[child] = applied
+        applyHeaderFollowerAlpha(state, child, occlusionAlpha)
 
         if (occlusionAlpha <= HEADER_HIDE_ALPHA_THRESHOLD) {
             if (child.visibility == View.VISIBLE) {
@@ -702,6 +724,14 @@ object IosStackedRecentsHook : FeatureHook {
                 state.hiddenByOcclusion += child
             }
         }
+    }
+
+    private fun applyHeaderFollowerAlpha(state: HeaderState, child: View, occlusionAlpha: Float) {
+        val applied = (state.baseAlphas[child] ?: child.alpha) * occlusionAlpha
+        if (kotlin.math.abs(child.alpha - applied) > HEADER_ALPHA_EPSILON) {
+            child.alpha = applied
+        }
+        state.lastAppliedAlphas[child] = applied
     }
 
     private fun applyHeaderIconBlur(state: HeaderState, child: View, visibleFraction: Float) {
@@ -828,7 +858,8 @@ object IosStackedRecentsHook : FeatureHook {
         val state = task.getTag(TAG_HEADER_STATE) as? HeaderState ?: return
         if (!state.active && state.hiddenByOcclusion.isEmpty() && state.iconBlurStates.isEmpty()) return
 
-        state.textChildren.forEach { child ->
+        val alphaChildren = state.textChildren + listOfNotNull(state.lockChild)
+        alphaChildren.forEach { child ->
             val lastApplied = state.lastAppliedAlphas[child]
             if (lastApplied != null &&
                 kotlin.math.abs(child.alpha - lastApplied) > HEADER_ALPHA_EPSILON
@@ -866,6 +897,7 @@ object IosStackedRecentsHook : FeatureHook {
         val iconId = resources.getIdentifier("icon", "id", packageName)
         val bottomRightIconId = resources.getIdentifier("bottomRight_icon", "id", packageName)
         val appNameId = resources.getIdentifier("app_name", "id", packageName)
+        val activityLockId = resources.getIdentifier("activity_lock", "id", packageName)
         if (headerDebugCount < 5) {
             headerDebugCount++
             Logger.i("HeaderDebug", "pkg=$packageName taskHead=$taskHeadId icon=$iconId appName=$appNameId taskClass=${task.javaClass.name} headerFound=${task.findViewById<View>(taskHeadId) != null}")
@@ -891,6 +923,7 @@ object IosStackedRecentsHook : FeatureHook {
             overlayHost = task as? ViewGroup ?: header,
             textChildren = children.filter { it.id == appNameId },
             iconChildren = children.filter { it.id in iconIds },
+            lockChild = children.firstOrNull { it.id == activityLockId },
         ).also { task.setTag(TAG_HEADER_STATE, it) }
     }
 
@@ -1019,6 +1052,7 @@ object IosStackedRecentsHook : FeatureHook {
         val overlayHost: ViewGroup,
         val textChildren: List<View>,
         val iconChildren: List<View>,
+        val lockChild: View?,
         val baseAlphas: MutableMap<View, Float> = mutableMapOf(),
         val lastAppliedAlphas: MutableMap<View, Float> = mutableMapOf(),
         val iconBlurStates: MutableMap<View, IconBlurState> = mutableMapOf(),
