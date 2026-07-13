@@ -1,9 +1,11 @@
 package com.karen.flymetool.hook.feature.launcher
 
+import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.RenderEffect
 import android.graphics.Shader
+import android.graphics.drawable.Drawable
 import android.util.FloatProperty
 import android.view.View
 import android.view.ViewGroup
@@ -48,11 +50,13 @@ object IosStackedRecentsHook : FeatureHook {
     private const val HEADER_ALPHA_EPSILON = 0.001f
     private const val ICON_MAX_BLUR_DP = 10f
     private const val ICON_BLUR_STEPS = 16
+    private const val ICON_BLUR_PADDING_MULTIPLIER = 2f
 
     private val HEADER_NOT_FOUND = Any()
     private val iconBlurEffectCache = mutableMapOf<Int, RenderEffect>()
 
     private val math = IosRecentsMath()
+    private var headerDebugCount = 0
     private var offsetXMethod: Method? = null
     private var offsetYMethod: Method? = null
     private var applyScaleMethod: Method? = null
@@ -704,32 +708,125 @@ object IosStackedRecentsHook : FeatureHook {
         val blurStep = ((1f - visibleFraction.coerceIn(0f, 1f)) * ICON_BLUR_STEPS)
             .roundToInt()
             .coerceIn(0, ICON_BLUR_STEPS)
-        if (state.iconBlurSteps[child] == blurStep) return
+        val iconState = state.iconBlurStates.getOrPut(child) {
+            IconBlurState(BlurredIconOverlayView(child.context))
+        }
 
+        // 直接给 IconView 设置 RenderEffect 会被它的矩形 RenderNode 裁切，始终先清掉。
+        child.setRenderEffect(null)
+        updateNativeIconAlpha(iconState, child)
         if (blurStep == 0) {
-            child.setRenderEffect(null)
-        } else {
-            val radiusPx = ICON_MAX_BLUR_DP * child.resources.displayMetrics.density *
-                blurStep / ICON_BLUR_STEPS
+            clearHeaderIconBlur(state, child, iconState)
+            return
+        }
+
+        val source = readIconDrawable(child)
+        if (source == null || !iconState.overlay.updateSource(source)) {
+            clearHeaderIconBlur(state, child, iconState)
+            return
+        }
+
+        val density = child.resources.displayMetrics.density
+        val maxPaddingPx = (ICON_MAX_BLUR_DP * density * ICON_BLUR_PADDING_MULTIPLIER)
+            .roundToInt()
+            .coerceAtLeast(1)
+        layoutIconOverlay(state.overlayHost, child, iconState.overlay, maxPaddingPx)
+        iconState.overlay.updateDrawableBounds(source.bounds, maxPaddingPx)
+        iconState.overlay.alpha = iconState.nativeAlpha
+        if (!iconState.addedToOverlay) {
+            state.overlayHost.overlay.add(iconState.overlay)
+            iconState.addedToOverlay = true
+        }
+
+        if (iconState.blurStep != blurStep) {
+            val radiusPx = ICON_MAX_BLUR_DP * density * blurStep / ICON_BLUR_STEPS
             val radiusKey = (radiusPx * 10f).roundToInt().coerceAtLeast(1)
             val effect = iconBlurEffectCache.getOrPut(radiusKey) {
                 val cachedRadius = radiusKey / 10f
                 RenderEffect.createBlurEffect(
                     cachedRadius,
                     cachedRadius,
-                    // 图标 View 没有小米整块 Header 那样的外围留白。CLAMP 会把边缘像素
-                    // 复制到矩形边界，形成一块方形色斑；DECAL 让边缘向透明色自然衰减。
                     Shader.TileMode.DECAL,
                 )
             }
-            child.setRenderEffect(effect)
+            iconState.overlay.setRenderEffect(effect)
+            iconState.blurStep = blurStep
         }
-        state.iconBlurSteps[child] = blurStep
+
+        // 原图只作为数据源隐藏；覆盖层继承相同的原生 alpha，视觉透明度没有改变。
+        child.alpha = 0f
+        iconState.lastAppliedAlpha = 0f
+        iconState.usingOverlay = true
+    }
+
+    private fun readIconDrawable(child: View): Drawable? = try {
+        // IconView 实现稳定的 TaskViewIcon 公共接口，使用公开 getDrawable 特征取图。
+        XposedHelpers.callMethod(child, "getDrawable") as? Drawable
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun updateNativeIconAlpha(state: IconBlurState, child: View) {
+        if (!state.usingOverlay) {
+            state.nativeAlpha = child.alpha
+            return
+        }
+        val lastApplied = state.lastAppliedAlpha
+        if (lastApplied != null &&
+            kotlin.math.abs(child.alpha - lastApplied) > HEADER_ALPHA_EPSILON
+        ) {
+            state.nativeAlpha = child.alpha
+        }
+    }
+
+    private fun layoutIconOverlay(
+        host: ViewGroup,
+        child: View,
+        overlay: View,
+        paddingPx: Int,
+    ) {
+        val childBounds = Rect(0, 0, child.width, child.height)
+        host.offsetDescendantRectToMyCoords(child, childBounds)
+        overlay.layout(
+            childBounds.left - paddingPx,
+            childBounds.top - paddingPx,
+            childBounds.right + paddingPx,
+            childBounds.bottom + paddingPx,
+        )
+        overlay.rotation = child.rotation
+        overlay.scaleX = child.scaleX
+        overlay.scaleY = child.scaleY
+        overlay.pivotX = overlay.width / 2f
+        overlay.pivotY = overlay.height / 2f
+    }
+
+    private fun clearHeaderIconBlur(
+        headerState: HeaderState,
+        child: View,
+        iconState: IconBlurState,
+    ) {
+        if (iconState.usingOverlay) {
+            val lastApplied = iconState.lastAppliedAlpha
+            if (lastApplied != null &&
+                kotlin.math.abs(child.alpha - lastApplied) > HEADER_ALPHA_EPSILON
+            ) {
+                iconState.nativeAlpha = child.alpha
+            }
+            child.alpha = iconState.nativeAlpha
+        }
+        if (iconState.addedToOverlay) {
+            headerState.overlayHost.overlay.remove(iconState.overlay)
+            iconState.addedToOverlay = false
+        }
+        iconState.overlay.setRenderEffect(null)
+        iconState.blurStep = 0
+        iconState.lastAppliedAlpha = null
+        iconState.usingOverlay = false
     }
 
     private fun resetHeaderOcclusion(task: View) {
         val state = task.getTag(TAG_HEADER_STATE) as? HeaderState ?: return
-        if (!state.active && state.hiddenByOcclusion.isEmpty() && state.iconBlurSteps.isEmpty()) return
+        if (!state.active && state.hiddenByOcclusion.isEmpty() && state.iconBlurStates.isEmpty()) return
 
         state.textChildren.forEach { child ->
             val lastApplied = state.lastAppliedAlphas[child]
@@ -744,10 +841,15 @@ object IosStackedRecentsHook : FeatureHook {
             }
         }
         restoreHeaderVisibility(state)
-        state.iconChildren.forEach { child -> child.setRenderEffect(null) }
+        state.iconChildren.forEach { child ->
+            child.setRenderEffect(null)
+            state.iconBlurStates[child]?.let { iconState ->
+                clearHeaderIconBlur(state, child, iconState)
+            }
+        }
         state.baseAlphas.clear()
         state.lastAppliedAlphas.clear()
-        state.iconBlurSteps.clear()
+        state.iconBlurStates.clear()
         state.active = false
     }
 
@@ -764,6 +866,10 @@ object IosStackedRecentsHook : FeatureHook {
         val iconId = resources.getIdentifier("icon", "id", packageName)
         val bottomRightIconId = resources.getIdentifier("bottomRight_icon", "id", packageName)
         val appNameId = resources.getIdentifier("app_name", "id", packageName)
+        if (headerDebugCount < 5) {
+            headerDebugCount++
+            Logger.i("HeaderDebug", "pkg=$packageName taskHead=$taskHeadId icon=$iconId appName=$appNameId taskClass=${task.javaClass.name} headerFound=${task.findViewById<View>(taskHeadId) != null}")
+        }
         if (taskHeadId == 0 || iconId == 0) {
             task.setTag(TAG_HEADER_STATE, HEADER_NOT_FOUND)
             return null
@@ -781,6 +887,8 @@ object IosStackedRecentsHook : FeatureHook {
         }
         val iconIds = setOf(iconId, bottomRightIconId).filter { it != 0 }.toSet()
         return HeaderState(
+            // task_head 自身只有图标高度，用整张 TaskView 提供足够的透明扩散空间。
+            overlayHost = task as? ViewGroup ?: header,
             textChildren = children.filter { it.id == appNameId },
             iconChildren = children.filter { it.id in iconIds },
         ).also { task.setTag(TAG_HEADER_STATE, it) }
@@ -908,14 +1016,64 @@ object IosStackedRecentsHook : FeatureHook {
     )
 
     private data class HeaderState(
+        val overlayHost: ViewGroup,
         val textChildren: List<View>,
         val iconChildren: List<View>,
         val baseAlphas: MutableMap<View, Float> = mutableMapOf(),
         val lastAppliedAlphas: MutableMap<View, Float> = mutableMapOf(),
-        val iconBlurSteps: MutableMap<View, Int> = mutableMapOf(),
+        val iconBlurStates: MutableMap<View, IconBlurState> = mutableMapOf(),
         val hiddenByOcclusion: MutableSet<View> = mutableSetOf(),
         var active: Boolean = false,
     )
+
+    private data class IconBlurState(
+        val overlay: BlurredIconOverlayView,
+        var nativeAlpha: Float = 1f,
+        var lastAppliedAlpha: Float? = null,
+        var blurStep: Int = -1,
+        var addedToOverlay: Boolean = false,
+        var usingOverlay: Boolean = false,
+    )
+
+    /**
+     * 单独承载图标副本的扩大渲染面。RenderEffect 在透明 padding 内扩散，避免 IconView
+     * 自身狭小边界把高斯模糊截成矩形；原 IconView 仍保留布局、点击与无障碍职责。
+     */
+    private class BlurredIconOverlayView(context: Context) : View(context) {
+        private var source: Drawable? = null
+        private var drawable: Drawable? = null
+
+        fun updateSource(newSource: Drawable): Boolean {
+            if (source !== newSource || drawable == null) {
+                val copy = newSource.constantState
+                    ?.newDrawable(resources)
+                    ?.mutate()
+                    ?: return false
+                source = newSource
+                drawable = copy
+            }
+            drawable?.let { copy ->
+                copy.state = newSource.state
+                copy.level = newSource.level
+                copy.alpha = newSource.alpha
+                copy.layoutDirection = newSource.layoutDirection
+                copy.colorFilter = newSource.colorFilter
+            }
+            return true
+        }
+
+        fun updateDrawableBounds(sourceBounds: Rect, paddingPx: Int) {
+            drawable?.bounds = Rect(sourceBounds).also { it.offset(paddingPx, paddingPx) }
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            drawable?.draw(canvas)
+        }
+
+        override fun hasOverlappingRendering(): Boolean = false
+    }
 
     private data class StackedTaskState(
         val task: View,
