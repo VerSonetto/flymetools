@@ -1,7 +1,7 @@
 package com.karen.flymetool.hook.feature.launcher
 
-import android.graphics.Rect
 import android.graphics.Canvas
+import android.graphics.Rect
 import android.util.FloatProperty
 import android.view.View
 import android.view.ViewGroup
@@ -33,20 +33,19 @@ object IosStackedRecentsHook : FeatureHook {
     private val TAG_NATIVE_OFFSET_Y = Int.MAX_VALUE - 706
     private val TAG_FULLSCREEN_PROGRESS = Int.MAX_VALUE - 707
     private val TAG_REMOTE_TARGETS = Int.MAX_VALUE - 708
-    private val TAG_PAGE_PROGRESS = Int.MAX_VALUE - 709
-    private val TAG_PAGE_ANIMATION_SEEN = Int.MAX_VALUE - 710
+    private val TAG_OFFSET_HANDOFF = Int.MAX_VALUE - 709
     private val TAG_REAPPLYING_OFFSET = Int.MAX_VALUE - 711
-    // 当前应用从远端 Surface 切到截图期间的 TaskView / 异步回填副本都携带同一组 taskId。
-    private val TAG_TRANSITION_TASK_IDS = Int.MAX_VALUE - 712
-    private val TAG_TRANSITION_STUB = Int.MAX_VALUE - 713
     // 无 ThumbnailData 时 TaskThumbnailViewDeprecated 会主动绘制主题色底板；仅在远端交接时抑制它。
     private val TAG_PLACEHOLDER_SUPPRESSED = Int.MAX_VALUE - 714
+    private val TAG_PLACEHOLDER_INSPECTED = Int.MAX_VALUE - 715
+    private val TAG_REFRESH_POSTED = Int.MAX_VALUE - 716
 
     private val math = IosRecentsMath()
     private var offsetXMethod: Method? = null
     private var offsetYMethod: Method? = null
     private var applyScaleMethod: Method? = null
     private var adjacentPageOffsetProperty: FloatProperty<Any>? = null
+    private var adjacentPageScaleProperty: FloatProperty<Any>? = null
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (lpparam.packageName != "com.meizu.flyme.launcher") return
@@ -65,7 +64,10 @@ object IosStackedRecentsHook : FeatureHook {
         offsetXMethod = findFloatMethod(taskCl, "setTaskOffsetTranslationX")
         offsetYMethod = findFloatMethod(taskCl, "setTaskOffsetTranslationY")
         applyScaleMethod = taskCl.getDeclaredMethod("applyScale").also { it.isAccessible = true }
-        adjacentPageOffsetProperty = findAdjacentPageOffsetProperty(recentsCl)
+        adjacentPageOffsetProperty =
+            findRecentsFloatProperty(recentsCl, "ADJACENT_PAGE_HORIZONTAL_OFFSET")
+        adjacentPageScaleProperty =
+            findRecentsFloatProperty(recentsCl, "ADJACENT_PAGE_SCALE")
 
         hookOffsetChannel(taskCl)
         hookScaleChannel()
@@ -73,9 +75,10 @@ object IosStackedRecentsHook : FeatureHook {
         hookPlaceholderDrawing(lpparam.classLoader)
         hookFullscreenProgress(recentsCl, taskCl)
         hookRemoteTargets(recentsCl, taskCl)
-        hookTransitionStubLifecycle(recentsCl, taskCl)
+        hookGestureLifecycle(recentsCl, taskCl)
         hookContinuousGestureProgress(lpparam, taskCl)
         hookPageOffsetUpdates(recentsCl, taskCl)
+        hookPageScaleUpdates(recentsCl, taskCl)
         hookRefreshSources(recentsCl, taskCl)
         hookLiveTileEnable(recentsCl, taskCl)
     }
@@ -104,9 +107,6 @@ object IosStackedRecentsHook : FeatureHook {
                         task.setTag(nativeTag, nativeValue)
                     }
                     val recents = task.parent as? ViewGroup ?: return
-                    // 应用上滑的运行任务由远端 Surface 锚定在中央；不能再让模块改写它的
-                    // taskOffset，否则 TaskView 与 Surface 会走出两条相交轨迹。
-                    if (isRemoteRunningTask(recents, task) || isTransitionTask(recents, task)) return
                     val transform = calculateTransform(recents, task) ?: return
                     val isLandscape = isLandscape(recents)
                     val replacement = when {
@@ -148,7 +148,7 @@ object IosStackedRecentsHook : FeatureHook {
 
                 override fun afterHookedMethod(param: MethodHookParam) {
                     val task = param.thisObject as View
-                    (task.parent as? ViewGroup)?.let { refreshStack(it, taskCl) }
+                    (task.parent as? ViewGroup)?.let { requestStackRefresh(it, taskCl) }
                 }
             })
         }
@@ -173,7 +173,7 @@ object IosStackedRecentsHook : FeatureHook {
             }
 
             override fun afterHookedMethod(param: MethodHookParam) {
-                refreshStack(param.thisObject as ViewGroup, taskCl)
+                requestStackRefresh(param.thisObject as ViewGroup, taskCl)
             }
         })
     }
@@ -190,13 +190,11 @@ object IosStackedRecentsHook : FeatureHook {
                 if (param.args[1] == null) return
                 val recents = param.thisObject as ViewGroup
                 recents.setTag(TAG_REMOTE_TARGETS, true)
-                recents.setTag(TAG_PAGE_ANIMATION_SEEN, false)
-                recents.setTag(TAG_PAGE_PROGRESS, 0f)
-                mergeTransitionTargetIds(recents, param.args[1])
+                recents.setTag(TAG_OFFSET_HANDOFF, false)
             }
 
             override fun afterHookedMethod(param: MethodHookParam) {
-                refreshStack(param.thisObject as ViewGroup, taskCl)
+                requestStackRefresh(param.thisObject as ViewGroup, taskCl)
             }
         })
 
@@ -204,14 +202,25 @@ object IosStackedRecentsHook : FeatureHook {
             it.name == "cleanupRemoteTargets" && it.parameterTypes.isEmpty() && it.returnType == Void.TYPE
         } ?: return
         XposedBridge.hookMethod(cleanup, object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                val recents = param.thisObject as ViewGroup
+                if (recents.getTag(TAG_REMOTE_TARGETS) != true) return
+                val progress = readStackProgress(recents)
+                val adjacentOffset = kotlin.math.abs(readAdjacentPageOffset(recents))
+                val adjacentScale = kotlin.math.abs(readAdjacentPageScale(recents))
+                recents.setTag(
+                    TAG_OFFSET_HANDOFF,
+                    progress >= 1f - PAGE_OFFSET_EPSILON &&
+                        (adjacentOffset > PAGE_OFFSET_EPSILON ||
+                            adjacentScale > PAGE_OFFSET_EPSILON),
+                )
+            }
+
             override fun afterHookedMethod(param: MethodHookParam) {
                 val recents = param.thisObject as ViewGroup
                 recents.setTag(TAG_REMOTE_TARGETS, false)
-                recents.setTag(TAG_PAGE_ANIMATION_SEEN, false)
-                recents.setTag(TAG_PAGE_PROGRESS, null)
                 clearPlaceholderSuppression(recents, taskCl)
-                clearTransitionTask(recents, taskCl, refresh = false)
-                refreshStack(recents, taskCl)
+                requestStackRefresh(recents, taskCl)
             }
         })
     }
@@ -258,12 +267,8 @@ object IosStackedRecentsHook : FeatureHook {
         }
     }
 
-    /**
-     * Flyme 在 onGestureAnimationStart() 内用 showCurrentTask() 创建/复用运行任务占位卡，
-     * 任务列表随后异步回填时可能出现同 taskId 的第二个 TaskView。按 taskId 而不是按
-     * getRunningTaskView() 标记，才能覆盖慢速悬停和快速松手两个交接窗口。
-     */
-    private fun hookTransitionStubLifecycle(recentsCl: Class<*>, taskCl: Class<*>) {
+    /** 每次手势开始前清理上一次交接留下的缩略图抑制标记。 */
+    private fun hookGestureLifecycle(recentsCl: Class<*>, taskCl: Class<*>) {
         val gestureStart = recentsCl.declaredMethods.firstOrNull {
             it.name == "onGestureAnimationStart" && it.parameterTypes.size == 1 && it.returnType == Void.TYPE
         } ?: run {
@@ -273,22 +278,10 @@ object IosStackedRecentsHook : FeatureHook {
         XposedBridge.hookMethod(gestureStart, object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 val recents = param.thisObject as ViewGroup
-                clearTransitionTask(recents = recents, taskCl = taskCl, refresh = false)
-            }
-
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val recents = param.thisObject as ViewGroup
-                val runningTask = getRunningTaskView(recents) ?: return
-                val taskIds = taskIdsOf(runningTask)
-                if (taskIds.isEmpty()) return
-                runningTask.setTag(TAG_TRANSITION_STUB, true)
-                recents.setTag(TAG_TRANSITION_TASK_IDS, taskIds)
+                recents.setTag(TAG_OFFSET_HANDOFF, false)
+                clearPlaceholderSuppression(recents, taskCl)
             }
         })
-
-        // 不在 setShouldShowScreenshot()/onRecentsAnimationComplete() 释放标记：这两个回调
-        // 都发生在远端 Surface 与截图交接的同一帧，立刻重排会让下层卡闪到最顶层。
-        // 远端 target 清理（或下一次手势开始）才是安全的释放边界。
     }
 
     /**
@@ -316,7 +309,7 @@ object IosStackedRecentsHook : FeatureHook {
                         val currentShift = XposedHelpers.getObjectField(handler, "mCurrentShift") ?: return
                         val progress = XposedHelpers.getFloatField(currentShift, "value").coerceIn(0f, 1f)
                         recents.setTag(TAG_FULLSCREEN_PROGRESS, progress)
-                        refreshStack(recents, taskCl)
+                        requestStackRefresh(recents, taskCl)
                     } catch (e: Throwable) {
                         Logger.w(TAG, "读取连续手势进度失败: ${e.message}")
                     }
@@ -335,9 +328,44 @@ object IosStackedRecentsHook : FeatureHook {
             } ?: continue
             XposedBridge.hookMethod(method, object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    refreshStack(param.thisObject as ViewGroup, taskCl)
+                    val recents = param.thisObject as ViewGroup
+                    finishOffsetHandoffIfSettled(recents)
+                    requestStackRefresh(recents, taskCl)
                 }
             })
+        }
+    }
+
+    private fun hookPageScaleUpdates(recentsCl: Class<*>, taskCl: Class<*>) {
+        val method = recentsCl.declaredMethods.firstOrNull {
+            it.name == "updatePageScales" &&
+                it.parameterTypes.isEmpty() &&
+                it.returnType == Void.TYPE
+        } ?: run {
+            Logger.w(TAG, "updatePageScales() 未找到")
+            return
+        }
+        XposedBridge.hookMethod(method, object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                stabilizeStackScale(param.thisObject as ViewGroup, taskCl)
+            }
+        })
+    }
+
+    private fun stabilizeStackScale(recents: ViewGroup, taskCl: Class<*>) {
+        if (recents.getTag(TAG_REMOTE_TARGETS) != true &&
+            recents.getTag(TAG_OFFSET_HANDOFF) != true
+        ) return
+
+        val runningTask = getRunningTaskView(recents)
+        for (i in 0 until recents.childCount) {
+            val task = recents.getChildAt(i) ?: continue
+            if (!taskCl.isInstance(task) || task === runningTask) continue
+            task.pivotX = task.width / 2f
+            task.pivotY = task.height / 2f
+            if (task.getTag(TAG_ACTIVE) == true) {
+                applyScaleMethod?.invoke(task)
+            }
         }
     }
 
@@ -349,7 +377,7 @@ object IosStackedRecentsHook : FeatureHook {
             } ?: continue
             XposedBridge.hookMethod(method, object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    refreshStack(param.thisObject as ViewGroup, taskCl)
+                    requestStackRefresh(param.thisObject as ViewGroup, taskCl)
                 }
             })
         }
@@ -364,9 +392,23 @@ object IosStackedRecentsHook : FeatureHook {
         } ?: return
         XposedBridge.hookMethod(method, object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
-                if (param.args[0] as Boolean) refreshStack(param.thisObject as ViewGroup, taskCl)
+                if (param.args[0] as Boolean) requestStackRefresh(param.thisObject as ViewGroup, taskCl)
             }
         })
+    }
+
+    /**
+     * 应用上滑的一帧可同时经过 FULLSCREEN_PROGRESS、mCurrentShift、滚动和页偏移回调。
+     * 位置 setter 仍同步替换当前卡的 offset；完整的缩放/旋转/Z 重算则合并到下一显示帧，
+     * 防止同帧多次反射和 applyScale 互相抢占主线程。
+     */
+    private fun requestStackRefresh(recents: ViewGroup, taskCl: Class<*>) {
+        if (recents.getTag(TAG_REFRESH_POSTED) == true) return
+        recents.setTag(TAG_REFRESH_POSTED, true)
+        recents.postOnAnimation {
+            recents.setTag(TAG_REFRESH_POSTED, false)
+            refreshStack(recents, taskCl)
+        }
     }
 
     private fun refreshStack(recents: ViewGroup, taskCl: Class<*>) {
@@ -387,22 +429,7 @@ object IosStackedRecentsHook : FeatureHook {
             for (i in 0 until recents.childCount) {
                 val task = recents.getChildAt(i) ?: continue
                 if (!taskCl.isInstance(task)) continue
-                val hasNoThumbnail = hasNoThumbnail(task)
-                setPlaceholderSuppressed(
-                    task = task,
-                    suppress = recents.getTag(TAG_REMOTE_TARGETS) == true && hasNoThumbnail,
-                )
-                if (recents.getTag(TAG_REMOTE_TARGETS) == true &&
-                    hasNoThumbnail &&
-                    isKnownTransitionTarget(recents, task)
-                ) {
-                    // 只有当前远端 Surface 对应的无缩略图 TaskView 才是交接占位卡。
-                    // 普通下层卡在刚打开最近任务时也可能还未拿到 ThumbnailData，绝不能因此
-                    // 暂停它的堆叠变换，否则远端结束时会从留缝位置瞬间跳到最终堆叠。
-                    task.setTag(TAG_TRANSITION_STUB, true)
-                } else if (!isKnownTransitionTarget(recents, task)) {
-                    task.setTag(TAG_TRANSITION_STUB, false)
-                }
+                inspectPlaceholderOnce(recents, task)
                 val isRunning = task === runningTask
                 val depth = if (recents.getTag(TAG_REMOTE_TARGETS) == true && !isRunning) {
                     ++remoteDepth
@@ -413,12 +440,6 @@ object IosStackedRecentsHook : FeatureHook {
                     if (isRunning) 0f else -depth.toFloat()
                 } else {
                     -depth.toFloat()
-                }
-                if (isRunning || isTransitionTask(recents, task)) {
-                    // 即使暂不参与位移，也必须保留其本应处于的负 Z，不能让下层占位卡抢到顶层。
-                    resetTaskToNative(task, z)
-                    index++
-                    continue
                 }
                 val transform = calculateTransform(recents, task) ?: continue
                 task.setTag(TAG_ACTIVE, true)
@@ -431,7 +452,7 @@ object IosStackedRecentsHook : FeatureHook {
                 }
                 reapplyNativeOffsets(task)
                 applyScaleMethod?.invoke(task)
-                if (task === runningTask) {
+                if (isRunning) {
                     val landscape = isLandscape(recents)
                     runningPrimary = if (landscape) task.translationY else task.translationX
                     runningSecondary = if (landscape) task.translationX else task.translationY
@@ -454,18 +475,6 @@ object IosStackedRecentsHook : FeatureHook {
         } finally {
             task.setTag(TAG_REAPPLYING_OFFSET, false)
         }
-    }
-
-    /** 释放模块写入的视觉属性，让中央运行卡完全由 Flyme 的远端动画控制。 */
-    private fun resetTaskToNative(task: View, translationZ: Float = 0f) {
-        if (task.getTag(TAG_ACTIVE) == true) {
-            task.setTag(TAG_ACTIVE, false)
-            task.setTag(TAG_SCALE, null)
-            task.rotationY = 0f
-            reapplyNativeOffsets(task)
-            applyScaleMethod?.invoke(task)
-        }
-        task.translationZ = translationZ
     }
 
     private fun calculateTransform(recents: ViewGroup, task: View): Transform? {
@@ -500,13 +509,16 @@ object IosStackedRecentsHook : FeatureHook {
             centerScale.coerceAtLeast(0.0001f)
 
         val isRemote = recents.getTag(TAG_REMOTE_TARGETS) == true
+        val isOffsetHandoff = recents.getTag(TAG_OFFSET_HANDOFF) == true
         val progress = resolveProgress(recents, isRemote)
         val nativeX = task.getTag(TAG_NATIVE_OFFSET_X) as? Float ?: 0f
         val nativeY = task.getTag(TAG_NATIVE_OFFSET_Y) as? Float ?: 0f
         val nativePrimary = if (landscape) nativeY else nativeX
         val nativeSecondary = if (landscape) nativeX else nativeY
-        // 应用路径将原生页偏移与堆叠目标写入同一个 taskOffset 字段：p=0 保持原轨迹，p=1 到目标。
-        val primary = if (isRemote) {
+        // Flyme 的相邻页 offset 使用独立低刚度弹簧，结束时间明显晚于 450ms 的手势动画。
+        // 远端阶段把它作为起点并随堆叠进度消隐，避免主动画结束后还残留一段慢速靠拢。
+        // cleanup 若早于弹簧归零，则保持同一公式到 offset 归零，防止交接当帧跳变。
+        val primary = if (isRemote || isOffsetHandoff) {
             nativePrimary + (targetPrimary - nativePrimary) * progress
         } else {
             nativePrimary + targetPrimary * progress
@@ -522,11 +534,23 @@ object IosStackedRecentsHook : FeatureHook {
     }
 
     private fun resolveProgress(recents: ViewGroup, isRemote: Boolean): Float {
-        val fullscreen = (recents.getTag(TAG_FULLSCREEN_PROGRESS) as? Float ?: 1f).coerceIn(0f, 1f)
+        val fullscreen = readStackProgress(recents)
         if (!isRemote) return fullscreen
         // 单通道 taskOffset 已把原生页偏移作为插值起点，不再以相邻页弹簧限速。
         // 后者只在松手后才补到终点，会造成“先留缝、再瞬间靠拢”。
         return fullscreen
+    }
+
+    private fun readStackProgress(recents: ViewGroup): Float =
+        (recents.getTag(TAG_FULLSCREEN_PROGRESS) as? Float ?: 1f).coerceIn(0f, 1f)
+
+    private fun finishOffsetHandoffIfSettled(recents: ViewGroup) {
+        if (recents.getTag(TAG_OFFSET_HANDOFF) != true) return
+        if (kotlin.math.abs(readAdjacentPageOffset(recents)) <= PAGE_OFFSET_EPSILON &&
+            kotlin.math.abs(readAdjacentPageScale(recents)) <= PAGE_OFFSET_EPSILON
+        ) {
+            recents.setTag(TAG_OFFSET_HANDOFF, false)
+        }
     }
 
     private fun shouldStack(recents: ViewGroup): Boolean = try {
@@ -570,47 +594,6 @@ object IosStackedRecentsHook : FeatureHook {
         null
     }
 
-    private fun isRemoteRunningTask(recents: ViewGroup, task: View): Boolean {
-        return recents.getTag(TAG_REMOTE_TARGETS) == true && task === getRunningTaskView(recents)
-    }
-
-    private fun isTransitionTask(recents: ViewGroup, task: View): Boolean {
-        // 桌面路径不会创建远端 target，绝不能因旧的 runningTask 记录而跳过卡片。
-        if (recents.getTag(TAG_REMOTE_TARGETS) != true) return false
-        if (task.getTag(TAG_TRANSITION_STUB) == true) return true
-        return isKnownTransitionTarget(recents, task)
-    }
-
-    /** 仅运行任务及 RecentsAnimationTargets.apps 中的 Surface 需要保持原生交接轨迹。 */
-    private fun isKnownTransitionTarget(recents: ViewGroup, task: View): Boolean {
-        if (task === getRunningTaskView(recents)) return true
-        val transitionIds = recents.getTag(TAG_TRANSITION_TASK_IDS) as? IntArray ?: return false
-        val taskIds = taskIdsOf(task)
-        return taskIds.any { taskId -> transitionIds.any { it == taskId } }
-    }
-
-    private fun taskIdsOf(task: View): IntArray = try {
-        XposedHelpers.callMethod(task, "getTaskIds") as? IntArray ?: IntArray(0)
-    } catch (_: Throwable) {
-        IntArray(0)
-    }
-
-    /** 从 RecentsAnimationTargets.apps 收集 Quick Switch / split 分支的全部远端任务 ID。 */
-    private fun mergeTransitionTargetIds(recents: ViewGroup, targets: Any?) {
-        try {
-            val ids = LinkedHashSet<Int>()
-            (recents.getTag(TAG_TRANSITION_TASK_IDS) as? IntArray)?.forEach { ids += it }
-            val apps = XposedHelpers.getObjectField(targets, "apps") as? Array<*> ?: emptyArray<Any>()
-            for (app in apps) {
-                val taskId = app?.let { XposedHelpers.getIntField(it, "taskId") } ?: -1
-                if (taskId >= 0) ids += taskId
-            }
-            if (ids.isNotEmpty()) recents.setTag(TAG_TRANSITION_TASK_IDS, ids.toIntArray())
-        } catch (e: Throwable) {
-            Logger.w(TAG, "读取远端任务 ID 失败: ${e.message}")
-        }
-    }
-
     /** TaskThumbnailViewDeprecated 没有 Bitmap 时会显示随深色模式变化的纯色底板。 */
     private fun hasNoThumbnail(task: View): Boolean = try {
         val container = XposedHelpers.callMethod(task, "getFirstTaskContainer") ?: return false
@@ -618,6 +601,17 @@ object IosStackedRecentsHook : FeatureHook {
         XposedHelpers.callMethod(thumbnailView, "getThumbnail") == null
     } catch (_: Throwable) {
         false
+    }
+
+    /**
+     * 缩略图状态只在卡片首次进入本次远端交接时检查。斜滑会同时驱动手势和分页滚动；
+     * 若在两条回调的每帧都反射访问 TaskContainer，会造成可感知的掉帧。
+     */
+    private fun inspectPlaceholderOnce(recents: ViewGroup, task: View) {
+        if (recents.getTag(TAG_REMOTE_TARGETS) != true || task.getTag(TAG_PLACEHOLDER_INSPECTED) == true) return
+        task.setTag(TAG_PLACEHOLDER_INSPECTED, true)
+        val noThumbnail = hasNoThumbnail(task)
+        setPlaceholderSuppressed(task, suppress = noThumbnail)
     }
 
     private fun setPlaceholderSuppressed(task: View, suppress: Boolean) {
@@ -633,18 +627,11 @@ object IosStackedRecentsHook : FeatureHook {
     private fun clearPlaceholderSuppression(recents: ViewGroup, taskCl: Class<*>) {
         for (i in 0 until recents.childCount) {
             val task = recents.getChildAt(i) ?: continue
-            if (taskCl.isInstance(task)) setPlaceholderSuppressed(task, suppress = false)
+            if (taskCl.isInstance(task)) {
+                task.setTag(TAG_PLACEHOLDER_INSPECTED, false)
+                setPlaceholderSuppressed(task, suppress = false)
+            }
         }
-    }
-
-    private fun clearTransitionTask(recents: ViewGroup, taskCl: Class<*>, refresh: Boolean = true) {
-        val hadTransition = recents.getTag(TAG_TRANSITION_TASK_IDS) != null
-        recents.setTag(TAG_TRANSITION_TASK_IDS, null)
-        for (i in 0 until recents.childCount) {
-            val task = recents.getChildAt(i) ?: continue
-            if (taskCl.isInstance(task)) task.setTag(TAG_TRANSITION_STUB, false)
-        }
-        if (hadTransition && refresh) refreshStack(recents, taskCl)
     }
 
     private fun syncLiveTile(recents: ViewGroup, primary: Float, secondary: Float) {
@@ -665,17 +652,27 @@ object IosStackedRecentsHook : FeatureHook {
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun findAdjacentPageOffsetProperty(recentsCl: Class<*>): FloatProperty<Any>? = try {
+    private fun findRecentsFloatProperty(
+        recentsCl: Class<*>,
+        fieldName: String,
+    ): FloatProperty<Any>? = try {
         recentsCl.fields.firstOrNull {
-            it.name == "ADJACENT_PAGE_HORIZONTAL_OFFSET" && FloatProperty::class.java.isAssignableFrom(it.type)
+            it.name == fieldName &&
+                FloatProperty::class.java.isAssignableFrom(it.type)
         }?.get(null) as? FloatProperty<Any>
     } catch (e: Throwable) {
-        Logger.w(TAG, "ADJACENT_PAGE_HORIZONTAL_OFFSET 未找到: ${e.message}")
+        Logger.w(TAG, "$fieldName 未找到: ${e.message}")
         null
     }
 
     private fun readAdjacentPageOffset(recents: ViewGroup): Float = try {
         adjacentPageOffsetProperty?.get(recents) ?: 0f
+    } catch (_: Throwable) {
+        0f
+    }
+
+    private fun readAdjacentPageScale(recents: ViewGroup): Float = try {
+        adjacentPageScaleProperty?.get(recents) ?: 0f
     } catch (_: Throwable) {
         0f
     }
