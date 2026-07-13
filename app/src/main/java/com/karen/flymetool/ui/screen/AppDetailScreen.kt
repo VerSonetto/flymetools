@@ -30,12 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
@@ -46,7 +41,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
@@ -60,8 +54,12 @@ import com.karen.flymetool.ui.component.AppIcon
 import com.karen.flymetool.ui.component.FeatureSwitch
 import com.karen.flymetool.ui.component.feature.FeatureConfig
 import com.karen.flymetool.util.RootUtils
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.IconButton as MiuixIconButton
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppDetailScreen(
     app: ScopedApp,
@@ -84,7 +82,32 @@ fun AppDetailScreen(
     }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = MiuixTheme.colorScheme.background,
+        topBar = {
+            SmallTopAppBar(
+                title = app.name,
+                color = MiuixTheme.colorScheme.background,
+                titleColor = MiuixTheme.colorScheme.onBackground,
+                navigationIcon = {
+                    MiuixIconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                            contentDescription = null,
+                            tint = MiuixTheme.colorScheme.onBackground
+                        )
+                    }
+                },
+                actions = {
+                    MiuixIconButton(onClick = { restartScopedApp(context, app) }) {
+                        Icon(
+                            imageVector = Icons.Outlined.Refresh,
+                            contentDescription = null,
+                            tint = MiuixTheme.colorScheme.onBackground
+                        )
+                    }
+                }
+            )
+        }
     ) { paddingValues ->
         LazyColumn(
             modifier = Modifier
@@ -93,19 +116,15 @@ fun AppDetailScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
-                AppHeaderSection(
-                    app = app,
-                    onBack = onBack,
-                    onRestart = { restartScopedApp(context, app) }
-                )
+                AppInfoSection(app = app)
             }
 
             if (groups.isNotEmpty()) {
                 item {
                     Text(
                         text = "功能分组",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        style = MiuixTheme.textStyles.title4,
+                        color = MiuixTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
                     )
@@ -133,8 +152,8 @@ fun AppDetailScreen(
                 item {
                     Text(
                         text = if (groups.isNotEmpty()) "其他功能" else "功能配置",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        style = MiuixTheme.textStyles.title4,
+                        color = MiuixTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
                     )
@@ -164,95 +183,34 @@ fun AppDetailScreen(
 }
 
 @Composable
-private fun AppHeaderSection(
-    app: ScopedApp,
-    onBack: () -> Unit,
-    onRestart: () -> Unit
+private fun AppInfoSection(
+    app: ScopedApp
 ) {
-    Column(
-        modifier = Modifier.fillMaxWidth()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 4.dp, end = 4.dp, top = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier.size(48.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-            Spacer(modifier = Modifier.weight(1f))
-            IconButton(
-                onClick = onRestart,
-                modifier = Modifier.size(48.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Refresh,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(64.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center
-            ) {
-                AppIcon(
-                    packageName = app.packageName,
-                    modifier = Modifier.size(32.dp)
-                )
-            }
-            Spacer(modifier = Modifier.width(20.dp))
-            Column {
-                Text(
-                    text = app.name,
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = app.packageName,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .padding(horizontal = 24.dp)
-                .background(
-                    Brush.horizontalGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f),
-                            Color.Transparent
-                        )
-                    )
-                )
+        AppIcon(
+            packageName = app.packageName,
+            modifier = Modifier.size(56.dp)
         )
+        Spacer(modifier = Modifier.width(20.dp))
+        Column {
+            Text(
+                text = app.name,
+                style = MiuixTheme.textStyles.title3,
+                color = MiuixTheme.colorScheme.onBackground,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = app.packageName,
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onBackgroundVariant
+            )
+        }
     }
 }
 
@@ -279,7 +237,7 @@ private fun ExpandableGroupCard(
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
             .clip(RoundedCornerShape(20.dp))
-            .background(MaterialTheme.colorScheme.surface)
+            .background(MiuixTheme.colorScheme.surface)
     ) {
         Row(
             modifier = Modifier
@@ -292,20 +250,20 @@ private fun ExpandableGroupCard(
                 modifier = Modifier
                     .size(6.dp)
                     .clip(RoundedCornerShape(3.dp))
-                    .background(MaterialTheme.colorScheme.primary)
+                    .background(MiuixTheme.colorScheme.primary)
             )
             Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = title,
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
+                style = MiuixTheme.textStyles.title4,
+                color = MiuixTheme.colorScheme.onSurface,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
             Icon(
                 imageVector = Icons.Rounded.KeyboardArrowDown,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = MiuixTheme.colorScheme.onBackgroundVariant,
                 modifier = Modifier
                     .size(22.dp)
                     .rotate(rotation)
@@ -398,7 +356,7 @@ private fun FeatureEntryCompact(
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp)
                         .height(0.5.dp)
-                        .background(MaterialTheme.colorScheme.outlineVariant)
+                        .background(MiuixTheme.colorScheme.dividerLine)
                 )
             }
         }
@@ -439,7 +397,7 @@ private fun FeatureEntry(
             modifier = modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(20.dp))
-                .background(MaterialTheme.colorScheme.surface)
+                .background(MiuixTheme.colorScheme.surface)
         ) {
             FeatureSwitch(
                 title = feature.label,
@@ -476,8 +434,8 @@ private fun EmptyState(
     ) {
         Text(
             text = "暂无可配置功能",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            style = MiuixTheme.textStyles.body1,
+            color = MiuixTheme.colorScheme.onBackgroundVariant
         )
     }
 }

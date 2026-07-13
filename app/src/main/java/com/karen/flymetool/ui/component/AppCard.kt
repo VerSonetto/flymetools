@@ -2,12 +2,12 @@ package com.karen.flymetool.ui.component
 
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.CardDefaults
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.PressFeedbackType
 
 @Composable
 fun AppCard(
@@ -18,25 +18,19 @@ fun AppCard(
     if (onClick != null) {
         Card(
             modifier = modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.large,
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
+            colors = CardDefaults.defaultColors(
+                color = MiuixTheme.colorScheme.surface
             ),
-            elevation = CardDefaults.cardElevation(
-                defaultElevation = 0.dp
-            ),
+            pressFeedbackType = PressFeedbackType.Sink,
+            showIndication = true,
             onClick = onClick,
             content = content
         )
     } else {
         Card(
             modifier = modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.large,
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            ),
-            elevation = CardDefaults.cardElevation(
-                defaultElevation = 0.dp
+            colors = CardDefaults.defaultColors(
+                color = MiuixTheme.colorScheme.surface
             ),
             content = content
         )
@@ -50,12 +44,8 @@ fun FeatureCard(
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        ),
-        elevation = CardDefaults.cardElevation(
-            defaultElevation = 0.dp
+        colors = CardDefaults.defaultColors(
+            color = MiuixTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         ),
         content = content
     )

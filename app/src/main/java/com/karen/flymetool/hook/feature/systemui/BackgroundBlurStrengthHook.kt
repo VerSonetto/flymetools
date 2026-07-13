@@ -22,12 +22,51 @@ object BackgroundBlurStrengthHook : FeatureHook {
         val strength = XposedPrefs.getFeatureValue(lpparam, packageName, KEY, DEFAULT_STRENGTH)
         val factor = strength.coerceIn(0, 100) / 100f
 
-        hookBlurUtilsRatio(lpparam, factor)
-
         when {
-            FlymeVersionUtils.isFlyme12() -> hookMzBlurEffect(lpparam, factor)
-            FlymeVersionUtils.isFlyme10() -> hookCenterControllerBlur(lpparam, factor)
-            else -> hookMzBlurEffect(lpparam, factor)
+            FlymeVersionUtils.isFlyme12() -> hookApplyBlurMZ(lpparam, factor)
+            FlymeVersionUtils.isFlyme10() -> {
+                hookBlurUtilsRatio(lpparam, factor)
+                hookCenterControllerBlur(lpparam, factor)
+            }
+            else -> {
+                hookBlurUtilsRatio(lpparam, factor)
+                hookMzBlurEffect(lpparam, factor)
+            }
+        }
+    }
+
+    /**
+     * Flyme 12: hook applyBlurMZ，在最终应用模糊半径到 SurfaceControl 时缩放。
+     *
+     * blurRadiusOfRatio 的返回值被广泛用于中间计算（shadeDepthRatio、isExpanded 判断等），
+     * hook 它会导致窗口状态计算错误引发状态栏重影。
+     * applyBlurMZ 是最终调用 withBackgroundBlur 的地方，只在这里缩放 radius，
+     * 所有中间计算保持原始值。
+     */
+    private fun hookApplyBlurMZ(lpparam: XC_LoadPackage.LoadPackageParam, factor: Float) {
+        try {
+            val clazz = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.BlurUtils",
+                lpparam.classLoader
+            )
+            val viewRootImplClass = XposedHelpers.findClass(
+                "android.view.ViewRootImpl", lpparam.classLoader
+            )
+            XposedHelpers.findAndHookMethod(
+                clazz, "applyBlurMZ",
+                viewRootImplClass, Int::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType, Float::class.javaPrimitiveType,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val radius = param.args[1] as? Int ?: return
+                        if (radius <= 0) return
+                        param.args[1] = (radius * factor).toInt().coerceAtLeast(0)
+                    }
+                }
+            )
+            Logger.i(TAG, "applyBlurMZ radius scaled by $factor")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "applyBlurMZ hook failed", e)
         }
     }
 

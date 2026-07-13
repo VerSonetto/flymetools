@@ -1,64 +1,92 @@
 package com.karen.flymetool.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.darkColorScheme as m3DarkColorScheme
+import androidx.compose.material3.lightColorScheme as m3LightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-
-private val LightColorScheme = lightColorScheme(
-    primary = Primary,
-    onPrimary = OnPrimary,
-    primaryContainer = PrimaryLight,
-    secondary = Secondary,
-    onSecondary = OnSecondary,
-    secondaryContainer = SecondaryDark,
-    tertiary = Accent,
-    background = Background,
-    onBackground = OnBackground,
-    surface = Surface,
-    onSurface = OnSurface,
-    surfaceVariant = SurfaceVariant,
-    onSurfaceVariant = OnSurfaceVariant,
-    outline = Outline,
-    outlineVariant = OutlineVariant,
-    error = Error,
-    onError = OnPrimary
-)
-
-private val DarkColorScheme = darkColorScheme(
-    primary = PrimaryLight,
-    onPrimary = OnPrimary,
-    primaryContainer = PrimaryDark,
-    secondary = Secondary,
-    onSecondary = OnSecondary,
-    secondaryContainer = SecondaryDark,
-    tertiary = Accent,
-    background = Color(0xFF0F172A),
-    onBackground = Color(0xFFF1F5F9),
-    surface = Color(0xFF1E293B),
-    onSurface = Color(0xFFF1F5F9),
-    surfaceVariant = Color(0xFF334155),
-    onSurfaceVariant = Color(0xFF94A3B8),
-    outline = Color(0xFF334155),
-    outlineVariant = Color(0xFF475569),
-    error = Error,
-    onError = OnPrimary
-)
+import top.yukonga.miuix.kmp.theme.ColorSchemeMode
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.theme.ThemeController
+import top.yukonga.miuix.kmp.theme.darkColorScheme
+import top.yukonga.miuix.kmp.theme.lightColorScheme
 
 @Composable
 fun FlymeToolTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    val controller = remember(darkTheme) {
+        ThemeController(
+            colorSchemeMode = if (darkTheme) ColorSchemeMode.Dark else ColorSchemeMode.Light,
+            lightColors = lightColorScheme(
+                background = Color(0xFFF9F9F9),
+                surface = Color.White,
+            ),
+            darkColors = darkColorScheme(
+                background = Color(0xFF121212),
+                surface = Color(0xFF1E1E1E),
+            )
+        )
+    }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = AppTypography,
-        content = content
-    )
+    MiuixTheme(controller = controller) {
+        // 桥接 MaterialTheme，让现有 Material3 组件继续工作
+        val miuixColors = MiuixTheme.colorScheme
+        val bridgeScheme = if (darkTheme) {
+            m3DarkColorScheme(
+                primary = miuixColors.primary,
+                onPrimary = miuixColors.onPrimary,
+                primaryContainer = miuixColors.primaryContainer,
+                onPrimaryContainer = miuixColors.onPrimaryContainer,
+                secondary = miuixColors.secondary,
+                onSecondary = miuixColors.onSecondary,
+                secondaryContainer = miuixColors.secondaryContainer,
+                onSecondaryContainer = miuixColors.onSecondaryContainer,
+                tertiary = miuixColors.tertiaryContainer,
+                onTertiary = miuixColors.onTertiaryContainer,
+                background = miuixColors.background,
+                onBackground = miuixColors.onBackground,
+                surface = miuixColors.surface,
+                onSurface = miuixColors.onSurface,
+                surfaceVariant = miuixColors.surfaceVariant,
+                onSurfaceVariant = miuixColors.onBackgroundVariant,
+                outline = miuixColors.outline,
+                outlineVariant = miuixColors.dividerLine,
+                error = miuixColors.error,
+                onError = miuixColors.onError
+            )
+        } else {
+            m3LightColorScheme(
+                primary = miuixColors.primary,
+                onPrimary = miuixColors.onPrimary,
+                primaryContainer = miuixColors.primaryContainer,
+                onPrimaryContainer = miuixColors.onPrimaryContainer,
+                secondary = miuixColors.secondary,
+                onSecondary = miuixColors.onSecondary,
+                secondaryContainer = miuixColors.secondaryContainer,
+                onSecondaryContainer = miuixColors.onSecondaryContainer,
+                tertiary = miuixColors.tertiaryContainer,
+                onTertiary = miuixColors.onTertiaryContainer,
+                background = miuixColors.background,
+                onBackground = miuixColors.onBackground,
+                surface = miuixColors.surface,
+                onSurface = miuixColors.onSurface,
+                surfaceVariant = miuixColors.surfaceVariant,
+                onSurfaceVariant = miuixColors.onBackgroundVariant,
+                outline = miuixColors.outline,
+                outlineVariant = miuixColors.dividerLine,
+                error = miuixColors.error,
+                onError = miuixColors.onError
+            )
+        }
+
+        MaterialTheme(
+            colorScheme = bridgeScheme,
+            typography = AppTypography,
+            content = content
+        )
+    }
 }

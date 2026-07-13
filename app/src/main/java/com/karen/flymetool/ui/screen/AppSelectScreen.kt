@@ -3,7 +3,9 @@ package com.karen.flymetool.ui.screen
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -23,19 +25,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,10 +42,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import net.sourceforge.pinyin4j.PinyinHelper
 import net.sourceforge.pinyin4j.format.HanyuPinyinOutputFormat
 import net.sourceforge.pinyin4j.format.HanyuPinyinToneType
 import com.karen.flymetool.data.PrefsHelper
+import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.IconButton as MiuixIconButton
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+
 private enum class AppFilter { ALL, USER, SYSTEM }
 
 private fun AppFilter.label() = when (this) {
@@ -61,7 +64,6 @@ private fun AppFilter.label() = when (this) {
     AppFilter.SYSTEM -> "系统"
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppSelectScreen(
     packageName: String,
@@ -75,9 +77,14 @@ fun AppSelectScreen(
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(AppFilter.ALL) }
 
-    val allApps = remember { loadApps(context) }
-    val filtered = remember(allApps, query, filter) {
-        allApps.filter { app ->
+    val allApps = remember { mutableStateOf<List<AppInfo>>(emptyList()) }
+    var loaded by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        allApps.value = withContext(Dispatchers.IO) { loadApps(context) }
+        loaded = true
+    }
+    val filtered = remember(allApps.value, query, filter) {
+        allApps.value.filter { app ->
             when (filter) {
                 AppFilter.USER -> !app.isSystem
                 AppFilter.SYSTEM -> app.isSystem
@@ -87,44 +94,30 @@ fun AppSelectScreen(
     }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = MiuixTheme.colorScheme.background,
+        topBar = {
+            SmallTopAppBar(
+                title = "选择应用",
+                subtitle = "已选 ${selectedPackages.size} 个应用",
+                navigationIcon = {
+                    MiuixIconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, tint = MiuixTheme.colorScheme.onBackground)
+                    }
+                }
+            )
+        }
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            // 顶栏
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground)
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Column {
-                    Text("选择应用", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.Bold)
-                    Text("已选 ${selectedPackages.size} 个应用", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
 
             // 搜索
-            OutlinedTextField(
+            TextField(
                 value = query,
                 onValueChange = { query = it },
+                label = "搜索应用",
+                useLabelAsPlaceholder = true,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
-                placeholder = { Text("搜索应用") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (query.isNotEmpty()) {
-                        IconButton(onClick = { query = "" }) {
-                            Icon(Icons.Default.Close, contentDescription = "清除")
-                        }
-                    }
-                },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.padding(horizontal = 12.dp)) },
                 singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline
-                ),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { /* no-op */ })
             )
@@ -135,36 +128,70 @@ fun AppSelectScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 AppFilter.values().forEach { f ->
-                    FilterChip(
-                        selected = filter == f,
-                        onClick = { filter = f },
-                        label = { Text(f.label()) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primary,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                    val isSelected = filter == f
+                    val shape = RoundedCornerShape(12.dp)
+                    Row(
+                        modifier = Modifier
+                            .clip(shape)
+                            .background(
+                                if (isSelected) MiuixTheme.colorScheme.primary
+                                else MiuixTheme.colorScheme.surfaceVariant
+                            )
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = { filter = f }
+                            )
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = f.label(),
+                            style = MiuixTheme.textStyles.body2,
+                            color = if (isSelected) MiuixTheme.colorScheme.onPrimary
+                            else MiuixTheme.colorScheme.onBackgroundVariant
                         )
-                    )
+                    }
                 }
             }
 
             // 列表
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                items(filtered, key = { it.packageName }) { app ->
-                    val checked = app.packageName in selectedPackages
-                    AppItem(
-                        app = app,
-                        checked = checked,
-                        onClick = {
-                            val s = selectedPackages.toMutableSet()
-                            if (checked) s.remove(app.packageName) else s.add(app.packageName)
-                            selectedPackages = s
-                            PrefsHelper.setFeatureStringSet(context, packageName, featureKey, s)
-                        }
+            if (!loaded) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    InfiniteProgressIndicator(
+                        color = MiuixTheme.colorScheme.primary,
+                        size = 32.dp
                     )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "加载中…",
+                        style = MiuixTheme.textStyles.body2,
+                        color = MiuixTheme.colorScheme.onBackgroundVariant
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    items(filtered, key = { it.packageName }) { app ->
+                        val checked = app.packageName in selectedPackages
+                        AppItem(
+                            app = app,
+                            checked = checked,
+                            onClick = {
+                                val s = selectedPackages.toMutableSet()
+                                if (checked) s.remove(app.packageName) else s.add(app.packageName)
+                                selectedPackages = s
+                                PrefsHelper.setFeatureStringSet(context, packageName, featureKey, s)
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -187,11 +214,11 @@ private fun AppItem(app: AppInfo, checked: Boolean, onClick: () -> Unit) {
         }
         Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(app.label, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
-            Text(app.packageName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(app.label, style = MiuixTheme.textStyles.body1, color = MiuixTheme.colorScheme.onSurface)
+            Text(app.packageName, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onBackgroundVariant)
         }
         if (checked) {
-            Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+            Icon(Icons.Default.Check, contentDescription = null, tint = MiuixTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
         }
     }
 }

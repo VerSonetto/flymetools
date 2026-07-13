@@ -30,17 +30,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CheckboxDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -64,12 +54,22 @@ import com.karen.flymetool.ui.component.AppIcon
 import com.karen.flymetool.util.RootUtils
 import com.karen.flymetool.util.UpdateManager
 import com.karen.flymetool.util.UpdateInfo
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.launch
 import java.io.File
+import top.yukonga.miuix.kmp.basic.Checkbox
+import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.FloatingActionButton
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.theme.LocalDismissState
+import top.yukonga.miuix.kmp.window.WindowDialog
+import androidx.compose.ui.state.ToggleableState
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     onAppClick: (ScopedApp) -> Unit
@@ -87,36 +87,36 @@ fun HomeScreen(
     var downloadedFile by remember { mutableStateOf<File?>(null) }
     val scope = rememberCoroutineScope()
 
+    var updateChecked by rememberSaveable { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         if (!PrefsHelper.isIntroShown(context)) {
             showIntroDialog = true
         }
 
-        val info = UpdateManager.check(context)
-        checkingUpdate = false
-        if (info != null) {
-            updateInfo = info
-            showUpdateDialog = true
-        } else {
-            UpdateManager.cleanup(context)
+        if (!updateChecked) {
+            updateChecked = true
+            val info = UpdateManager.check(context)
+            checkingUpdate = false
+            if (info != null) {
+                updateInfo = info
+                showUpdateDialog = true
+            } else {
+                UpdateManager.cleanup(context)
+            }
         }
     }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = MiuixTheme.colorScheme.background,
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { showRestartDialog = true },
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                elevation = FloatingActionButtonDefaults.elevation(
-                    defaultElevation = 0.dp,
-                    pressedElevation = 0.dp
-                )
+                onClick = { showRestartDialog = true }
             ) {
                 Icon(
                     imageVector = Icons.Outlined.Refresh,
                     contentDescription = null,
+                    tint = MiuixTheme.colorScheme.onPrimary,
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -223,127 +223,122 @@ private fun RestartScopeDialog(
     val selectedApps = remember { mutableStateListOf<ScopedApp>() }
     val allSelected = selectedApps.size == apps.size
 
-    Column {
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = {
-                Text(
-                    text = "重启作用域",
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
+    WindowDialog(
+        show = true,
+        title = "重启作用域",
+        onDismissRequest = onDismiss
+    ) {
+        val dismiss = LocalDismissState.current
+
+        Column(
+            modifier = Modifier.heightIn(max = 480.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {
+                            if (allSelected) {
+                                selectedApps.clear()
+                            } else {
+                                selectedApps.clear()
+                                selectedApps.addAll(apps)
+                            }
+                        }
+                    )
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    state = if (allSelected) ToggleableState.On else ToggleableState.Off,
+                    onClick = {
+                        if (allSelected) {
+                            selectedApps.clear()
+                        } else {
+                            selectedApps.clear()
+                            selectedApps.addAll(apps)
+                        }
+                    }
                 )
-            },
-            text = {
-                Column(
-                    modifier = Modifier.heightIn(max = 480.dp)
-                ) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "全选",
+                    style = MiuixTheme.textStyles.body1,
+                    color = MiuixTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Column(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                apps.forEach { app ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                if (allSelected) {
-                                    selectedApps.clear()
-                                } else {
-                                    selectedApps.clear()
-                                    selectedApps.addAll(apps)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = {
+                                    if (selectedApps.contains(app)) {
+                                        selectedApps.remove(app)
+                                    } else {
+                                        selectedApps.add(app)
+                                    }
                                 }
-                            }
-                            .padding(vertical = 8.dp),
+                            )
+                            .padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Checkbox(
-                            checked = allSelected,
-                            onCheckedChange = {
-                                if (it) {
-                                    selectedApps.clear()
-                                    selectedApps.addAll(apps)
+                            state = if (selectedApps.contains(app)) ToggleableState.On else ToggleableState.Off,
+                            onClick = {
+                                if (selectedApps.contains(app)) {
+                                    selectedApps.remove(app)
                                 } else {
-                                    selectedApps.clear()
+                                    selectedApps.add(app)
                                 }
-                            },
-                            colors = CheckboxDefaults.colors(
-                                checkedColor = MaterialTheme.colorScheme.primary,
-                                uncheckedColor = MaterialTheme.colorScheme.outline
-                            )
-                        )
-                        Text(
-                            text = "全选",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Column(
-                        modifier = Modifier
-                            .weight(1f, fill = false)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        apps.forEach { app ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        if (selectedApps.contains(app)) {
-                                            selectedApps.remove(app)
-                                        } else {
-                                            selectedApps.add(app)
-                                        }
-                                    }
-                                    .padding(vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Checkbox(
-                                    checked = selectedApps.contains(app),
-                                    onCheckedChange = {
-                                        if (it) {
-                                            selectedApps.add(app)
-                                        } else {
-                                            selectedApps.remove(app)
-                                        }
-                                    },
-                                    colors = CheckboxDefaults.colors(
-                                        checkedColor = MaterialTheme.colorScheme.primary,
-                                        uncheckedColor = MaterialTheme.colorScheme.outline
-                                    )
-                                )
-                                Text(
-                                    text = app.name,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
                             }
-                        }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = app.name,
+                            style = MiuixTheme.textStyles.body1,
+                            color = MiuixTheme.colorScheme.onSurface
+                        )
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = { onConfirm(selectedApps.toList()) },
-                    enabled = selectedApps.isNotEmpty()
-                ) {
-                    Text(
-                        text = "重启 (${selectedApps.size})",
-                        color = if (selectedApps.isNotEmpty())
-                            MaterialTheme.colorScheme.primary
-                        else
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = onDismiss) {
-                    Text(
-                        text = "取消",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
-            shape = RoundedCornerShape(20.dp),
-            containerColor = MaterialTheme.colorScheme.surface
-        )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            TextButton(
+                text = "取消",
+                onClick = { dismiss?.invoke() },
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(
+                text = "重启 (${selectedApps.size})",
+                onClick = {
+                    onConfirm(selectedApps.toList())
+                    dismiss?.invoke()
+                },
+                enabled = selectedApps.isNotEmpty(),
+                colors = if (selectedApps.isNotEmpty())
+                    ButtonDefaults.textButtonColorsPrimary()
+                else ButtonDefaults.textButtonColors(),
+                modifier = Modifier.weight(1f)
+            )
+        }
     }
 }
 
@@ -351,33 +346,20 @@ private fun RestartScopeDialog(
 private fun IntroDialog(
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = "FlymeTool",
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-        },
-        text = {
-            Text(
-                text = "本模块基于 Flyme 10 开发，更高版本未经测试。" +
-                        "\n使用前请备好救砖模块。",
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(
-                    text = "我知道了",
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-        },
-        shape = RoundedCornerShape(20.dp),
-        containerColor = MaterialTheme.colorScheme.surface
-    )
+    WindowDialog(
+        show = true,
+        title = "FlymeTool",
+        summary = "本模块基于 Flyme 10 开发，更高版本未经测试。\n使用前请备好救砖模块。",
+        onDismissRequest = onDismiss
+    ) {
+        val dismiss = LocalDismissState.current
+        TextButton(
+            text = "我知道了",
+            onClick = { dismiss?.invoke() },
+            colors = ButtonDefaults.textButtonColorsPrimary(),
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
 }
 
 @Composable
@@ -389,77 +371,75 @@ private fun UpdateDialog(
     onDismiss: () -> Unit,
     onDownload: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = "发现新版本 v${info.latestVersion}",
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        },
-        text = {
-            Column {
-                if (info.releaseNotes.isNotBlank()) {
-                    Text(
-                        text = info.releaseNotes,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (info.apkSize > 0) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "大小: ${info.apkSize / 1024 / 1024} MB",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (downloading) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    LinearProgressIndicator(
-                        progress = { progress / 100f },
-                        modifier = Modifier.fillMaxWidth(),
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "下载中 $progress%",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (error != null) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "下载失败: $error",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
+    WindowDialog(
+        show = true,
+        title = "发现新版本 v${info.latestVersion}",
+        onDismissRequest = onDismiss
+    ) {
+        val dismiss = LocalDismissState.current
+
+        Column {
+            if (info.releaseNotes.isNotBlank()) {
+                Text(
+                    text = info.releaseNotes,
+                    style = MiuixTheme.textStyles.body1,
+                    color = MiuixTheme.colorScheme.onBackgroundVariant,
+                )
             }
-        },
-        confirmButton = {
+            if (info.apkSize > 0) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "大小: ${info.apkSize / 1024 / 1024} MB",
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onBackgroundVariant,
+                )
+            }
+            if (downloading) {
+                Spacer(modifier = Modifier.height(16.dp))
+                LinearProgressIndicator(
+                    progress = progress / 100f,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "下载中 $progress%",
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onBackgroundVariant,
+                )
+            }
             if (error != null) {
-                TextButton(onClick = onDownload) {
-                    Text("重试", color = MaterialTheme.colorScheme.primary)
-                }
-            } else if (!downloading) {
-                TextButton(onClick = onDownload) {
-                    Text("下载更新", color = MaterialTheme.colorScheme.primary)
-                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "下载失败: $error",
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.error,
+                )
             }
-        },
-        dismissButton = {
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             if (!downloading) {
-                TextButton(onClick = onDismiss) {
-                    Text("稍后再说", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                TextButton(
+                    text = "稍后再说",
+                    onClick = { dismiss?.invoke() },
+                    modifier = Modifier.weight(1f)
+                )
             }
-        },
-        shape = RoundedCornerShape(20.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
-    )
+            if (error != null || !downloading) {
+                TextButton(
+                    text = if (error != null) "重试" else "下载更新",
+                    onClick = onDownload,
+                    colors = ButtonDefaults.textButtonColorsPrimary(),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -468,34 +448,34 @@ private fun InstallConfirmDialog(
     onInstall: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = "下载完成",
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
+    WindowDialog(
+        show = true,
+        title = "下载完成",
+        summary = "安装包已下载完毕，是否立即安装？",
+        onDismissRequest = onDismiss
+    ) {
+        val dismiss = LocalDismissState.current
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            TextButton(
+                text = "取消",
+                onClick = { dismiss?.invoke() },
+                modifier = Modifier.weight(1f)
             )
-        },
-        text = {
-            Text(
-                text = "安装包已下载完毕，是否立即安装？",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            TextButton(
+                text = "安装",
+                onClick = {
+                    onInstall()
+                    dismiss?.invoke()
+                },
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+                modifier = Modifier.weight(1f)
             )
-        },
-        confirmButton = {
-            TextButton(onClick = onInstall) {
-                Text("安装", color = MaterialTheme.colorScheme.primary)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        },
-        shape = RoundedCornerShape(20.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
-    )
+        }
+    }
 }
 
 @Composable
@@ -511,15 +491,15 @@ private fun HeaderSection(
     ) {
         Text(
             text = "FlymeTool",
-            style = MaterialTheme.typography.displaySmall,
-            color = MaterialTheme.colorScheme.onBackground,
+            style = MiuixTheme.textStyles.title1,
+            color = MiuixTheme.colorScheme.onBackground,
             fontWeight = FontWeight.ExtraBold
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = "Flyme 系统增强工具",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MiuixTheme.textStyles.body2,
+            color = MiuixTheme.colorScheme.onBackgroundVariant,
             fontWeight = FontWeight.Medium
         )
         Spacer(modifier = Modifier.height(24.dp))
@@ -530,8 +510,8 @@ private fun HeaderSection(
                 .background(
                     Brush.horizontalGradient(
                         colors = listOf(
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f),
+                            MiuixTheme.colorScheme.primary.copy(alpha = 0.3f),
+                            MiuixTheme.colorScheme.primaryContainer.copy(alpha = 0.1f),
                             Color.Transparent
                         )
                     )
@@ -544,29 +524,35 @@ private fun HeaderSection(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 12.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f))
-                .clickable(onClick = onCheckUpdate)
+                .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.1f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onCheckUpdate
+                )
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "发现新版本 v${updateInfo.latestVersion}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
+                    style = MiuixTheme.textStyles.body1,
+                    color = MiuixTheme.colorScheme.primary,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
                     text = "点击更新",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.primary.copy(alpha = 0.7f),
                 )
             }
             Icon(
                 imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = MiuixTheme.colorScheme.primary,
                 modifier = Modifier.size(20.dp),
             )
         }
@@ -591,7 +577,7 @@ private fun AppListItem(
             .fillMaxWidth()
             .scale(scale)
             .clip(RoundedCornerShape(20.dp))
-            .background(MaterialTheme.colorScheme.surface)
+            .background(MiuixTheme.colorScheme.surface)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
@@ -610,21 +596,21 @@ private fun AppListItem(
         ) {
             Text(
                 text = app.name,
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
+                style = MiuixTheme.textStyles.title4,
+                color = MiuixTheme.colorScheme.onSurface,
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = app.packageName,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onBackgroundVariant
             )
         }
         Icon(
             imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+            tint = MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.5f),
             modifier = Modifier.size(24.dp)
         )
     }

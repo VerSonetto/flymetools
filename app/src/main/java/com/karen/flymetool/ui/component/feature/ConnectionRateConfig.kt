@@ -3,17 +3,8 @@ package com.karen.flymetool.ui.component.feature
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import com.karen.flymetool.data.PrefsHelper
 import com.karen.flymetool.ui.component.AppInputDialog
 import com.karen.flymetool.ui.component.AppSlider
+import top.yukonga.miuix.kmp.basic.TextButton
 
 @Composable
 fun ConnectionRateConfig(
@@ -65,20 +57,9 @@ fun ConnectionRateConfig(
             horizontalArrangement = Arrangement.End
         ) {
             TextButton(
+                text = "精确设置",
                 onClick = { showDialog = true }
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Edit,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "精确设置",
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
+            )
         }
     }
 

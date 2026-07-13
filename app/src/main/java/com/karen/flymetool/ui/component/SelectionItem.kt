@@ -18,8 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -30,6 +28,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 data class SelectionOption<T>(
     val value: T,
@@ -52,16 +52,16 @@ fun SelectionGroup(
     ) {
         Text(
             text = title,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MiuixTheme.textStyles.body2,
+            color = MiuixTheme.colorScheme.onBackgroundVariant,
             modifier = Modifier.padding(bottom = if (description != null) 4.dp else 8.dp)
         )
 
         description?.let {
             Text(
                 text = it,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.7f),
                 modifier = Modifier.padding(bottom = 12.dp)
             )
         }
@@ -131,8 +131,8 @@ fun <T> SelectionList(
         if (options.isEmpty() && emptyText != null) {
             Text(
                 text = emptyText,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.error,
                 modifier = Modifier.padding(vertical = 16.dp)
             )
         } else {
@@ -159,8 +159,8 @@ fun SelectionItem(
 ) {
     val shape = RoundedCornerShape(12.dp)
     val backgroundColor by animateColorAsState(
-        targetValue = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-        else MaterialTheme.colorScheme.surfaceVariant,
+        targetValue = if (isSelected) MiuixTheme.colorScheme.primary.copy(alpha = 0.12f)
+        else MiuixTheme.colorScheme.surfaceVariant,
         animationSpec = snap(),
         label = "backgroundColor"
     )
@@ -171,7 +171,7 @@ fun SelectionItem(
             .background(backgroundColor)
             .border(
                 width = if (isSelected) 2.dp else 0.dp,
-                color = if (isSelected) MaterialTheme.colorScheme.primary
+                color = if (isSelected) MiuixTheme.colorScheme.primary
                 else Color.Transparent,
                 shape = shape
             )
@@ -185,9 +185,9 @@ fun SelectionItem(
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (isSelected) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MiuixTheme.textStyles.body2,
+            color = if (isSelected) MiuixTheme.colorScheme.primary
+            else MiuixTheme.colorScheme.onBackgroundVariant,
             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -206,8 +206,8 @@ fun SelectionItemWithIcon(
 ) {
     val shape = RoundedCornerShape(12.dp)
     val backgroundColor by animateColorAsState(
-        targetValue = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-        else MaterialTheme.colorScheme.surfaceVariant,
+        targetValue = if (isSelected) MiuixTheme.colorScheme.primary.copy(alpha = 0.12f)
+        else MiuixTheme.colorScheme.surfaceVariant,
         animationSpec = snap(),
         label = "backgroundColor"
     )
@@ -219,7 +219,7 @@ fun SelectionItemWithIcon(
             .background(backgroundColor)
             .border(
                 width = if (isSelected) 2.dp else 0.dp,
-                color = if (isSelected) MaterialTheme.colorScheme.primary
+                color = if (isSelected) MiuixTheme.colorScheme.primary
                 else Color.Transparent,
                 shape = shape
             )
@@ -238,7 +238,7 @@ fun SelectionItemWithIcon(
                 modifier = Modifier
                     .size(36.dp)
                     .background(
-                        MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                        MiuixTheme.colorScheme.outline.copy(alpha = 0.3f),
                         RoundedCornerShape(8.dp)
                     )
             )
@@ -249,9 +249,9 @@ fun SelectionItemWithIcon(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (isSelected) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MiuixTheme.textStyles.body2,
+                color = if (isSelected) MiuixTheme.colorScheme.primary
+                else MiuixTheme.colorScheme.onBackgroundVariant,
                 fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -260,8 +260,8 @@ fun SelectionItemWithIcon(
             subLabel?.let {
                 Text(
                     text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.6f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )

@@ -21,7 +21,7 @@ data class UpdateInfo(
 
 object UpdateManager {
 
-    private const val API = "https://api.github.com/repos/sonettoTK/flymetools/releases/latest"
+    private const val API = "https://api.github.com/repos/VerSonetto/flymetools/releases/latest"
     private var cached: UpdateInfo? = null
     private var localVer: String? = null
 

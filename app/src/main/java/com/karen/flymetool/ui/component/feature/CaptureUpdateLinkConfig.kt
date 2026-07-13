@@ -14,21 +14,18 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -63,19 +60,17 @@ fun CaptureUpdateLinkConfig(
         Column {
             Text(
                 text = "下载链接",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onBackgroundVariant
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = info.url,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.primary,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .padding(8.dp)
+                modifier = Modifier.padding(8.dp)
             )
         }
 
@@ -83,22 +78,16 @@ fun CaptureUpdateLinkConfig(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End
         ) {
-            OutlinedButton(
-                onClick = { copyToClipboard(context, info.url) },
-                modifier = Modifier.height(36.dp)
-            ) {
-                Text("复制链接", style = MaterialTheme.typography.labelMedium)
-            }
+            TextButton(
+                text = "复制链接",
+                onClick = { copyToClipboard(context, info.url) }
+            )
             Spacer(modifier = Modifier.width(8.dp))
             Button(
                 onClick = { openInBrowser(context, info.url) },
-                modifier = Modifier.height(36.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                )
+                colors = ButtonDefaults.buttonColorsPrimary()
             ) {
-                Text("浏览器打开", style = MaterialTheme.typography.labelMedium)
+                Text("浏览器打开")
             }
         }
     }
@@ -108,8 +97,8 @@ fun CaptureUpdateLinkConfig(
 private fun NoDataHint() {
     Text(
         text = "暂未抓取到更新包链接，请在系统更新中检查更新后返回查看",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MiuixTheme.textStyles.footnote1,
+        color = MiuixTheme.colorScheme.onBackgroundVariant,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
     )
 }
@@ -123,13 +112,13 @@ private fun InfoRow(label: String, value: String) {
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onBackgroundVariant
         )
         Text(
             text = value,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface,
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onSurface,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.width(200.dp),
             maxLines = 1,
