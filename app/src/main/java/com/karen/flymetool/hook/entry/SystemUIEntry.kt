@@ -6,6 +6,7 @@ import com.karen.flymetool.hook.feature.systemui.AODLyricHook
 import com.karen.flymetool.hook.feature.systemui.AODNotificationHook
 import com.karen.flymetool.hook.feature.systemui.AppIconNotificationHook
 import com.karen.flymetool.hook.feature.systemui.ConnectionRateLowSpeedHideHook
+import com.karen.flymetool.hook.feature.systemui.ControlCenterBlurHook
 import com.karen.flymetool.hook.feature.systemui.HideChargingAnimationHook
 import com.karen.flymetool.hook.feature.systemui.HideGestureBarHook
 import com.karen.flymetool.hook.feature.systemui.HideKeyguardShortcutsHook
@@ -35,6 +36,7 @@ object SystemUIEntry : HookEntry {
         PowerDisplayHook,
         ConnectionRateLowSpeedHideHook,
         PulldownAreaRatioHook,
+        ControlCenterBlurHook,
         NotificationIconLimitHook,
         ShowDataSimOnlyHook,
         HideStatusBarIconHook,
