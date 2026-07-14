@@ -31,6 +31,7 @@ object ForceLiveNotificationHook : FeatureHook {
         try {
             hookStatusBarNotification(lpparam, targetApps)
             hookNotificationEntry(lpparam, targetApps)
+            hookNotificationRowDismiss(lpparam, targetApps)
             hookLiveNotificationController(lpparam)
             hookTickerController(lpparam, targetApps)
             revertLiveCardStyling(lpparam, targetApps)
@@ -281,5 +282,47 @@ object ForceLiveNotificationHook : FeatureHook {
                 if (pkg in targetApps) param.result = true
             }
         })
+
+        XposedHelpers.findAndHookMethod(
+            entryClass,
+            "isDismissableForState",
+            Boolean::class.javaPrimitiveType,
+            object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    if (param.result == true) return
+                    val entry = param.thisObject
+                    if (!shouldForceDirectDismiss(entry, targetApps)) return
+                    param.result = true
+                }
+            }
+        )
+    }
+
+    private fun hookNotificationRowDismiss(
+        lpparam: XC_LoadPackage.LoadPackageParam,
+        targetApps: Set<String>
+    ) {
+        val rowClass = XposedHelpers.findClass(
+            "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow",
+            lpparam.classLoader
+        )
+
+        XposedHelpers.findAndHookMethod(rowClass, "canViewBeDismissed", object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                if (param.result == true) return
+                val row = param.thisObject
+                val entry = XposedHelpers.getObjectField(row, "mEntry")
+                if (!shouldForceDirectDismiss(entry, targetApps)) return
+                param.result = true
+            }
+        })
+    }
+
+    private fun shouldForceDirectDismiss(entry: Any?, targetApps: Set<String>): Boolean {
+        val sbn = runCatching { XposedHelpers.callMethod(entry, "getSbn") }.getOrNull() ?: return false
+        val pkg = runCatching { XposedHelpers.callMethod(sbn, "getPackageName") as? String }.getOrNull()
+            ?: return false
+        if (pkg !in targetApps) return false
+        return runCatching { XposedHelpers.callMethod(sbn, "canDelete") as? Boolean }.getOrNull() == true
     }
 }
