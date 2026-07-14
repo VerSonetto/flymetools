@@ -48,7 +48,8 @@ object IosStackedRecentsHook : FeatureHook {
 
     private const val HEADER_HIDE_ALPHA_THRESHOLD = 0.02f
     private const val HEADER_ALPHA_EPSILON = 0.001f
-    private const val ICON_MAX_BLUR_DP = 10f
+    // 头部图标只需有轻微的景深提示，避免堆叠时图标边缘过度发散。
+    private const val ICON_MAX_BLUR_DP = 6f
     private const val ICON_BLUR_STEPS = 16
     private const val ICON_BLUR_PADDING_MULTIPLIER = 2f
 
@@ -513,6 +514,7 @@ object IosStackedRecentsHook : FeatureHook {
         if (screenPrimary == 0 || screenSecondary == 0) return null
 
         val scroll = if (landscape) recents.scrollY else recents.scrollX
+        val isRemote = recents.getTag(TAG_REMOTE_TARGETS) == true
         val dismissPrimary = if (landscape) {
             task.getTag(TAG_DISMISS_Y) as? Float ?: 0f
         } else {
@@ -523,7 +525,7 @@ object IosStackedRecentsHook : FeatureHook {
         } else {
             task.left + task.measuredWidth / 2 + dismissPrimary
         }
-        val distance = (center - (scroll + screenPrimary / 2)).toFloat()
+        val distance = (center - (scroll + screenPrimary / 2f))
         // Seascape 是 Landscape 的反向屏幕方向。原生 handler 会把两个屏幕轴的
         // offset 符号同时反转；样条也必须以镜像距离采样，否则卡片会沿正向横屏
         // 的一侧展开，导致反向横屏的层级、间距和中心卡位置都不一致。
@@ -540,7 +542,6 @@ object IosStackedRecentsHook : FeatureHook {
         val targetScale = math.getValue(IosRecentsMath.SPLINE_SCALE, splinePosition).toFloat() /
             centerScale.coerceAtLeast(0.0001f)
 
-        val isRemote = recents.getTag(TAG_REMOTE_TARGETS) == true
         val isOffsetHandoff = recents.getTag(TAG_OFFSET_HANDOFF) == true
         val progress = resolveProgress(recents, isRemote)
         val nativeX = task.getTag(TAG_NATIVE_OFFSET_X) as? Float ?: 0f
