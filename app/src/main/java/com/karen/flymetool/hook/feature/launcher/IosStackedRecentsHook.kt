@@ -40,7 +40,6 @@ object IosStackedRecentsHook : FeatureHook {
     private val TAG_REMOTE_TARGETS = Int.MAX_VALUE - 708
     private val TAG_OFFSET_HANDOFF = Int.MAX_VALUE - 709
     private val TAG_REAPPLYING_OFFSET = Int.MAX_VALUE - 711
-    // 无 ThumbnailData 时 TaskThumbnailViewDeprecated 会主动绘制主题色底板；仅在远端交接时抑制它。
     private val TAG_PLACEHOLDER_SUPPRESSED = Int.MAX_VALUE - 714
     private val TAG_PLACEHOLDER_INSPECTED = Int.MAX_VALUE - 715
     private val TAG_REFRESH_POSTED = Int.MAX_VALUE - 716
@@ -48,7 +47,6 @@ object IosStackedRecentsHook : FeatureHook {
 
     private const val HEADER_HIDE_ALPHA_THRESHOLD = 0.02f
     private const val HEADER_ALPHA_EPSILON = 0.001f
-    // 头部图标只需有轻微的景深提示，避免堆叠时图标边缘过度发散。
     private const val ICON_MAX_BLUR_DP = 6f
     private const val ICON_BLUR_STEPS = 16
     private const val ICON_BLUR_PADDING_MULTIPLIER = 2f
@@ -138,7 +136,6 @@ object IosStackedRecentsHook : FeatureHook {
         }
     }
 
-    /** scale 沿用 TaskView 的原生复合缩放，再叠加样条目标。 */
     private fun hookScaleChannel() {
         val method = applyScaleMethod ?: return
         XposedBridge.hookMethod(method, object : XC_MethodHook() {
@@ -242,11 +239,7 @@ object IosStackedRecentsHook : FeatureHook {
         })
     }
 
-    /**
-     * 占位卡的可见白/深色块来自 TaskThumbnailViewDeprecated.onDraw，而不是 TaskView 本身。
-     * 因此保持 TaskView 的连续几何变换，仅在远端交接期间跳过这一次无缩略图绘制；一旦
-     * 缩略图回填，setThumbnail() 会立刻恢复绘制，不需要把整张普通卡排除在堆叠之外。
-     */
+    /** 仅在远端交接期间抑制无缩略图占位底板。 */
     private fun hookPlaceholderDrawing(classLoader: ClassLoader) {
         try {
             val thumbnailCl = XposedHelpers.findClass(TASK_THUMBNAIL_VIEW, classLoader)
@@ -272,7 +265,6 @@ object IosStackedRecentsHook : FeatureHook {
                 XposedBridge.hookMethod(method, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val thumbnail = param.thisObject as View
-                        // 有真实缩略图的帧必须立即恢复，避免被动等待下一次 Recents 刷新。
                         if (XposedHelpers.callMethod(thumbnail, "getThumbnail") != null) {
                             thumbnail.setTag(TAG_PLACEHOLDER_SUPPRESSED, false)
                         }
@@ -284,7 +276,6 @@ object IosStackedRecentsHook : FeatureHook {
         }
     }
 
-    /** 每次手势开始前清理上一次交接留下的缩略图抑制标记。 */
     private fun hookGestureLifecycle(recentsCl: Class<*>, taskCl: Class<*>) {
         val gestureStart = recentsCl.declaredMethods.firstOrNull {
             it.name == "onGestureAnimationStart" && it.parameterTypes.size == 1 && it.returnType == Void.TYPE
@@ -301,10 +292,7 @@ object IosStackedRecentsHook : FeatureHook {
         })
     }
 
-    /**
-     * mCurrentShift 是 AbsSwipeUpHandler 唯一逐帧更新的手势值。FULLSCREEN_PROGRESS 在
-     * Quick Switch 的侧边起手分支会滞后更新，直接以该值刷新可消除卡片先停住后靠拢。
-     */
+    /** 远端手势期间优先跟随 mCurrentShift 的逐帧进度。 */
     private fun hookContinuousGestureProgress(
         lpparam: XC_LoadPackage.LoadPackageParam,
         taskCl: Class<*>,
@@ -312,9 +300,12 @@ object IosStackedRecentsHook : FeatureHook {
         try {
             val handlerCl = XposedHelpers.findClass(SWIPE_UP_HANDLER, lpparam.classLoader)
             val method = handlerCl.declaredMethods.firstOrNull {
+                it.name == "updateLauncherTransitionProgressForFlyme" &&
+                    it.parameterTypes.isEmpty() && it.returnType == Void.TYPE
+            } ?: handlerCl.declaredMethods.firstOrNull {
                 it.name == "onCurrentShiftUpdated" && it.parameterTypes.isEmpty() && it.returnType == Void.TYPE
             } ?: run {
-                Logger.w(TAG, "onCurrentShiftUpdated() 未找到")
+                Logger.w(TAG, "Flyme 手势进度入口未找到")
                 return
             }
             XposedBridge.hookMethod(method, object : XC_MethodHook() {
@@ -337,7 +328,6 @@ object IosStackedRecentsHook : FeatureHook {
         }
     }
 
-    /** 原生 updatePageOffsets 结束后再同步 Live Tile，确保不会被 f5 原始偏移覆盖。 */
     private fun hookPageOffsetUpdates(recentsCl: Class<*>, taskCl: Class<*>) {
         for (name in listOf("updatePageOffsets", "updatePageOffsetsForFlyme")) {
             val method = recentsCl.declaredMethods.firstOrNull {
@@ -386,7 +376,6 @@ object IosStackedRecentsHook : FeatureHook {
         }
     }
 
-    /** 滚动、布局与手势结束后的兜底刷新；这些入口均是 RecentsView 的公开语义回调。 */
     private fun hookRefreshSources(recentsCl: Class<*>, taskCl: Class<*>) {
         for (name in listOf("updateCurveProperties", "dispatchScrollChanged")) {
             val method = recentsCl.declaredMethods.firstOrNull {
@@ -414,12 +403,7 @@ object IosStackedRecentsHook : FeatureHook {
         })
     }
 
-    /**
-     * 应用上滑的一帧可同时经过 FULLSCREEN_PROGRESS、mCurrentShift、滚动和页偏移回调。
-     * 位置 setter 仍同步替换当前卡的 offset；完整的缩放/旋转/Z 重算则合并到下一显示帧，
-     * 防止同帧多次反射和 applyScale 互相抢占主线程。桌面路径没有远端 Surface 的多路
-     * 回调，必须保持同步刷新，否则位置已更新而缩放要等下一帧，手势结束时会明显停顿。
-     */
+    /** 远端动画期合并刷新，避免同帧重复重算。 */
     private fun requestStackRefresh(recents: ViewGroup, taskCl: Class<*>) {
         if (recents.getTag(TAG_REMOTE_TARGETS) != true &&
             recents.getTag(TAG_OFFSET_HANDOFF) != true
@@ -526,9 +510,7 @@ object IosStackedRecentsHook : FeatureHook {
             task.left + task.measuredWidth / 2 + dismissPrimary
         }
         val distance = (center - (scroll + screenPrimary / 2f))
-        // Seascape 是 Landscape 的反向屏幕方向。原生 handler 会把两个屏幕轴的
-        // offset 符号同时反转；样条也必须以镜像距离采样，否则卡片会沿正向横屏
-        // 的一侧展开，导致反向横屏的层级、间距和中心卡位置都不一致。
+        // Seascape 需要以镜像距离采样样条。
         val direction = if (isSeascape(recents)) -1f else 1f
         val orientedDistance = distance * direction
         val splinePosition = 3.0 + orientedDistance / primarySize
@@ -548,9 +530,7 @@ object IosStackedRecentsHook : FeatureHook {
         val nativeY = task.getTag(TAG_NATIVE_OFFSET_Y) as? Float ?: 0f
         val nativePrimary = if (landscape) nativeY else nativeX
         val nativeSecondary = if (landscape) nativeX else nativeY
-        // Flyme 的相邻页 offset 使用独立低刚度弹簧，结束时间明显晚于 450ms 的手势动画。
-        // 远端阶段把它作为起点并随堆叠进度消隐，避免主动画结束后还残留一段慢速靠拢。
-        // cleanup 若早于弹簧归零，则保持同一公式到 offset 归零，防止交接当帧跳变。
+        // 远端阶段从原生相邻页偏移平滑过渡到堆叠目标。
         val primary = if (isRemote || isOffsetHandoff) {
             nativePrimary + (targetPrimary - nativePrimary) * progress
         } else {
@@ -569,8 +549,6 @@ object IosStackedRecentsHook : FeatureHook {
     private fun resolveProgress(recents: ViewGroup, isRemote: Boolean): Float {
         val fullscreen = readStackProgress(recents)
         if (!isRemote) return fullscreen
-        // 单通道 taskOffset 已把原生页偏移作为插值起点，不再以相邻页弹簧限速。
-        // 后者只在松手后才补到终点，会造成“先留缝、再瞬间靠拢”。
         return fullscreen
     }
 
@@ -607,19 +585,13 @@ object IosStackedRecentsHook : FeatureHook {
         }
     }
 
-    /**
-     * Flyme 的 task_head 自己承载全屏、手势结束和关闭动画的透明度。这里不覆盖父容器 alpha，
-     * 而是在所有卡片完成本帧变换后，根据相邻前景卡片的真实覆盖比例分别处理标题元素：
-     * 应用名称连续淡入淡出，真锁标识复用名称透明度；应用图标保持原透明度并逐级增加模糊。
-     */
+    /** 标题文字随遮挡淡出，图标保持原 alpha 并增加模糊。 */
     private fun applyHeaderOcclusion(tasks: List<StackedTaskState>, landscape: Boolean) {
         val taskBoundsByDepth = tasks.associate { stackedTask ->
             stackedTask.depth to Rect().also { stackedTask.task.getGlobalVisibleRect(it) }
         }
         val headers = tasks.mapNotNull { stackedTask ->
             resolveHeaderState(stackedTask.task)?.let { state ->
-                // 未锁任务异常时来自 XML 默认的 VISIBLE；同步一次后会变为 INVISIBLE。
-                // 真正锁定的任务保持 VISIBLE，后续仍完全由 Flyme 原生状态维护。
                 if (state.lockChild?.visibility == View.VISIBLE) {
                     refreshNativeLockState(stackedTask.task)
                 }
@@ -661,10 +633,7 @@ object IosStackedRecentsHook : FeatureHook {
         }
     }
 
-    /**
-     * activity_lock 在 Flyme 布局中的初始状态是 VISIBLE，TaskView 复用或桌面刚重启时可能
-     * 尚未完成状态回填。复用 TaskView 的公开更新入口，让原生 isTaskLocked() 决定显隐。
-     */
+    /** 通过原生入口回填 activity_lock 的真实显隐状态。 */
     private fun refreshNativeLockState(task: View) {
         try {
             XposedHelpers.callMethod(task, "updateAppLockStatus")
@@ -688,7 +657,6 @@ object IosStackedRecentsHook : FeatureHook {
             if (lastApplied != null &&
                 kotlin.math.abs(child.alpha - lastApplied) > HEADER_ALPHA_EPSILON
             ) {
-                // 分屏等原生流程可能在两次堆叠刷新之间更新子节点 alpha，保留它作为新基线。
                 state.baseAlphas[child] = child.alpha
             }
         }
@@ -748,7 +716,6 @@ object IosStackedRecentsHook : FeatureHook {
             IconBlurState(BlurredIconOverlayView(child.context))
         }
 
-        // 直接给 IconView 设置 RenderEffect 会被它的矩形 RenderNode 裁切，始终先清掉。
         child.setRenderEffect(null)
         updateNativeIconAlpha(iconState, child)
         if (blurStep == 0) {
@@ -789,14 +756,12 @@ object IosStackedRecentsHook : FeatureHook {
             iconState.blurStep = blurStep
         }
 
-        // 原图只作为数据源隐藏；覆盖层继承相同的原生 alpha，视觉透明度没有改变。
         child.alpha = 0f
         iconState.lastAppliedAlpha = 0f
         iconState.usingOverlay = true
     }
 
     private fun readIconDrawable(child: View): Drawable? = try {
-        // IconView 实现稳定的 TaskViewIcon 公共接口，使用公开 getDrawable 特征取图。
         XposedHelpers.callMethod(child, "getDrawable") as? Drawable
     } catch (_: Throwable) {
         null
@@ -925,7 +890,6 @@ object IosStackedRecentsHook : FeatureHook {
         }
         val iconIds = setOf(iconId, bottomRightIconId).filter { it != 0 }.toSet()
         return HeaderState(
-            // task_head 自身只有图标高度，用整张 TaskView 提供足够的透明扩散空间。
             overlayHost = task as? ViewGroup ?: header,
             textChildren = children.filter { it.id == appNameId },
             iconChildren = children.filter { it.id in iconIds },
@@ -942,11 +906,7 @@ object IosStackedRecentsHook : FeatureHook {
         state.hiddenByOcclusion.clear()
     }
 
-    /**
-     * Flyme 的反向横屏使用独立的 SeascapePagedViewHandlerMz，类名本身不包含
-     * Landscape。它仍然采用横屏的逻辑轴（primary=Y、secondary=X），只是方向
-     * 符号由 Seascape handler 另行处理；不能把它误判成竖屏。
-     */
+    /** Seascape 也按横屏逻辑轴处理。 */
     private fun isLandscape(recents: ViewGroup): Boolean = try {
         val handler = XposedHelpers.callMethod(recents, "getPagedOrientationHandler")
         val name = handler::class.java.name
@@ -985,10 +945,7 @@ object IosStackedRecentsHook : FeatureHook {
         false
     }
 
-    /**
-     * 缩略图状态只在卡片首次进入本次远端交接时检查。斜滑会同时驱动手势和分页滚动；
-     * 若在两条回调的每帧都反射访问 TaskContainer，会造成可感知的掉帧。
-     */
+    /** 远端交接期只在首次进入时检查一次缩略图状态，避免逐帧反射。 */
     private fun inspectPlaceholderOnce(recents: ViewGroup, task: View) {
         if (recents.getTag(TAG_REMOTE_TARGETS) != true || task.getTag(TAG_PLACEHOLDER_INSPECTED) == true) return
         task.setTag(TAG_PLACEHOLDER_INSPECTED, true)
@@ -1002,7 +959,7 @@ object IosStackedRecentsHook : FeatureHook {
             val thumbnail = XposedHelpers.callMethod(container, "getThumbnailViewDeprecated") as? View ?: return
             thumbnail.setTag(TAG_PLACEHOLDER_SUPPRESSED, suppress)
         } catch (_: Throwable) {
-            // 缩略图容器在 TaskView 复用/回收帧中可能暂不可用，下一次刷新会重试。
+            return
         }
     }
 
@@ -1088,10 +1045,7 @@ object IosStackedRecentsHook : FeatureHook {
         var usingOverlay: Boolean = false,
     )
 
-    /**
-     * 单独承载图标副本的扩大渲染面。RenderEffect 在透明 padding 内扩散，避免 IconView
-     * 自身狭小边界把高斯模糊截成矩形；原 IconView 仍保留布局、点击与无障碍职责。
-     */
+    /** 给图标提供额外的模糊扩散空间，避免被原始边界裁切。 */
     private class BlurredIconOverlayView(context: Context) : View(context) {
         private var source: Drawable? = null
         private var drawable: Drawable? = null
@@ -1138,7 +1092,7 @@ object IosStackedRecentsHook : FeatureHook {
         val state: HeaderState,
     )
 
-    // --- cubic spline math (from Reverse-FlymeLauncher IosRecentsMath) ---
+    // Cubic spline data mirrored from Reverse-FlymeLauncher IosRecentsMath.
     private class IosRecentsMath {
         companion object {
             const val SPLINE_X_COORD = 0

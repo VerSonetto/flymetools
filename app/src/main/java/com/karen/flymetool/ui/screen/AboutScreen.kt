@@ -236,7 +236,7 @@ private fun AboutHero() {
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            text = "轻量、可扩展的 Flyme 系统增强模块。",
+            text = "优化flyme系统部分功能体验",
             style = MiuixTheme.textStyles.body2,
             color = MiuixTheme.colorScheme.onSurface
         )
