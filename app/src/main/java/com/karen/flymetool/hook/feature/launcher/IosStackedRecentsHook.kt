@@ -524,14 +524,19 @@ object IosStackedRecentsHook : FeatureHook {
             task.left + task.measuredWidth / 2 + dismissPrimary
         }
         val distance = (center - (scroll + screenPrimary / 2)).toFloat()
-        val splinePosition = 3.0 + distance / primarySize
+        // Seascape 是 Landscape 的反向屏幕方向。原生 handler 会把两个屏幕轴的
+        // offset 符号同时反转；样条也必须以镜像距离采样，否则卡片会沿正向横屏
+        // 的一侧展开，导致反向横屏的层级、间距和中心卡位置都不一致。
+        val direction = if (isSeascape(recents)) -1f else 1f
+        val orientedDistance = distance * direction
+        val splinePosition = 3.0 + orientedDistance / primarySize
         val centerScale = math.getValue(IosRecentsMath.SPLINE_SCALE, 3.0).toFloat()
         val centerX = math.getValue(IosRecentsMath.SPLINE_X_COORD, 3.0).toFloat()
         val centerY = math.getValue(IosRecentsMath.SPLINE_Y_COORD, 3.0).toFloat()
-        val targetPrimary = (math.getValue(IosRecentsMath.SPLINE_X_COORD, splinePosition).toFloat() - centerX) *
-            screenPrimary - distance
+        val targetPrimary = ((math.getValue(IosRecentsMath.SPLINE_X_COORD, splinePosition).toFloat() - centerX) *
+            screenPrimary - orientedDistance) * direction
         val targetSecondary = (math.getValue(IosRecentsMath.SPLINE_Y_COORD, splinePosition).toFloat() - centerY) *
-            screenSecondary
+            screenSecondary * direction
         val targetScale = math.getValue(IosRecentsMath.SPLINE_SCALE, splinePosition).toFloat() /
             centerScale.coerceAtLeast(0.0001f)
 
@@ -936,9 +941,22 @@ object IosStackedRecentsHook : FeatureHook {
         state.hiddenByOcclusion.clear()
     }
 
+    /**
+     * Flyme 的反向横屏使用独立的 SeascapePagedViewHandlerMz，类名本身不包含
+     * Landscape。它仍然采用横屏的逻辑轴（primary=Y、secondary=X），只是方向
+     * 符号由 Seascape handler 另行处理；不能把它误判成竖屏。
+     */
     private fun isLandscape(recents: ViewGroup): Boolean = try {
         val handler = XposedHelpers.callMethod(recents, "getPagedOrientationHandler")
-        handler::class.java.name.contains("Landscape")
+        val name = handler::class.java.name
+        name.contains("Landscape") || name.contains("Seascape")
+    } catch (_: Throwable) {
+        false
+    }
+
+    private fun isSeascape(recents: ViewGroup): Boolean = try {
+        val handler = XposedHelpers.callMethod(recents, "getPagedOrientationHandler")
+        handler::class.java.name.contains("Seascape")
     } catch (_: Throwable) {
         false
     }
