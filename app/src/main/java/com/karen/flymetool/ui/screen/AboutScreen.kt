@@ -1,7 +1,9 @@
 package com.karen.flymetool.ui.screen
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
@@ -32,8 +34,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.karen.flymetool.BuildConfig
 import com.karen.flymetool.ui.component.AppIcon
+import com.karen.flymetool.ui.component.FeatureSwitch
 import com.karen.flymetool.util.GithubAvatarLoader
 import com.karen.flymetool.util.FlymeVersionUtils
 import top.yukonga.miuix.kmp.icon.MiuixIcons
@@ -113,6 +118,24 @@ fun AboutScreen(onBack: () -> Unit) {
         ) {
             item(key = "hero", contentType = "hero") {
                 AboutHero()
+            }
+
+            item(key = "app_settings_title", contentType = "section_title") {
+                SectionTitle(
+                    title = "应用设置",
+                    icon = {
+                        Icon(
+                            imageVector = MiuixIcons.Settings,
+                            contentDescription = null,
+                            tint = MiuixTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                )
+            }
+
+            item(key = "hide_icon", contentType = "card") {
+                HideLauncherIconCard()
             }
 
             item(key = "device_title", contentType = "section_title") {
@@ -191,6 +214,55 @@ fun AboutScreen(onBack: () -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun HideLauncherIconCard() {
+    val context = LocalContext.current
+    var iconVisible by remember { mutableStateOf(isLauncherIconVisible(context)) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(MiuixTheme.colorScheme.surface)
+    ) {
+        FeatureSwitch(
+            title = "显示桌面图标",
+            description = "关闭后桌面不显示；LSPosed 模块页「打开模块」仍可用",
+            checked = iconVisible,
+            onCheckedChange = { visible ->
+                setLauncherIconVisible(context, visible)
+                iconVisible = visible
+                Toast.makeText(
+                    context,
+                    if (visible) "桌面图标已显示" else "桌面图标已隐藏，请从 LSPosed 打开",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        )
+    }
+}
+
+private fun launcherAliasComponent(context: Context): ComponentName {
+    return ComponentName(context, "${context.packageName}.LauncherAlias")
+}
+
+private fun isLauncherIconVisible(context: Context): Boolean {
+    val state = context.packageManager.getComponentEnabledSetting(launcherAliasComponent(context))
+    return state != PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+}
+
+private fun setLauncherIconVisible(context: Context, visible: Boolean) {
+    context.packageManager.setComponentEnabledSetting(
+        launcherAliasComponent(context),
+        if (visible) {
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+        } else {
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+        },
+        PackageManager.DONT_KILL_APP
+    )
 }
 
 @Composable
