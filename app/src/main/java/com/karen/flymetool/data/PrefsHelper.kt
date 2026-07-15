@@ -6,6 +6,8 @@ import android.content.SharedPreferences
 object PrefsHelper {
 
     private const val PREFS_NAME = "flymetool_prefs"
+    private const val INTRO_VERSION_KEY = "intro_version"
+    private const val CURRENT_INTRO_VERSION = 1
 
     private fun getPrefs(context: Context): SharedPreferences {
         return try {
@@ -48,10 +50,10 @@ object PrefsHelper {
     }
 
     fun isIntroShown(context: Context): Boolean {
-        return getPrefs(context).getBoolean("intro_shown", false)
+        return getPrefs(context).getInt(INTRO_VERSION_KEY, 0) >= CURRENT_INTRO_VERSION
     }
 
     fun markIntroShown(context: Context) {
-        getPrefs(context).edit().putBoolean("intro_shown", true).apply()
+        getPrefs(context).edit().putInt(INTRO_VERSION_KEY, CURRENT_INTRO_VERSION).apply()
     }
 }

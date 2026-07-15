@@ -53,13 +53,10 @@ object AppIconNotificationHook : FeatureHook {
             object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
                     val thisObject = param.thisObject
-                    val notification = XposedHelpers.getObjectField(thisObject, "mNotification")
-                    if (notification == null) {
-                        return
-                    }
+                    val sbn = XposedHelpers.getObjectField(thisObject, "mNotification") ?: return
 
                     val context = XposedHelpers.callMethod(thisObject, "getContext") as android.content.Context
-                    val pkgName = XposedHelpers.callMethod(notification, "getPackageName") as? String ?: return
+                    val pkgName = resolveAppPackage(sbn) ?: return
 
                     if (pkgName == "com.android.systemui" || pkgName == "android") {
                         return
@@ -91,12 +88,9 @@ object AppIconNotificationHook : FeatureHook {
             object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val thisObject = param.thisObject
-                    val notification = XposedHelpers.getObjectField(thisObject, "mNotification")
-                    if (notification == null) {
-                        return
-                    }
+                    val sbn = XposedHelpers.getObjectField(thisObject, "mNotification") ?: return
 
-                    val pkgName = XposedHelpers.callMethod(notification, "getPackageName") as? String
+                    val pkgName = resolveAppPackage(sbn)
                     if (pkgName != null && pkgName in appIconPackages) {
                         XposedHelpers.callMethod(thisObject, "setColorFilter", null as Any?)
                         param.result = null
@@ -118,7 +112,7 @@ object AppIconNotificationHook : FeatureHook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val sbn = param.args[0]
-                        val pkgName = XposedHelpers.callMethod(sbn, "getPackageName") as String
+                        val pkgName = resolveAppPackage(sbn) ?: return
 
                         if (pkgName == "com.android.systemui" || pkgName == "android") return
 
@@ -218,6 +212,21 @@ object AppIconNotificationHook : FeatureHook {
             Logger.i(TAG, "Hooked FlymeNotificationIconUtils.resetNotificationSmallIconIfNeed")
         } catch (e: Throwable) {
             Logger.w(TAG, "FlymeNotificationIconUtils not found or hook failed: ${e.message}")
+        }
+    }
+
+    /** MEIZU Push 等代发通知：getPackageName=推送服务，getOrigPackageName=真应用 */
+    private fun resolveAppPackage(sbn: Any): String? {
+        return try {
+            val orig = XposedHelpers.callMethod(sbn, "getOrigPackageName") as? String
+            if (!orig.isNullOrEmpty()) orig
+            else XposedHelpers.callMethod(sbn, "getPackageName") as? String
+        } catch (_: Throwable) {
+            try {
+                XposedHelpers.callMethod(sbn, "getPackageName") as? String
+            } catch (_: Throwable) {
+                null
+            }
         }
     }
 

@@ -77,11 +77,6 @@ private val openSourceProjects = listOf(
         name = "AndroidX & Jetpack Compose",
         license = "Apache-2.0",
         url = "https://github.com/androidx/androidx"
-    ),
-    OpenSourceProject(
-        name = "pinyin4j",
-        license = "BSD License",
-        url = "https://github.com/belerweb/pinyin4j"
     )
 )
 

@@ -361,7 +361,7 @@ private fun IntroDialog(
     WindowDialog(
         show = true,
         title = "FlymeTool",
-        summary = "本模块基于 Flyme 10 开发，更高版本未经测试。\n使用前请备好救砖模块。",
+        summary = "本模块最初基于 Flyme 10 开发，因此大部分功能理论上会更适配 Flyme 10。但也不能完全保证，因为随着系统更新以及被 Hook 应用本身的变化，即使同属 Flyme 10，不同版本之间也可能存在不兼容的情况。\n\n后来我升级到了 Flyme 12，所以后续新增的功能基本都是在 Flyme 12 上进行测试的。\n\n这个模块一开始只是做给自己玩的，后来顺手公开出来了。由于目前测试者基本只有我一个人，不可能覆盖所有机型、版本和使用场景，因此出现问题其实是正常情况，后续修复也可能比较随缘。\n\n另外，本模块几乎完全由 AI 辅助开发；如果介意，请勿使用，也请勿因此攻击或指责。",
         onDismissRequest = onDismiss
     ) {
         val dismiss = LocalDismissState.current
