@@ -88,7 +88,7 @@ object IosDepthStackRecentsHook : FeatureHook {
 
         hookLayoutCallbacks(recentsClass, hooks)
         hookStateCallbacks(recentsClass, hooks)
-        hookDismissChannel(taskClass)
+        hookDismissChannel(taskClass, hooks)
 
         Logger.i(
             TAG,
@@ -170,36 +170,53 @@ object IosDepthStackRecentsHook : FeatureHook {
      * - setDismissTranslationY(次轴/竖屏Y)= 被删卡飞出，记录它并算删除进度，放行让其飞出。
      * - setDismissTranslationX(主轴/竖屏X)= 原生补位平移，吃掉(置0)，补位改由 applyStack 做 iOS 收拢。
      */
-    private fun hookDismissChannel(taskClass: Class<*>) {
+    /**
+     * 删除位移分两轴，且轴角色随方向对调（竖屏主X次Y、横屏主Y次X）：
+     * - 次轴 dismiss = 被删卡飞出：记录它 + 按“次轴位移/次轴维度”算删除进度，放行。
+     * - 主轴 dismiss = 原生补位平移：吃掉(置0)，补位由 applyStack 接管。
+     * 两个 setter 都按当前 rotation 判断自己此刻是主轴还是次轴。
+     */
+    private fun hookDismissChannel(taskClass: Class<*>, hooks: ResolvedHooks) {
         val setY = findMethodInHierarchyNamed(taskClass, "setDismissTranslationY", Float::class.javaPrimitiveType)
         val setX = findMethodInHierarchyNamed(taskClass, "setDismissTranslationX", Float::class.javaPrimitiveType)
         if (setY == null || setX == null) {
             Logger.w(TAG, "未找到 setDismissTranslationX/Y，删除接管跳过")
             return
         }
-        XposedBridge.hookMethod(setY, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val task = param.thisObject as? View ?: return
-                val recents = task.parent as? ViewGroup ?: return
-                val state = stateFor(recents)
-                val value = (param.args[0] as? Number)?.toFloat() ?: 0f
-                val height = task.height.takeIf { it > 0 } ?: return
-                if (abs(value) > EPSILON) {
-                    state.dismissingTask = task
-                    state.dismissProgress = (abs(value) / height).coerceIn(0f, 1f)
-                } else if (state.dismissingTask === task) {
-                    state.dismissingTask = null
-                    state.dismissProgress = 0f
+        // isYAxis: 该 setter 写的是 Y 轴。竖屏次轴=Y、横屏次轴=X。
+        for ((method, isYAxis) in listOf(setY to true, setX to false)) {
+            XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val task = param.thisObject as? View ?: return
+                    val recents = task.parent as? ViewGroup ?: return
+                    val landscape = RecentsRotationGeometry.isLandscape(rotationFor(recents, hooks))
+                    val isSecondaryAxis = if (landscape) !isYAxis else isYAxis
+                    if (isSecondaryAxis) return  // 次轴=被删卡飞出，放行，进度在 after 里算
+                    // 主轴 = 原生补位平移，吃掉，交给 applyStack。
+                    param.args[0] = 0f
                 }
-                requestStackApply(recents, rebuildPages = false)
-            }
-        })
-        XposedBridge.hookMethod(setX, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                // 吃掉原生补位平移，补位交给 applyStack。
-                param.args[0] = 0f
-            }
-        })
+
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val task = param.thisObject as? View ?: return
+                    val recents = task.parent as? ViewGroup ?: return
+                    val landscape = RecentsRotationGeometry.isLandscape(rotationFor(recents, hooks))
+                    val isSecondaryAxis = if (landscape) !isYAxis else isYAxis
+                    if (!isSecondaryAxis) return
+                    val state = stateFor(recents)
+                    val value = (param.args[0] as? Number)?.toFloat() ?: 0f
+                    // 次轴维度：横屏次轴=X→宽，竖屏次轴=Y→高。
+                    val secondaryDim = (if (landscape) task.width else task.height).takeIf { it > 0 } ?: return
+                    if (abs(value) > EPSILON) {
+                        state.dismissingTask = task
+                        state.dismissProgress = (abs(value) / secondaryDim).coerceIn(0f, 1f)
+                    } else if (state.dismissingTask === task) {
+                        state.dismissingTask = null
+                        state.dismissProgress = 0f
+                    }
+                    requestStackApply(recents, rebuildPages = false)
+                }
+            })
+        }
     }
 
     /** 事件源只置标志并请求下一帧重绘，真正重算合并到 dispatchDraw 前一次。 */
