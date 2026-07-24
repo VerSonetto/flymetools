@@ -79,6 +79,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             showAsGrid = findMethod(recentsClass, "showAsGrid", Boolean::class.javaPrimitiveType),
             isSplitSelectionActive = findMethod(recentsClass, "isSplitSelectionActive", Boolean::class.javaPrimitiveType),
             getHomeTaskView = findMethod(recentsClass, "getHomeTaskView", taskClass),
+            isRunningTask = findMethod(taskClass, "isRunningTask", Boolean::class.javaPrimitiveType),
             horizontalOffsetProperty = findNoArgMethod(taskClass, "getHorizontalOffsetTranslationProperty"),
             primaryTaskOffsetProperty = findNoArgMethod(taskClass, "getPrimaryTaskOffsetTranslationProperty"),
             taskComponent = findNoArgMethod(taskClass, "getTaskFlowComponent"),
@@ -292,6 +293,9 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val taskState = state.taskStates.getOrPut(task) { TaskVisualState(task.translationZ) }
                 val nativePrimaryTranslation = removeCustomPrimaryOffset(task, taskState, hooks, rotation)
                 val isDismissing = task === dismissing
+                // running task 用独立 live tile surface 渲染，若给它加 offset/scale，TaskView 空白底板
+                // (清空+dimming)会与 surface 分离而露出。故让它停在原生位置，不施加我们的位移与缩放。
+                val isRunning = invokeBoolean(hooks.isRunningTask, task)
 
                 // 补位规则(拖动中按 dismissProgress 渐进，删除确认后 rebuild 补完剩余距离)：
                 //  · 被删卡有左邻(dismissedOrdinal>0)：其左侧卡朝被删卡位置右移(+1)，右侧卡不动。
@@ -307,8 +311,14 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val visual = stackVisual(visualCenter, cardPrimarySize, relativePosition, overscroll, effectiveOrdinal)
 
                 updateStackPivot(task, taskState, relativePosition < -EPSILON)
-                // 被删卡的主轴位移交给原生(它在飞出/回弹)，我们不写它的 offset，只保留堆叠 scale/alpha 基线。
-                if (!isDismissing) {
+                // 被删卡的主轴位移交给原生(飞出/回弹)；running task 交给原生(与 live tile surface 对齐)。
+                if (isRunning) {
+                    // 清除可能残留的自定义 offset，确保 running task 回到原生位置。
+                    if (taskState.customPrimaryOffset != 0f) {
+                        applyCustomPrimaryOffset(task, taskState, hooks, rotation, 0f)
+                    }
+                }
+                if (!isDismissing && !isRunning) {
                     val customPrimaryOffset = if (landscape) {
                         val logicalDelta = page.logicalPageScroll - logicalPrimaryScroll + nativePrimaryTranslation
                         val nativePhysicalOffset = RecentsRotationGeometry.logicalToPhysical(logicalDelta, rotation)
@@ -319,7 +329,8 @@ object IosDepthStackRecentsHook : FeatureHook {
                     }
                     applyCustomPrimaryOffset(task, taskState, hooks, rotation, customPrimaryOffset)
                 }
-                applyScale(task, taskState, lerp(1f, visual.scale, stackLayoutAmount))
+                // running task 恢复原生缩放(factor=1)，其余卡用堆叠缩放。
+                applyScale(task, taskState, if (isRunning) 1f else lerp(1f, visual.scale, stackLayoutAmount))
                 // Z 序按补位序数，避免删除中左卡盖右卡；被删卡压到最上以自然飞出。
                 val depthOrder = if (isDismissing) (pages.size + 1).toFloat() else effectiveOrdinal
                 applyDepthOrder(task, taskState, depthOrder, stackLayoutAmount)
@@ -677,6 +688,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         val showAsGrid: Method?,
         val isSplitSelectionActive: Method?,
         val getHomeTaskView: Method?,
+        val isRunningTask: Method?,
         val horizontalOffsetProperty: Method?,
         val primaryTaskOffsetProperty: Method?,
         val taskComponent: Method?,
