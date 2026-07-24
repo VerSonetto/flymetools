@@ -1,8 +1,12 @@
 package com.karen.flymetool.hook.feature.launcher
 
 import android.content.ComponentName
+import android.content.Context
 import android.graphics.Canvas
+import android.graphics.RenderEffect
 import android.graphics.Rect
+import android.graphics.Shader
+import android.graphics.drawable.Drawable
 import android.util.FloatProperty
 import android.view.View
 import android.view.ViewGroup
@@ -11,11 +15,13 @@ import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
+import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import java.lang.reflect.Method
 import java.util.IdentityHashMap
 import kotlin.math.abs
 import kotlin.math.pow
+import kotlin.math.roundToInt
 import kotlin.math.sign
 
 
@@ -34,6 +40,11 @@ object IosDepthStackRecentsHook : FeatureHook {
     private const val LEFT_SCALE_DECAY = 0.50f
     private const val DEPTH_Z_STEP_DP = 1f
     private const val EPSILON = 0.0005f
+    // 头部模糊：仅可见区域内最左侧卡片，低强度、轻微降透明度。
+    private const val HEADER_BLUR_RADIUS_DP = 4.2f
+    private const val HEADER_BLUR_ALPHA = 0.9f
+    // 模糊向外扩散预留：padding = 半径 * 倍数，避免被 overlay bounds 裁切成硬矩形。
+    private const val HEADER_BLUR_PADDING_MULTIPLIER = 2f
 
     private val recentsClassCandidates = arrayOf(
         "com.android.quickstep.views.RecentsView",
@@ -335,6 +346,8 @@ object IosDepthStackRecentsHook : FeatureHook {
                 // 被删卡额外按删除进度淡出；其余卡用堆叠 alpha。
                 val alpha = if (isDismissing) visual.alpha * (1f - dismissProgress) else visual.alpha
                 applyTaskAlpha(task, taskState, lerp(1f, alpha, stackLayoutAmount))
+                taskState.frameRelativePosition = relativePosition
+                taskState.frameVisibleAlpha = alpha
             }
 
             // 标题遮挡淡出：仅稳定态计算(入场/删除中略过以省 getGlobalVisibleRect 开销)。
@@ -345,6 +358,20 @@ object IosDepthStackRecentsHook : FeatureHook {
                     val taskState = state.taskStates.getValue(page.view)
                     val frontBounds = pages.getOrNull(ordinal + 1)?.let { state.taskStates.getValue(it.view).bounds }
                     applyTitleOcclusion(page.view, taskState, frontBounds, landscape)
+                }
+                // 头部模糊：只给可见区域内最左侧卡片(rel 最小且仍可见)加低强度模糊，其余清除。
+                var blurIndex = -1
+                var minRel = Float.MAX_VALUE
+                pages.forEachIndexed { index, page ->
+                    val ts = state.taskStates.getValue(page.view)
+                    if (ts.frameVisibleAlpha > 0.05f && ts.frameRelativePosition < minRel) {
+                        minRel = ts.frameRelativePosition
+                        blurIndex = index
+                    }
+                }
+                pages.forEachIndexed { index, page ->
+                    val ts = state.taskStates.getValue(page.view)
+                    applyHeaderBlur(page.view, ts, index == blurIndex)
                 }
             }
         } catch (throwable: Throwable) {
@@ -458,6 +485,77 @@ object IosDepthStackRecentsHook : FeatureHook {
         else if (!hidden && title.visibility == View.INVISIBLE) title.visibility = View.VISIBLE
     }
 
+    /** 定位并缓存卡片头部图标(icon)视图。 */
+    private fun resolveHeader(task: View, state: TaskVisualState): View? {
+        if (state.headerResolved) return state.iconView
+        state.headerResolved = true
+        val pkg = task.context.packageName
+        val iconId = task.resources.getIdentifier("icon", "id", pkg)
+        state.iconView = if (iconId != 0) task.findViewById(iconId) else null
+        // task_head 是图标+标题的父容器，入场淡入由 onSettledProgressUpdated 改写它的 alpha 驱动。
+        val headId = task.resources.getIdentifier("task_head", "id", pkg)
+        state.taskHeadView = if (headId != 0) task.findViewById(headId) else null
+        return state.iconView
+    }
+
+    private fun readIconDrawable(icon: View): Drawable? = try {
+        XposedHelpers.callMethod(icon, "getDrawable") as? Drawable
+    } catch (_: Throwable) { null }
+
+    /**
+     * 图标低强度模糊：只作用于最左侧可见卡。图标 drawable 复制画进带 padding 的 overlay，
+     * 对 overlay 施加模糊后原图标 alpha 置 0——模糊可向外扩散，不被图标矩形 bounds 裁成硬边。
+     */
+    private fun applyHeaderBlur(task: View, state: TaskVisualState, enable: Boolean) {
+        val icon = resolveHeader(task, state) ?: return
+        // overlay 挂到 task_head 的 ViewOverlay：随宿主一起绘制并继承其 alpha，
+        // 于是入场淡入(onSettledProgressUpdated 改写 task_head.alpha)自动带上模糊图标，
+        // 无需 applyStack 每帧手动追踪，避免动画结束后 overlay 停在中途值。
+        val host = state.taskHeadView as? ViewGroup ?: return
+        if (!enable) {
+            if (state.headerBlurred) clearHeaderBlur(icon, state)
+            return
+        }
+        val source = readIconDrawable(icon)
+        if (source == null) { if (state.headerBlurred) clearHeaderBlur(icon, state); return }
+
+        val density = task.resources.displayMetrics.density
+        val radius = HEADER_BLUR_RADIUS_DP * density
+        val paddingPx = (radius * HEADER_BLUR_PADDING_MULTIPLIER).roundToInt().coerceAtLeast(1)
+        val overlay = state.blurOverlay ?: BlurredIconOverlayView(task.context).also { state.blurOverlay = it }
+        if (!overlay.updateSource(source)) { if (state.headerBlurred) clearHeaderBlur(icon, state); return }
+
+        val bounds = Rect(0, 0, icon.width, icon.height)
+        host.offsetDescendantRectToMyCoords(icon, bounds)
+        overlay.layout(bounds.left - paddingPx, bounds.top - paddingPx, bounds.right + paddingPx, bounds.bottom + paddingPx)
+        overlay.rotation = icon.rotation
+        overlay.scaleX = icon.scaleX
+        overlay.scaleY = icon.scaleY
+        overlay.pivotX = overlay.width / 2f
+        overlay.pivotY = overlay.height / 2f
+        overlay.updateDrawableBounds(source.bounds, paddingPx)
+        overlay.alpha = HEADER_BLUR_ALPHA
+
+        if (!state.headerBlurred) {
+            overlay.setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.DECAL))
+            state.iconNativeAlpha = icon.alpha
+            host.overlay.add(overlay)
+            state.overlayAdded = true
+            state.headerBlurred = true
+        }
+        icon.alpha = 0f
+    }
+
+    private fun clearHeaderBlur(icon: View, state: TaskVisualState) {
+        val host = state.taskHeadView as? ViewGroup
+        state.blurOverlay?.let { overlay ->
+            if (state.overlayAdded) { host?.overlay?.remove(overlay); state.overlayAdded = false }
+            overlay.setRenderEffect(null)
+        }
+        icon.alpha = state.iconNativeAlpha
+        state.headerBlurred = false
+    }
+
     // === 变换应用（带脏检查，写前比 EPSILON）===
 
     /** 读回原生主轴位移（剥离我们上帧加的偏移），返回原生基准值。 */
@@ -569,6 +667,10 @@ object IosDepthStackRecentsHook : FeatureHook {
                     if (title.visibility == View.INVISIBLE) title.visibility = View.VISIBLE
                 }
                 ts.titleLastApplied = Float.NaN
+            }
+            // 恢复头部模糊。
+            if (ts.headerBlurred) {
+                ts.iconView?.let { clearHeaderBlur(it, ts) }
             }
         }
     }
@@ -748,6 +850,51 @@ object IosDepthStackRecentsHook : FeatureHook {
         var titleNativeAlpha = 1f
         var titleLastApplied = Float.NaN
         val bounds = Rect()
+        // 帧内快照：本卡相对滚动位置与可见 alpha，供标题/模糊阶段判定最左可见卡。
+        var frameRelativePosition = 0f
+        var frameVisibleAlpha = 0f
+        // 头部模糊：icon 视图、承接模糊扩散的 overlay 及生效标记。
+        var headerResolved = false
+        var iconView: View? = null
+        var taskHeadView: View? = null
+        var iconNativeAlpha = 1f
+        var blurOverlay: BlurredIconOverlayView? = null
+        var overlayAdded = false
+        var headerBlurred = false
+    }
+
+    /** 承接图标模糊扩散的视图：把图标 drawable 复制画在带 padding 的空间里，避免被裁成硬矩形。 */
+    private class BlurredIconOverlayView(context: Context) : View(context) {
+        private var source: Drawable? = null
+        private var drawable: Drawable? = null
+
+        fun updateSource(newSource: Drawable): Boolean {
+            if (source !== newSource || drawable == null) {
+                val copy = newSource.constantState?.newDrawable(resources)?.mutate() ?: return false
+                source = newSource
+                drawable = copy
+            }
+            drawable?.let { copy ->
+                copy.state = newSource.state
+                copy.level = newSource.level
+                copy.alpha = newSource.alpha
+                copy.layoutDirection = newSource.layoutDirection
+                copy.colorFilter = newSource.colorFilter
+            }
+            return true
+        }
+
+        fun updateDrawableBounds(sourceBounds: Rect, paddingPx: Int) {
+            drawable?.bounds = Rect(sourceBounds).also { it.offset(paddingPx, paddingPx) }
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            drawable?.draw(canvas)
+        }
+
+        override fun hasOverlappingRendering(): Boolean = false
     }
 
     private data class ResolvedHooks(
