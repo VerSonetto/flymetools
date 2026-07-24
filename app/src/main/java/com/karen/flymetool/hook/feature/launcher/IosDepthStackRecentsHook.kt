@@ -311,14 +311,10 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val visual = stackVisual(visualCenter, cardPrimarySize, relativePosition, overscroll, effectiveOrdinal)
 
                 updateStackPivot(task, taskState, relativePosition < -EPSILON)
-                // 被删卡的主轴位移交给原生(飞出/回弹)；running task 交给原生(与 live tile surface 对齐)。
-                if (isRunning) {
-                    // 清除可能残留的自定义 offset，确保 running task 回到原生位置。
-                    if (taskState.customPrimaryOffset != 0f) {
-                        applyCustomPrimaryOffset(task, taskState, hooks, rotation, 0f)
-                    }
-                }
-                if (!isDismissing && !isRunning) {
+                // 被删卡的主轴位移交给原生(飞出/回弹)。running task 仍施加 offset(待在堆叠位、与左邻卡
+                // 衔接，避免离场时脱节形成缝)，仅跳过 scale——scale 才会让空白底板与 live tile surface 尺寸
+                // 不符而露出。
+                if (!isDismissing) {
                     val customPrimaryOffset = if (landscape) {
                         val logicalDelta = page.logicalPageScroll - logicalPrimaryScroll + nativePrimaryTranslation
                         val nativePhysicalOffset = RecentsRotationGeometry.logicalToPhysical(logicalDelta, rotation)
