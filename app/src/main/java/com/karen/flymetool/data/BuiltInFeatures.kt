@@ -37,6 +37,8 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
             description = "在熄屏 AOD 界面显示最近的应用消息通知内容", group = "锁屏"),
         HookFeature("hide_charging_animation", "隐藏充电动画",
             description = "插入充电器时不显示充电动画", group = "锁屏"),
+        HookFeature("ios_notification_stack", "iOS 通知堆叠",
+            description = "通知栏与锁屏通知溢出时在底部多层堆叠显示", group = "通知"),
         HookFeature("notification_card_radius", "通知卡片圆角",
             description = "自定义通知中心通知卡片的圆角大小", group = "通知"),
         HookFeature("ticker_click", "点击滚动消息跳转",
