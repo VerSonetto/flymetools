@@ -13,11 +13,10 @@ import com.karen.flymetool.hook.base.XposedPrefs
 import kotlin.math.max
 
 /**
- * iOS 锁屏通知堆叠（对齐 HTML layoutFor）。
+ * iOS 锁屏/下拉通知堆叠。
  *
- * - 顶层堆叠卡 scale=1（与上方正常卡同大）
- * - 与上方完整卡保持 GAP，避免重叠
- * - 堆叠基准 BOTTOM_PAD 可配置
+ * 悬浮横幅（isHeadsUp && isPinned）期间整段不改 viewState，
+ * 避免把系统已 hidden 的列表卡 unhide 到 HUN 上方。
  */
 object IosNotificationStackHook : FeatureHook {
 
@@ -31,8 +30,8 @@ object IosNotificationStackHook : FeatureHook {
     private const val GAP_DP = 10f
     private const val SCALE_STEP = 0.04f
     private const val MIN_SCALE = 0.84f
-    private const val Z_BASE = 80f
-    private const val Z_STEP = 20f
+    private const val Z_BASE = 4f
+    private const val Z_STEP = 1f
 
     private var prefsPackage: String = "com.android.systemui"
     private var loadParam: XC_LoadPackage.LoadPackageParam? = null
@@ -98,11 +97,17 @@ object IosNotificationStackHook : FeatureHook {
 
     private fun apply(ambient: Any, algo: Any, rowCl: Class<*>) {
         val host = XposedHelpers.getObjectField(algo, "mHostView") as? ViewGroup ?: return
+
+        // 有 pinned 悬浮横幅：完全交给系统（NSSL.isPinnedHeadsUp）
+        // 这是图里「上面多一条 LSPosed」的根因修复点
+        if (hasPinnedHeadsUp(host, rowCl)) return
+
+        // 面板未展开且无 HUN：也不堆叠（锁屏/收起态系统自管）
+        if (!isShadeExpanded(ambient) && !isOnKeyguard(ambient)) return
+
         val trackedHun = readTrackedHun(ambient)
         val items = collect(host, rowCl, ambient, trackedHun)
         if (items.isEmpty()) return
-
-        hideShelf(ambient)
 
         val stackY = readStackY(ambient)
         val innerH = readInnerHeight(ambient)
@@ -114,7 +119,11 @@ object IosNotificationStackHook : FeatureHook {
         val peek = dp(PEEK_DP)
         val gap = dp(GAP_DP)
 
-        // 第一遍：完整区底边（用于防重叠）— 仅统计非 HUN 列表卡
+        val hasOverflow = items.any { it.nativeY + max(it.height, 1f) > B + 0.5f }
+        if (!hasOverflow) return
+
+        hideShelf(ambient)
+
         var lastFullBottom = stackY
         for (item in items) {
             val h = max(item.height, 1f)
@@ -125,17 +134,24 @@ object IosNotificationStackHook : FeatureHook {
         val stackMinTop = lastFullBottom + gap
 
         for (item in items) {
-            // 二次保险：绝不改写悬浮/HUN（系统 updateHeadsUpStates 已定好位置）
-            if (isFloatingHeadsUp(item.view, viewState(item.view), ambient, trackedHun)) {
+            if (isPinnedOrAnimatingHun(item.view, viewState(item.view), ambient, trackedHun)) {
                 continue
             }
             val st = viewState(item.view) ?: continue
+            // 系统已 hidden 的列表卡：面板半收起时不要 unhide
+            if (boolField(st, "hidden") && item.nativeY + max(item.height, 1f) <= B) {
+                continue
+            }
+
             val h = max(item.height, 1f)
             val et = item.nativeY
             val over = et + h - B
 
             if (over <= 0f) {
-                applyFull(st, item)
+                // 完整区：不强制改 Y/hidden，只清 inShelf 脏标记
+                if (boolField(st, "inShelf")) {
+                    XposedHelpers.setBooleanField(st, "inShelf", false)
+                }
                 continue
             }
 
@@ -153,7 +169,6 @@ object IosNotificationStackHook : FeatureHook {
                 z = 0f
                 XposedHelpers.setBooleanField(st, "hidden", true)
             } else {
-                // 顶层 L→0：scale=1、alpha=1；下层随 L 缩小淡出
                 ty = max((B - h) + L * peek, stackMinTop + L * peek * 0.15f)
                 scale = if (L <= 0.05f) {
                     1f
@@ -169,7 +184,6 @@ object IosNotificationStackHook : FeatureHook {
                 XposedHelpers.setBooleanField(st, "hidden", false)
             }
 
-            // pivot=center：目标顶边 ty
             val y = ty - h * (1f - scale) * 0.5f
 
             XposedHelpers.callMethod(st, "setYTranslation", y)
@@ -183,16 +197,27 @@ object IosNotificationStackHook : FeatureHook {
         }
     }
 
-    private fun applyFull(st: Any, item: Item) {
-        XposedHelpers.callMethod(st, "setYTranslation", item.nativeY)
-        XposedHelpers.callMethod(st, "setScaleX", 1f)
-        XposedHelpers.callMethod(st, "setScaleY", 1f)
-        XposedHelpers.callMethod(st, "setAlpha", 1f)
-        XposedHelpers.callMethod(st, "setZTranslation", Z_BASE - item.index * 2f)
-        XposedHelpers.setBooleanField(st, "hidden", false)
-        XposedHelpers.setBooleanField(st, "inShelf", false)
-        XposedHelpers.setIntField(st, "clipBottomAmount", 0)
-        XposedHelpers.setIntField(st, "clipTopAmount", 0)
+    private fun hasPinnedHeadsUp(host: ViewGroup, rowCl: Class<*>): Boolean {
+        for (i in 0 until host.childCount) {
+            val child = host.getChildAt(i) ?: continue
+            if (!rowCl.isInstance(child)) continue
+            if (callBool(child, "isHeadsUp") && callBool(child, "isPinned")) return true
+            // Flyme：mIsHeadsUpStatus 在 pinned 时同步
+            if (boolField(child, "mIsHeadsUpStatus") && callBool(child, "isPinned")) return true
+        }
+        return false
+    }
+
+    private fun isShadeExpanded(ambient: Any): Boolean = try {
+        XposedHelpers.callMethod(ambient, "isShadeExpanded") as Boolean
+    } catch (_: Throwable) {
+        true
+    }
+
+    private fun isOnKeyguard(ambient: Any): Boolean = try {
+        XposedHelpers.callMethod(ambient, "isOnKeyguard") as Boolean
+    } catch (_: Throwable) {
+        false
     }
 
     private fun collect(
@@ -208,8 +233,7 @@ object IosNotificationStackHook : FeatureHook {
             if (child.visibility == View.GONE) continue
             val st = viewState(child) ?: continue
             if (boolField(st, "gone")) continue
-            // 悬浮通知：完全不进列表，保留系统 updateHeadsUpStates 结果
-            if (isFloatingHeadsUp(child, st, ambient, trackedHun)) continue
+            if (isPinnedOrAnimatingHun(child, st, ambient, trackedHun)) continue
             raw += child
         }
         raw.sortBy {
@@ -231,35 +255,27 @@ object IosNotificationStackHook : FeatureHook {
     }
 
     /**
-     * Flyme12 悬浮通知判定（对齐 NSSL.isPinnedHeadsUp + StackScrollAlgorithm.updateHeadsUpStates）。
-     * 特征：isHeadsUp && isPinned、location==1、trackedHun、mIsHeadsUp/mIsHeadsUpStatus 字段。
+     * 只排除钉顶/动画中的真悬浮，不用 isHeadsUpState 误杀列表项。
      */
-    private fun isFloatingHeadsUp(
+    private fun isPinnedOrAnimatingHun(
         row: View,
         st: Any?,
         ambient: Any,
         trackedHun: Any?,
     ): Boolean {
-        // 1) 系统官方 isPinnedHeadsUp：isHeadsUp && isPinned
-        val headsUp = callBool(row, "isHeadsUp")
-        val pinned = callBool(row, "isPinned")
-        if (headsUp && pinned) return true
-
-        // 2) 仍处于 HUN 状态（含 disappear 动画）
-        if (callBool(row, "isHeadsUpState")) return true
+        if (callBool(row, "isHeadsUp") && callBool(row, "isPinned")) return true
+        if (callBool(row, "isPinned")) return true
         if (callBool(row, "isHeadsUpAnimatingAway")) return true
         if (callBool(row, "showingPulsing")) return true
+        if (boolField(row, "mHeadsupDisappearRunning")) return true
 
-        // 3) 算法标记的首条 HUN location = 1 (LOCATION_FIRST_HEADS_UP)
         if (st != null) {
             try {
                 if (XposedHelpers.getIntField(st, "location") == 1) return true
             } catch (_: Throwable) {
             }
-            if (boolField(st, "headsUpIsVisible") && callBool(row, "mustStayOnScreen")) return true
         }
 
-        // 4) AmbientState 跟踪的 HUN 行
         if (trackedHun != null && trackedHun === row) return true
         try {
             val tracked = XposedHelpers.callMethod(ambient, "getTrackedHeadsUpRow")
@@ -267,29 +283,10 @@ object IosNotificationStackHook : FeatureHook {
         } catch (_: Throwable) {
         }
 
-        // 5) 字段兜底（公开方法偶发被混淆/代理时）
-        if (boolField(row, "mIsHeadsUp")) return true
-        if (boolField(row, "mIsHeadsUpStatus")) return true
-        if (boolField(row, "mHeadsupDisappearRunning")) return true
         try {
             val pinnedStatus = XposedHelpers.getObjectField(row, "mPinnedStatus")
             if (pinnedStatus != null && callBool(pinnedStatus, "isPinned")) return true
         } catch (_: Throwable) {
-        }
-
-        // 6) 顶区 + mustStayOnScreen：悬浮横幅钉在 headsUpInset 附近
-        if (callBool(row, "mustStayOnScreen") || callBool(row, "isAboveShelf")) {
-            val y = if (st != null) {
-                try {
-                    XposedHelpers.callMethod(st, "getYTranslation") as Float
-                } catch (_: Throwable) {
-                    row.translationY
-                }
-            } else {
-                row.translationY
-            }
-            // 顶区大致在状态栏/headsUpInset 一带（< 200dp 且明显在列表上方）
-            if (y < dp(200f)) return true
         }
 
         return false
