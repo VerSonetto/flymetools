@@ -113,16 +113,17 @@ object IosNotificationStackHook : FeatureHook {
         val contentBottom = stackY + innerH
         // THRESH：折叠时首卡顶边（整组沉底锚点）
         val thresh = contentBottom - dp(readBottomPadDp().toFloat())
-        val listTop = stackY + dp(8f)
         val step = dp(STEP_DP)
         val peek = dp(PEEK_DP)
+        val pad = readPadding(algo)
         val scrollY = readScrollY(ambient)
-        val scrollRange = readScrollRange(host)
+        val scrollRange = readScrollRange(host, ambient, items, pad, innerH)
         // 0=整组沉底；1=完全用系统列表（含滚到底）
-        val pe = expandProgress(ambient, scrollY, scrollRange)
+        val pe = expandProgress(scrollY, scrollRange)
 
-        // 完全展开：不改任何布局，系统列表可滚到底看全部
+        // 完全展开 / 内容装得下：强制恢复全尺寸，避免息屏回来 scale 残留
         if (pe >= 0.995f) {
+            restoreSystemList(items, ambient, trackedHun)
             hideShelf(ambient)
             return
         }
@@ -197,22 +198,48 @@ object IosNotificationStackHook : FeatureHook {
 
     /**
      * 0 = 整组沉底；1 = 系统完整列表。
-     * 锁屏与下拉通知栏同一套逻辑（布局相同，下拉仅多清空按钮）。
-     * 驱动：NSSL scrollY / scrollRange。
+     * 锁屏 / 下拉同一套：只跟 NSSL scrollY。
      */
-    private fun expandProgress(ambient: Any, scrollY: Float, scrollRange: Float): Float {
-        // 滚到底 → 完全展开，交给系统列表
-        if (scrollRange > 2f && scrollY >= scrollRange - 4f) return 1f
-
-        // 无滚动空间：内容装得下 → 列表；否则沉底
-        if (scrollRange <= 2f) {
-            val shadeExpanded = callBool(ambient, "isShadeExpanded")
-            // 面板可见且内容装得下时不堆叠
-            return if (shadeExpanded) 1f else 0f
-        }
-
-        // scrollY 0→range 映射 0→1
+    private fun expandProgress(scrollY: Float, scrollRange: Float): Float {
+        // 装得下 或 滚到底 → 完整列表（息屏回来 scrollRange 常为 0，必须走列表）
+        if (scrollRange <= 2f) return 1f
+        if (scrollY >= scrollRange - 4f) return 1f
         return (scrollY / scrollRange).coerceIn(0f, 1f)
+    }
+
+    /** pe=1：清掉我们写过的 scale/alpha/z，保留系统 Y */
+    private fun restoreSystemList(
+        items: List<Item>,
+        ambient: Any,
+        trackedHun: Any?,
+    ) {
+        for (item in items) {
+            if (isPinnedOrAnimatingHun(item.view, viewState(item.view), ambient, trackedHun)) {
+                continue
+            }
+            val st = viewState(item.view) ?: continue
+            XposedHelpers.callMethod(st, "setScaleX", 1f)
+            XposedHelpers.callMethod(st, "setScaleY", 1f)
+            // 不强制 alpha/hidden：交给系统（含敏感内容等）
+            if (boolField(st, "inShelf")) {
+                XposedHelpers.setBooleanField(st, "inShelf", false)
+            }
+            try {
+                val a = XposedHelpers.callMethod(st, "getAlpha") as Float
+                if (a in 0.01f..0.99f && !boolField(st, "hidden")) {
+                    XposedHelpers.callMethod(st, "setAlpha", 1f)
+                }
+            } catch (_: Throwable) {
+                XposedHelpers.callMethod(st, "setAlpha", 1f)
+            }
+            XposedHelpers.callMethod(st, "setZTranslation", 0f)
+            XposedHelpers.setIntField(st, "clipBottomAmount", 0)
+            XposedHelpers.setIntField(st, "clipTopAmount", 0)
+            try {
+                item.view.elevation = 0f
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     private fun readScrollY(ambient: Any): Float = try {
@@ -221,9 +248,19 @@ object IosNotificationStackHook : FeatureHook {
         0f
     }
 
-    /** NSSL 可滚范围；优先 getScrollRange / getOwnScrollY 相关 */
-    private fun readScrollRange(host: ViewGroup): Float {
-        // public/private getScrollRange
+    private fun readPadding(algo: Any): Float = try {
+        XposedHelpers.getFloatField(algo, "mPaddingBetweenElements")
+    } catch (_: Throwable) {
+        dp(4f)
+    }
+
+    private fun readScrollRange(
+        host: ViewGroup,
+        ambient: Any,
+        items: List<Item>,
+        pad: Float,
+        innerH: Int,
+    ): Float {
         for (name in arrayOf("getScrollRange", "getMaxScrollAmount")) {
             try {
                 val v = XposedHelpers.callMethod(host, name)
@@ -232,11 +269,10 @@ object IosNotificationStackHook : FeatureHook {
                     is Float -> v
                     else -> continue
                 }
-                if (f >= 0f) return f
+                if (f > 2f) return f
             } catch (_: Throwable) {
             }
         }
-        // contentHeight - maxLayoutHeight 近似
         try {
             val content = XposedHelpers.callMethod(host, "getContentHeight") as Int
             val maxH = try {
@@ -244,10 +280,14 @@ object IosNotificationStackHook : FeatureHook {
             } catch (_: Throwable) {
                 host.height
             }
-            return max(0, content - maxH).toFloat()
+            val r = (content - maxH).toFloat()
+            if (r > 2f) return r
         } catch (_: Throwable) {
         }
-        return 0f
+        // 兜底：用卡片总高估算（息屏回来 host 方法可能暂时为 0）
+        var total = 0f
+        for (item in items) total += max(item.height, 1f) + pad
+        return max(0f, total - innerH)
     }
 
     private fun hasPinnedHeadsUp(host: ViewGroup, rowCl: Class<*>): Boolean {
