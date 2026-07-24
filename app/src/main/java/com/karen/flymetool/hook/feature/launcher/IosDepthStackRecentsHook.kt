@@ -2,6 +2,7 @@ package com.karen.flymetool.hook.feature.launcher
 
 import android.content.ComponentName
 import android.graphics.Canvas
+import android.graphics.Rect
 import android.util.FloatProperty
 import android.view.View
 import android.view.ViewGroup
@@ -43,6 +44,7 @@ object IosDepthStackRecentsHook : FeatureHook {
     )
     private val runtimeRotationMethods = HashMap<Class<*>, Method?>()
     private val stateByRecents = IdentityHashMap<ViewGroup, RecentsState>()
+    private val scratchRect = Rect()
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (lpparam.packageName != TARGET_PACKAGE) return
@@ -334,6 +336,17 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val alpha = if (isDismissing) visual.alpha * (1f - dismissProgress) else visual.alpha
                 applyTaskAlpha(task, taskState, lerp(1f, alpha, stackLayoutAmount))
             }
+
+            // 标题遮挡淡出：仅稳定态计算(入场/删除中略过以省 getGlobalVisibleRect 开销)。
+            // 每卡标题被其右邻卡(ordinal+1，上层)覆盖的比例决定 app_name 的 alpha。
+            if (stackLayoutAmount >= 1f - EPSILON && dismissing == null) {
+                pages.forEach { it.view.getGlobalVisibleRect(state.taskStates.getValue(it.view).bounds) }
+                pages.forEachIndexed { ordinal, page ->
+                    val taskState = state.taskStates.getValue(page.view)
+                    val frontBounds = pages.getOrNull(ordinal + 1)?.let { state.taskStates.getValue(it.view).bounds }
+                    applyTitleOcclusion(page.view, taskState, frontBounds, landscape)
+                }
+            }
         } catch (throwable: Throwable) {
             Logger.once(TAG, "运行时降级: ${throwable.javaClass.simpleName}: ${throwable.message}")
         } finally {
@@ -399,6 +412,51 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     private fun lerp(start: Float, end: Float, t: Float): Float = start + (end - start) * t
+
+    private fun smoothStep(v: Float): Float {
+        val x = v.coerceIn(0f, 1f)
+        return x * x * (3f - 2f * x)
+    }
+
+    /** 定位并缓存卡片标题(app_name)视图。 */
+    private fun resolveTitle(task: View, state: TaskVisualState): View? {
+        if (state.titleResolved) return state.titleView
+        state.titleResolved = true
+        val id = task.resources.getIdentifier("app_name", "id", task.context.packageName)
+        state.titleView = if (id != 0) task.findViewById(id) else null
+        return state.titleView
+    }
+
+    /**
+     * 标题遮挡淡出：按被右邻卡覆盖的比例淡出 app_name。visibleFraction=1 全显、0 全遮。
+     * frontBounds 为右邻卡的全局可见矩形；null 表示无遮挡卡。
+     */
+    private fun applyTitleOcclusion(task: View, state: TaskVisualState, frontBounds: Rect?, landscape: Boolean) {
+        val title = resolveTitle(task, state) ?: return
+        val visibleFraction = if (frontBounds == null) 1f else {
+            title.getGlobalVisibleRect(scratchRect)
+            val childStart = if (landscape) scratchRect.top else scratchRect.left
+            val childEnd = if (landscape) scratchRect.bottom else scratchRect.right
+            val frontStart = if (landscape) frontBounds.top else frontBounds.left
+            val frontEnd = if (landscape) frontBounds.bottom else frontBounds.right
+            val overlaps = childEnd > frontStart && childStart < frontEnd
+            if (!overlaps) 1f else {
+                val size = (childEnd - childStart).coerceAtLeast(1)
+                val covered = (minOf(childEnd, frontEnd) - maxOf(childStart, frontStart)).coerceAtLeast(0)
+                (1f - covered.toFloat() / size).coerceIn(0f, 1f)
+            }
+        }
+        val occlusionAlpha = smoothStep(visibleFraction)
+        if (state.titleLastApplied.isNaN() || abs(title.alpha - state.titleLastApplied) > EPSILON) {
+            state.titleNativeAlpha = title.alpha
+        }
+        val applied = state.titleNativeAlpha * occlusionAlpha
+        if (abs(title.alpha - applied) > EPSILON) title.alpha = applied
+        state.titleLastApplied = applied
+        val hidden = occlusionAlpha <= 0.02f
+        if (hidden && title.visibility == View.VISIBLE) title.visibility = View.INVISIBLE
+        else if (!hidden && title.visibility == View.INVISIBLE) title.visibility = View.VISIBLE
+    }
 
     // === 变换应用（带脏检查，写前比 EPSILON）===
 
@@ -504,6 +562,14 @@ object IosDepthStackRecentsHook : FeatureHook {
             if (ts.centerPivotApplied) { task.pivotX = ts.nativePivotX; task.pivotY = ts.nativePivotY; ts.centerPivotApplied = false }
             task.translationZ = ts.initialTranslationZ
             ts.lastAppliedPrimaryTranslation = Float.NaN
+            // 恢复标题原生 alpha 与可见性。
+            if (!ts.titleLastApplied.isNaN()) {
+                ts.titleView?.let { title ->
+                    title.alpha = ts.titleNativeAlpha
+                    if (title.visibility == View.INVISIBLE) title.visibility = View.VISIBLE
+                }
+                ts.titleLastApplied = Float.NaN
+            }
         }
     }
 
@@ -676,6 +742,12 @@ object IosDepthStackRecentsHook : FeatureHook {
         var centerPivotApplied = false
         var nativePivotX = 0f
         var nativePivotY = 0f
+        // 标题遮挡淡出：app_name 视图与其原生 alpha 基线。
+        var titleResolved = false
+        var titleView: View? = null
+        var titleNativeAlpha = 1f
+        var titleLastApplied = Float.NaN
+        val bounds = Rect()
     }
 
     private data class ResolvedHooks(
