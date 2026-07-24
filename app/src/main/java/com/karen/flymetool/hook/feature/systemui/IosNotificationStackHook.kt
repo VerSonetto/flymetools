@@ -11,27 +11,30 @@ import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 import kotlin.math.max
+import kotlin.math.min
 
 /**
- * iOS 锁屏/下拉通知堆叠。
+ * iOS 锁屏通知堆叠 — 对齐 showcase.html layoutFor。
  *
- * 悬浮横幅（isHeadsUp && isPinned）期间整段不改 viewState，
- * 避免把系统已 hidden 的列表卡 unhide 到 HUN 上方。
+ * 折叠 p≈0：整组沉底，首卡全尺寸顶在 THRESH，下层 L*PEEK 错位 + 缩放下沉。
+ * 展开 p→1：与原生列表 Y 插值；仅 overflow 继续堆叠。
+ * 有 pinned HUN 时整段不碰。
  */
 object IosNotificationStackHook : FeatureHook {
 
     private const val TAG = "IosNotifStack"
     private const val FEATURE_KEY = "ios_notification_stack"
-    private const val DEFAULT_BOTTOM_PAD = 56
+    /** THRESH 距内容区底的 inset（越大堆叠越高） */
+    private const val DEFAULT_BOTTOM_PAD = 180
 
+    // showcase.html
     private const val STEP_DP = 108f
     private const val PEEK_DP = 46f
-    private const val MAX_LAYER = 3f
-    private const val GAP_DP = 10f
-    private const val SCALE_STEP = 0.04f
+    private const val SCALE_PER_L = 0.05f
     private const val MIN_SCALE = 0.84f
-    private const val Z_BASE = 4f
-    private const val Z_STEP = 1f
+    private const val MAX_L_VISIBLE = 3.5f
+    private const val Z_BASE = 8f
+    private const val Z_STEP = 2f
 
     private var prefsPackage: String = "com.android.systemui"
     private var loadParam: XC_LoadPackage.LoadPackageParam? = null
@@ -50,7 +53,7 @@ object IosNotificationStackHook : FeatureHook {
         loadParam = lpparam
         try {
             mount(lpparam)
-            Logger.i(TAG, "iOS 堆叠 Hook 完成")
+            Logger.i(TAG, "iOS 堆叠 Hook 完成 (showcase layoutFor)")
         } catch (e: Throwable) {
             Logger.e(TAG, "Hook 挂载失败", e)
         }
@@ -92,18 +95,12 @@ object IosNotificationStackHook : FeatureHook {
         val lp = loadParam ?: return DEFAULT_BOTTOM_PAD
         return XposedPrefs.getFeatureValue(
             lp, prefsPackage, FEATURE_KEY, DEFAULT_BOTTOM_PAD
-        ).coerceIn(0, 160)
+        ).coerceIn(0, 280)
     }
 
     private fun apply(ambient: Any, algo: Any, rowCl: Class<*>) {
         val host = XposedHelpers.getObjectField(algo, "mHostView") as? ViewGroup ?: return
-
-        // 有 pinned 悬浮横幅：完全交给系统（NSSL.isPinnedHeadsUp）
-        // 这是图里「上面多一条 LSPosed」的根因修复点
         if (hasPinnedHeadsUp(host, rowCl)) return
-
-        // 面板未展开且无 HUN：也不堆叠（锁屏/收起态系统自管）
-        if (!isShadeExpanded(ambient) && !isOnKeyguard(ambient)) return
 
         val trackedHun = readTrackedHun(ambient)
         val items = collect(host, rowCl, ambient, trackedHun)
@@ -113,75 +110,65 @@ object IosNotificationStackHook : FeatureHook {
         val innerH = readInnerHeight(ambient)
         if (innerH <= 0) return
 
-        val bottomPad = dp(readBottomPadDp().toFloat())
-        val B = stackY + innerH - bottomPad
+        val contentBottom = stackY + innerH
+        // THRESH：折叠时首卡顶边（整组沉底锚点）
+        val thresh = contentBottom - dp(readBottomPadDp().toFloat())
+        val listTop = stackY + dp(8f)
         val step = dp(STEP_DP)
         val peek = dp(PEEK_DP)
-        val gap = dp(GAP_DP)
+        val scrollY = readScrollY(ambient)
+        val scrollRange = readScrollRange(host)
+        // 0=整组沉底；1=完全用系统列表（含滚到底）
+        val pe = expandProgress(ambient, scrollY, scrollRange)
 
-        val hasOverflow = items.any { it.nativeY + max(it.height, 1f) > B + 0.5f }
-        if (!hasOverflow) return
-
-        hideShelf(ambient)
-
-        var lastFullBottom = stackY
-        for (item in items) {
-            val h = max(item.height, 1f)
-            if (item.nativeY + h <= B + 0.5f) {
-                lastFullBottom = max(lastFullBottom, item.nativeY + h)
-            }
+        // 完全展开：不改任何布局，系统列表可滚到底看全部
+        if (pe >= 0.995f) {
+            hideShelf(ambient)
+            return
         }
-        val stackMinTop = lastFullBottom + gap
 
         for (item in items) {
             if (isPinnedOrAnimatingHun(item.view, viewState(item.view), ambient, trackedHun)) {
                 continue
             }
             val st = viewState(item.view) ?: continue
-            // 系统已 hidden 的列表卡：面板半收起时不要 unhide
-            if (boolField(st, "hidden") && item.nativeY + max(item.height, 1f) <= B) {
-                continue
-            }
-
             val h = max(item.height, 1f)
-            val et = item.nativeY
-            val over = et + h - B
+            val i = item.index
 
-            if (over <= 0f) {
-                // 完整区：不强制改 Y/hidden，只清 inShelf 脏标记
-                if (boolField(st, "inShelf")) {
-                    XposedHelpers.setBooleanField(st, "inShelf", false)
-                }
-                continue
-            }
+            // p=0: et = THRESH + i*STEP → 整组沉底，首卡全尺寸，其余 L=i 堆叠
+            // p→1: et → nativeY（系统已算 scroll）
+            val collapsedEt = thresh + i * step
+            val et = lerp(collapsedEt, item.nativeY, pe)
+            val over = et - thresh
 
-            var L = over / step
             val ty: Float
             val scale: Float
             val alpha: Float
             val z: Float
+            val stacked: Boolean
 
-            if (L >= MAX_LAYER) {
-                L = MAX_LAYER
-                ty = max((B - h) + MAX_LAYER * peek, stackMinTop)
-                scale = MIN_SCALE
-                alpha = 0f
-                z = 0f
-                XposedHelpers.setBooleanField(st, "hidden", true)
+            if (over < 0f) {
+                ty = et
+                scale = 1f
+                alpha = 1f
+                z = Z_BASE - i * 0.5f
+                stacked = false
             } else {
-                ty = max((B - h) + L * peek, stackMinTop + L * peek * 0.15f)
-                scale = if (L <= 0.05f) {
-                    1f
-                } else {
-                    max(MIN_SCALE, 1f - L * SCALE_STEP)
+                val L = over / step
+                if (L >= MAX_L_VISIBLE) {
+                    ty = thresh + MAX_L_VISIBLE * peek
+                    XposedHelpers.setBooleanField(st, "hidden", true)
+                    XposedHelpers.callMethod(st, "setAlpha", 0f)
+                    XposedHelpers.callMethod(st, "setYTranslation", ty)
+                    XposedHelpers.callMethod(st, "setScaleX", MIN_SCALE)
+                    XposedHelpers.callMethod(st, "setScaleY", MIN_SCALE)
+                    continue
                 }
-                alpha = if (L <= 0.05f) {
-                    1f
-                } else {
-                    (1f - (L - 0.05f) * 0.4f).coerceIn(0.55f, 1f)
-                }
-                z = Z_BASE - item.index * Z_STEP
-                XposedHelpers.setBooleanField(st, "hidden", false)
+                ty = thresh + L * peek
+                scale = max(MIN_SCALE, 1f - L * SCALE_PER_L)
+                alpha = (1f - (L - 0.2f) * 0.5f).coerceIn(0f, 1f)
+                z = Z_BASE - i * Z_STEP
+                stacked = true
             }
 
             val y = ty - h * (1f - scale) * 0.5f
@@ -191,10 +178,76 @@ object IosNotificationStackHook : FeatureHook {
             XposedHelpers.callMethod(st, "setScaleY", scale)
             XposedHelpers.callMethod(st, "setAlpha", alpha)
             XposedHelpers.callMethod(st, "setZTranslation", z)
+            XposedHelpers.setBooleanField(st, "hidden", false)
             XposedHelpers.setBooleanField(st, "inShelf", false)
             XposedHelpers.setIntField(st, "clipBottomAmount", 0)
             XposedHelpers.setIntField(st, "clipTopAmount", 0)
+
+            try {
+                item.view.elevation = if (stacked && scale < 0.98f) {
+                    max(0f, (1f - scale) * 12f)
+                } else 0f
+            } catch (_: Throwable) {
+            }
         }
+
+        hideShelf(ambient)
+        Logger.once(TAG, "sink pe=$pe scroll=$scrollY/$scrollRange n=${items.size}")
+    }
+
+    /**
+     * 0 = 整组沉底；1 = 系统完整列表。
+     * 锁屏与下拉通知栏同一套逻辑（布局相同，下拉仅多清空按钮）。
+     * 驱动：NSSL scrollY / scrollRange。
+     */
+    private fun expandProgress(ambient: Any, scrollY: Float, scrollRange: Float): Float {
+        // 滚到底 → 完全展开，交给系统列表
+        if (scrollRange > 2f && scrollY >= scrollRange - 4f) return 1f
+
+        // 无滚动空间：内容装得下 → 列表；否则沉底
+        if (scrollRange <= 2f) {
+            val shadeExpanded = callBool(ambient, "isShadeExpanded")
+            // 面板可见且内容装得下时不堆叠
+            return if (shadeExpanded) 1f else 0f
+        }
+
+        // scrollY 0→range 映射 0→1
+        return (scrollY / scrollRange).coerceIn(0f, 1f)
+    }
+
+    private fun readScrollY(ambient: Any): Float = try {
+        (XposedHelpers.callMethod(ambient, "getScrollY") as Int).toFloat()
+    } catch (_: Throwable) {
+        0f
+    }
+
+    /** NSSL 可滚范围；优先 getScrollRange / getOwnScrollY 相关 */
+    private fun readScrollRange(host: ViewGroup): Float {
+        // public/private getScrollRange
+        for (name in arrayOf("getScrollRange", "getMaxScrollAmount")) {
+            try {
+                val v = XposedHelpers.callMethod(host, name)
+                val f = when (v) {
+                    is Int -> v.toFloat()
+                    is Float -> v
+                    else -> continue
+                }
+                if (f >= 0f) return f
+            } catch (_: Throwable) {
+            }
+        }
+        // contentHeight - maxLayoutHeight 近似
+        try {
+            val content = XposedHelpers.callMethod(host, "getContentHeight") as Int
+            val maxH = try {
+                XposedHelpers.getIntField(host, "mMaxLayoutHeight")
+            } catch (_: Throwable) {
+                host.height
+            }
+            return max(0, content - maxH).toFloat()
+        } catch (_: Throwable) {
+        }
+        return 0f
     }
 
     private fun hasPinnedHeadsUp(host: ViewGroup, rowCl: Class<*>): Boolean {
@@ -202,22 +255,9 @@ object IosNotificationStackHook : FeatureHook {
             val child = host.getChildAt(i) ?: continue
             if (!rowCl.isInstance(child)) continue
             if (callBool(child, "isHeadsUp") && callBool(child, "isPinned")) return true
-            // Flyme：mIsHeadsUpStatus 在 pinned 时同步
             if (boolField(child, "mIsHeadsUpStatus") && callBool(child, "isPinned")) return true
         }
         return false
-    }
-
-    private fun isShadeExpanded(ambient: Any): Boolean = try {
-        XposedHelpers.callMethod(ambient, "isShadeExpanded") as Boolean
-    } catch (_: Throwable) {
-        true
-    }
-
-    private fun isOnKeyguard(ambient: Any): Boolean = try {
-        XposedHelpers.callMethod(ambient, "isOnKeyguard") as Boolean
-    } catch (_: Throwable) {
-        false
     }
 
     private fun collect(
@@ -254,9 +294,6 @@ object IosNotificationStackHook : FeatureHook {
         }
     }
 
-    /**
-     * 只排除钉顶/动画中的真悬浮，不用 isHeadsUpState 误杀列表项。
-     */
     private fun isPinnedOrAnimatingHun(
         row: View,
         st: Any?,
@@ -268,27 +305,23 @@ object IosNotificationStackHook : FeatureHook {
         if (callBool(row, "isHeadsUpAnimatingAway")) return true
         if (callBool(row, "showingPulsing")) return true
         if (boolField(row, "mHeadsupDisappearRunning")) return true
-
         if (st != null) {
             try {
                 if (XposedHelpers.getIntField(st, "location") == 1) return true
             } catch (_: Throwable) {
             }
         }
-
         if (trackedHun != null && trackedHun === row) return true
         try {
             val tracked = XposedHelpers.callMethod(ambient, "getTrackedHeadsUpRow")
             if (tracked != null && tracked === row) return true
         } catch (_: Throwable) {
         }
-
         try {
             val pinnedStatus = XposedHelpers.getObjectField(row, "mPinnedStatus")
             if (pinnedStatus != null && callBool(pinnedStatus, "isPinned")) return true
         } catch (_: Throwable) {
         }
-
         return false
     }
 
@@ -296,6 +329,17 @@ object IosNotificationStackHook : FeatureHook {
         XposedHelpers.callMethod(obj, name) as Boolean
     } catch (_: Throwable) {
         false
+    }
+
+    private fun callFloat(obj: Any, name: String, default: Float): Float = try {
+        when (val v = XposedHelpers.callMethod(obj, name)) {
+            is Float -> v
+            is Double -> v.toFloat()
+            is Int -> v.toFloat()
+            else -> default
+        }
+    } catch (_: Throwable) {
+        default
     }
 
     private fun readTrackedHun(ambient: Any): Any? = try {
@@ -358,6 +402,13 @@ object IosNotificationStackHook : FeatureHook {
         } catch (_: Throwable) {
             0
         }
+    }
+
+    private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+
+    private fun smoothstep(t: Float): Float {
+        val x = t.coerceIn(0f, 1f)
+        return x * x * (3f - 2f * x)
     }
 
     private fun dp(v: Float): Float = TypedValue.applyDimension(

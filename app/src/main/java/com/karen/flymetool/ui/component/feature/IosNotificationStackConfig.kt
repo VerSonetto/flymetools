@@ -85,7 +85,7 @@ fun IosNotificationStackConfig(
     var count by remember { mutableStateOf(8) }
     var bottomPad by remember {
         mutableStateOf(
-            PrefsHelper.getFeatureValue(context, packageName, featureKey, 56).toFloat()
+            PrefsHelper.getFeatureValue(context, packageName, featureKey, 180).toFloat()
         )
     }
 
@@ -109,7 +109,7 @@ fun IosNotificationStackConfig(
 
     Column {
         AppSlider(
-            label = "堆叠基准高度",
+            label = "堆叠锚定高度",
             value = bottomPad,
             onValueChange = { bottomPad = it },
             onValueChangeFinished = {
@@ -117,7 +117,7 @@ fun IosNotificationStackConfig(
                     context, packageName, featureKey, bottomPad.toInt()
                 )
             },
-            valueRange = 0f..120f,
+            valueRange = 40f..280f,
             valueDisplay = "${bottomPad.toInt()} dp"
         )
 
