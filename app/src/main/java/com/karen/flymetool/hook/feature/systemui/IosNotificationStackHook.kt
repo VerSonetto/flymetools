@@ -30,6 +30,8 @@ object IosNotificationStackHook : FeatureHook {
     // showcase.html
     private const val STEP_DP = 108f
     private const val PEEK_DP = 46f
+    /** HTML E：前这段 scroll 只做堆叠摊开，之后才是列表滚动 */
+    private const val EXPAND_E_DP = 200f
     private const val SCALE_PER_L = 0.05f
     private const val MIN_SCALE = 0.84f
     private const val MAX_L_VISIBLE = 3.5f
@@ -118,15 +120,28 @@ object IosNotificationStackHook : FeatureHook {
         val pad = readPadding(algo)
         val scrollY = readScrollY(ambient)
         val scrollRange = readScrollRange(host, ambient, items, pad, innerH)
-        // 0=整组沉底；1=完全用系统列表（含滚到底）
-        val pe = expandProgress(scrollY, scrollRange)
+        val expandE = dp(EXPAND_E_DP)
+        // HTML: p=clamp(scroll/E)；listOffset=max(0, scroll-E) — 后半段继续跟进度滚，不瞬间全开
+        val eSeg = if (scrollRange > 2f) min(expandE, max(scrollRange * 0.35f, expandE * 0.5f)) else expandE
+        val pe = if (eSeg <= 1f || scrollRange <= 2f) {
+            1f
+        } else {
+            (scrollY / eSeg).coerceIn(0f, 1f)
+        }
+        val listOffset = max(0f, scrollY - eSeg)
 
-        // 完全展开 / 内容装得下：强制恢复全尺寸，避免息屏回来 scale 残留
-        if (pe >= 0.995f) {
+        // 仅装得下或滚到底时交还系统（清 scale）；中间全程跟进度
+        if (scrollRange <= 2f || (scrollRange > 2f && scrollY >= scrollRange - 4f)) {
             restoreSystemList(items, ambient, trackedHun)
             hideShelf(ambient)
             return
         }
+
+        // showcase: winTop = lerp(THRESH, WIN_TOP, easeOut(p))
+        //           et = winTop + i*STEP - listOffset
+        val listTop = stackY + dp(8f)
+        val ease = pe * (2f - pe)
+        val winTop = lerp(thresh, listTop, ease)
 
         for (item in items) {
             if (isPinnedOrAnimatingHun(item.view, viewState(item.view), ambient, trackedHun)) {
@@ -136,43 +151,40 @@ object IosNotificationStackHook : FeatureHook {
             val h = max(item.height, 1f)
             val i = item.index
 
-            // p=0: et = THRESH + i*STEP → 整组沉底，首卡全尺寸，其余 L=i 堆叠
-            // p→1: et → nativeY（系统已算 scroll）
-            val collapsedEt = thresh + i * step
-            val et = lerp(collapsedEt, item.nativeY, pe)
+            // 摊开段：listOffset=0；摊开完后 listOffset 随 scroll 增大 → 列表上移
+            val et = winTop + i * step - listOffset
             val over = et - thresh
 
             val ty: Float
             val scale: Float
             val alpha: Float
-            val z: Float
             val stacked: Boolean
 
             if (over < 0f) {
                 ty = et
                 scale = 1f
                 alpha = 1f
-                z = Z_BASE - i * 0.5f
                 stacked = false
             } else {
                 val L = over / step
                 if (L >= MAX_L_VISIBLE) {
-                    ty = thresh + MAX_L_VISIBLE * peek
                     XposedHelpers.setBooleanField(st, "hidden", true)
                     XposedHelpers.callMethod(st, "setAlpha", 0f)
-                    XposedHelpers.callMethod(st, "setYTranslation", ty)
                     XposedHelpers.callMethod(st, "setScaleX", MIN_SCALE)
                     XposedHelpers.callMethod(st, "setScaleY", MIN_SCALE)
+                    XposedHelpers.callMethod(
+                        st, "setYTranslation", thresh + MAX_L_VISIBLE * peek
+                    )
                     continue
                 }
                 ty = thresh + L * peek
                 scale = max(MIN_SCALE, 1f - L * SCALE_PER_L)
                 alpha = (1f - (L - 0.2f) * 0.5f).coerceIn(0f, 1f)
-                z = Z_BASE - i * Z_STEP
                 stacked = true
             }
 
             val y = ty - h * (1f - scale) * 0.5f
+            val z = Z_BASE - i * Z_STEP
 
             XposedHelpers.callMethod(st, "setYTranslation", y)
             XposedHelpers.callMethod(st, "setScaleX", scale)
@@ -185,26 +197,16 @@ object IosNotificationStackHook : FeatureHook {
             XposedHelpers.setIntField(st, "clipTopAmount", 0)
 
             try {
-                item.view.elevation = if (stacked && scale < 0.98f) {
-                    max(0f, (1f - scale) * 12f)
-                } else 0f
+                item.view.elevation = if (stacked) max(0f, (1f - scale) * 12f) else 0f
             } catch (_: Throwable) {
             }
         }
 
         hideShelf(ambient)
-        Logger.once(TAG, "sink pe=$pe scroll=$scrollY/$scrollRange n=${items.size}")
-    }
-
-    /**
-     * 0 = 整组沉底；1 = 系统完整列表。
-     * 锁屏 / 下拉同一套：只跟 NSSL scrollY。
-     */
-    private fun expandProgress(scrollY: Float, scrollRange: Float): Float {
-        // 装得下 或 滚到底 → 完整列表（息屏回来 scrollRange 常为 0，必须走列表）
-        if (scrollRange <= 2f) return 1f
-        if (scrollY >= scrollRange - 4f) return 1f
-        return (scrollY / scrollRange).coerceIn(0f, 1f)
+        Logger.once(
+            TAG,
+            "progress pe=$pe off=$listOffset eSeg=$eSeg scroll=$scrollY/$scrollRange n=${items.size}"
+        )
     }
 
     /** pe=1：清掉我们写过的 scale/alpha/z，保留系统 Y */
