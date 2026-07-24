@@ -25,6 +25,14 @@ object PrefsHelper {
         getPrefs(context).edit().putBoolean("$packageName:$featureKey", enabled).apply()
     }
 
+    fun getFeatureBoolean(context: Context, packageName: String, featureKey: String, defaultValue: Boolean): Boolean {
+        return getPrefs(context).getBoolean("$packageName:$featureKey", defaultValue)
+    }
+
+    fun setFeatureBoolean(context: Context, packageName: String, featureKey: String, value: Boolean) {
+        getPrefs(context).edit().putBoolean("$packageName:$featureKey", value).apply()
+    }
+
     fun getFeatureValue(context: Context, packageName: String, featureKey: String, defaultValue: Int): Int {
         return getPrefs(context).getInt("$packageName:$featureKey:value", defaultValue)
     }

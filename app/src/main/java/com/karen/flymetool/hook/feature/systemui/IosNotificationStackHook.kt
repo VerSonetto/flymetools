@@ -2,7 +2,9 @@ package com.karen.flymetool.hook.feature.systemui
 
 import android.content.res.Resources
 import android.util.TypedValue
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
@@ -10,6 +12,8 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
+import java.lang.ref.WeakReference
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -18,12 +22,13 @@ import kotlin.math.min
  *
  * 折叠 p≈0：整组沉底，首卡全尺寸顶在 THRESH，下层 L*PEEK 错位 + 缩放下沉。
  * 展开 p→1：与原生列表 Y 插值；仅 overflow 继续堆叠。
- * 有 pinned HUN 时整段不碰。
+ * 折叠态点击卡片：展开列表（不跳转）；有 pinned HUN 时整段不碰。
  */
 object IosNotificationStackHook : FeatureHook {
 
     private const val TAG = "IosNotifStack"
     private const val FEATURE_KEY = "ios_notification_stack"
+    private const val SINK_ALL_KEY = "sink_all"
     /** THRESH 距内容区底的 inset（越大堆叠越高） */
     private const val DEFAULT_BOTTOM_PAD = 180
 
@@ -37,9 +42,24 @@ object IosNotificationStackHook : FeatureHook {
     private const val MAX_L_VISIBLE = 3.5f
     private const val Z_BASE = 8f
     private const val Z_STEP = 2f
+    /** pe 低于此视为折叠，点击展开而非跳转 */
+    private const val COLLAPSED_CLICK_PE = 0.92f
 
     private var prefsPackage: String = "com.android.systemui"
     private var loadParam: XC_LoadPackage.LoadPackageParam? = null
+
+    /** 最近一次布局的 NSSL，用于点击展开 */
+    private var lastHostRef: WeakReference<ViewGroup>? = null
+    private var lastPe: Float = 1f
+    private var lastESeg: Float = 0f
+    private var lastScrollRange: Float = 0f
+    /** 折叠堆叠可点区域（NSSL 本地坐标，Y 向下） */
+    private var stackHitTop: Float = 0f
+    private var stackHitBottom: Float = 0f
+    private var touchDownX: Float = 0f
+    private var touchDownY: Float = 0f
+    private var touchTracking: Boolean = false
+    private var touchMoved: Boolean = false
 
     private data class Item(
         val view: View,
@@ -91,7 +111,157 @@ object IosNotificationStackHook : FeatureHook {
                 }
             }
         )
+
+        // 折叠态：任意通知点击都展开（顶卡也会走到这里）
+        try {
+            val clickerCl = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.NotificationClicker",
+                lpparam.classLoader
+            )
+            XposedHelpers.findAndHookMethod(
+                clickerCl,
+                "onClick",
+                View::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val view = param.args[0] as? View ?: return
+                        if (!rowCl.isInstance(view)) return
+                        if (!isStackCollapsed()) return
+                        if (tryExpandStackFromClick()) {
+                            param.result = null
+                            Logger.d(TAG, "折叠点击(row) → 展开列表")
+                        }
+                    }
+                }
+            )
+        } catch (e: Throwable) {
+            Logger.e(TAG, "点击展开 Hook 失败", e)
+        }
+
+        // 整区点击：顶卡全高会盖住下层，点 peek 往往落在顶卡上；
+        // 在 NSSL 上拦截「折叠堆叠带」内的轻点，保证整摞都能展开
+        try {
+            val nsslCl = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout",
+                lpparam.classLoader
+            )
+            XposedHelpers.findAndHookMethod(
+                nsslCl,
+                "onTouchEvent",
+                MotionEvent::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val host = param.thisObject as? ViewGroup ?: return
+                        val ev = param.args[0] as? MotionEvent ?: return
+                        if (!isStackCollapsed()) {
+                            touchTracking = false
+                            return
+                        }
+                        val slop = ViewConfiguration.get(host.context).scaledTouchSlop
+                        when (ev.actionMasked) {
+                            MotionEvent.ACTION_DOWN -> {
+                                touchDownX = ev.x
+                                touchDownY = ev.y
+                                touchMoved = false
+                                touchTracking = isInStackHitRegion(ev.x, ev.y, host)
+                            }
+                            MotionEvent.ACTION_MOVE -> {
+                                if (touchTracking &&
+                                    (abs(ev.x - touchDownX) > slop ||
+                                        abs(ev.y - touchDownY) > slop)
+                                ) {
+                                    touchMoved = true
+                                }
+                            }
+                            MotionEvent.ACTION_UP -> {
+                                if (touchTracking && !touchMoved &&
+                                    isInStackHitRegion(ev.x, ev.y, host)
+                                ) {
+                                    if (tryExpandStackFromClick()) {
+                                        // 消费点击，避免落到 row 再跳转
+                                        param.result = true
+                                        Logger.d(TAG, "折叠整区点击 → 展开列表")
+                                    }
+                                }
+                                touchTracking = false
+                            }
+                            MotionEvent.ACTION_CANCEL -> touchTracking = false
+                        }
+                    }
+                }
+            )
+        } catch (e: Throwable) {
+            Logger.e(TAG, "NSSL 整区点击 Hook 失败", e)
+        }
     }
+
+    private fun isStackCollapsed(): Boolean = lastPe < COLLAPSED_CLICK_PE
+
+    private fun isInStackHitRegion(x: Float, y: Float, host: ViewGroup): Boolean {
+        if (stackHitBottom <= stackHitTop + 1f) return false
+        // 左右略放宽，上下用堆叠带
+        val padX = dp(8f)
+        if (x < -padX || x > host.width + padX) return false
+        return y in (stackHitTop - dp(4f))..(stackHitBottom + dp(12f))
+    }
+
+    /**
+     * 点击展开：走 NSSL 同款 OverScroller 动画（与 scrollTo / 手指滑动一致），
+     * 不用瞬时 setOwnScrollY。
+     */
+    private fun tryExpandStackFromClick(): Boolean {
+        val host = lastHostRef?.get() ?: return false
+        val eSeg = lastESeg
+        val range = lastScrollRange
+        if (eSeg <= 1f && range <= 2f) return false
+        val target = when {
+            range > 2f -> min(max(eSeg, expandEPx()), range).toInt()
+            else -> max(eSeg, expandEPx()).toInt()
+        }.coerceAtLeast(1)
+
+        val cur = try {
+            XposedHelpers.callMethod(host, "getOwnScrollY") as Int
+        } catch (_: Throwable) {
+            try {
+                XposedHelpers.getIntField(host, "mOwnScrollY")
+            } catch (_: Throwable) {
+                0
+            }
+        }
+        if (target <= cur + 2) return false
+        val dy = target - cur
+
+        return try {
+            val scroller = XposedHelpers.getObjectField(host, "mScroller")
+            val scrollX = try {
+                host.scrollX
+            } catch (_: Throwable) {
+                0
+            }
+            // 与 NSSL.scrollTo 相同：startScroll + animateScroll
+            XposedHelpers.callMethod(
+                scroller, "startScroll",
+                scrollX, cur, 0, dy
+            )
+            try {
+                XposedHelpers.setBooleanField(host, "mDontReportNextOverScroll", true)
+            } catch (_: Throwable) {
+            }
+            XposedHelpers.callMethod(host, "animateScroll")
+            true
+        } catch (e: Throwable) {
+            Logger.e(TAG, "动画展开失败，回退 setOwnScrollY", e)
+            try {
+                XposedHelpers.callMethod(host, "setOwnScrollY", target)
+                true
+            } catch (e2: Throwable) {
+                Logger.e(TAG, "setOwnScrollY 失败", e2)
+                false
+            }
+        }
+    }
+
+    private fun expandEPx(): Float = dp(EXPAND_E_DP)
 
     private fun readBottomPadDp(): Int {
         val lp = loadParam ?: return DEFAULT_BOTTOM_PAD
@@ -100,13 +270,34 @@ object IosNotificationStackHook : FeatureHook {
         ).coerceIn(0, 280)
     }
 
+    /** 整组沉底开关：默认开启；关闭后只堆叠溢出卡（顶部保持列表） */
+    private fun isSinkAllEnabled(): Boolean {
+        val lp = loadParam ?: return true
+        val key = "$prefsPackage:$SINK_ALL_KEY"
+        return try {
+            val prefs = de.robv.android.xposed.XSharedPreferences(
+                "com.karen.flymetool", "flymetool_prefs"
+            )
+            prefs.getBoolean(key, true)
+        } catch (_: Throwable) {
+            true
+        }
+    }
+
     private fun apply(ambient: Any, algo: Any, rowCl: Class<*>) {
         val host = XposedHelpers.getObjectField(algo, "mHostView") as? ViewGroup ?: return
-        if (hasPinnedHeadsUp(host, rowCl)) return
+        lastHostRef = WeakReference(host)
+        if (hasPinnedHeadsUp(host, rowCl)) {
+            lastPe = 1f
+            return
+        }
 
         val trackedHun = readTrackedHun(ambient)
         val items = collect(host, rowCl, ambient, trackedHun)
-        if (items.isEmpty()) return
+        if (items.isEmpty()) {
+            lastPe = 1f
+            return
+        }
 
         val stackY = readStackY(ambient)
         val innerH = readInnerHeight(ambient)
@@ -123,15 +314,19 @@ object IosNotificationStackHook : FeatureHook {
         val expandE = dp(EXPAND_E_DP)
         // HTML: p=clamp(scroll/E)；listOffset=max(0, scroll-E) — 后半段继续跟进度滚，不瞬间全开
         val eSeg = if (scrollRange > 2f) min(expandE, max(scrollRange * 0.35f, expandE * 0.5f)) else expandE
+        lastESeg = eSeg
+        lastScrollRange = scrollRange
         val pe = if (eSeg <= 1f || scrollRange <= 2f) {
             1f
         } else {
             (scrollY / eSeg).coerceIn(0f, 1f)
         }
+        lastPe = pe
         val listOffset = max(0f, scrollY - eSeg)
 
         // 仅装得下或滚到底时交还系统（清 scale）；中间全程跟进度
         if (scrollRange <= 2f || (scrollRange > 2f && scrollY >= scrollRange - 4f)) {
+            lastPe = 1f
             restoreSystemList(items, ambient, trackedHun)
             hideShelf(ambient)
             return
@@ -141,7 +336,28 @@ object IosNotificationStackHook : FeatureHook {
         //           et = winTop + i*STEP - listOffset
         val listTop = stackY + dp(8f)
         val ease = pe * (2f - pe)
-        val winTop = lerp(thresh, listTop, ease)
+        // 整组沉底：winTop 从 THRESH（底部）开始；关闭时从 listTop（顶部）开始 → 只堆叠溢出卡
+        val collapsedTop = if (isSinkAllEnabled()) thresh else listTop
+        val winTop = lerp(collapsedTop, listTop, ease)
+
+        // 折叠堆叠整区命中：首卡顶 → 末层 peek 底（相对 host 内容坐标系 ≈ translationY）
+        // 顶卡全高会盖住下层，但整区仍可用 NSSL 点击展开
+        val maxLayer = min(items.size - 1, MAX_L_VISIBLE.toInt())
+        stackHitTop = thresh
+        stackHitBottom = thresh + maxLayer * peek +
+            (items.firstOrNull()?.height ?: dp(72f))
+
+        // 非沉底时，找第一张溢出卡索引，用于堆叠的 relativeI
+        val firstOverflow = if (isSinkAllEnabled()) 0 else {
+            items.indexOfFirst { it.nativeY >= thresh - dp(8f) }.coerceAtLeast(0)
+        }
+        // 非沉底时，堆叠锚点 = 最后一张完整卡底边 + 间隙，避免与完整区重叠
+        val stackAnchor = if (isSinkAllEnabled() || firstOverflow <= 0) {
+            thresh
+        } else {
+            val lastFull = items[firstOverflow - 1]
+            max(thresh, lastFull.nativeY + lastFull.height + dp(6f))
+        }
 
         for (item in items) {
             if (isPinnedOrAnimatingHun(item.view, viewState(item.view), ambient, trackedHun)) {
@@ -151,36 +367,47 @@ object IosNotificationStackHook : FeatureHook {
             val h = max(item.height, 1f)
             val i = item.index
 
-            // 摊开段：listOffset=0；摊开完后 listOffset 随 scroll 增大 → 列表上移
-            val et = winTop + i * step - listOffset
-            val over = et - thresh
-
             val ty: Float
             val scale: Float
             val alpha: Float
             val stacked: Boolean
 
-            if (over < 0f) {
-                ty = et
+            // 非沉底模式：未溢出卡直接用原生 Y（原生间距），仅溢出卡走堆叠
+            if (!isSinkAllEnabled() && item.nativeY < thresh - dp(8f)) {
+                ty = item.nativeY
                 scale = 1f
                 alpha = 1f
                 stacked = false
             } else {
-                val L = over / step
-                if (L >= MAX_L_VISIBLE) {
-                    XposedHelpers.setBooleanField(st, "hidden", true)
-                    XposedHelpers.callMethod(st, "setAlpha", 0f)
-                    XposedHelpers.callMethod(st, "setScaleX", MIN_SCALE)
-                    XposedHelpers.callMethod(st, "setScaleY", MIN_SCALE)
-                    XposedHelpers.callMethod(
-                        st, "setYTranslation", thresh + MAX_L_VISIBLE * peek
-                    )
-                    continue
+                // 沉底模式 或 溢出卡：lerp 堆叠位 → 原生位
+                // 非沉底时溢出卡用相对层号（relativeI），避免 i 过大导致层号塌
+                val relativeI = if (isSinkAllEnabled()) i else (i - firstOverflow).coerceAtLeast(0)
+                val collapsedEt = stackAnchor + relativeI * step
+                val et = lerp(collapsedEt, item.nativeY, pe)
+                val over = et - thresh
+
+                if (over < 0f) {
+                    ty = et
+                    scale = 1f
+                    alpha = 1f
+                    stacked = false
+                } else {
+                    val L = over / step
+                    if (L >= MAX_L_VISIBLE) {
+                        XposedHelpers.setBooleanField(st, "hidden", true)
+                        XposedHelpers.callMethod(st, "setAlpha", 0f)
+                        XposedHelpers.callMethod(st, "setScaleX", MIN_SCALE)
+                        XposedHelpers.callMethod(st, "setScaleY", MIN_SCALE)
+                        XposedHelpers.callMethod(
+                            st, "setYTranslation", stackAnchor + MAX_L_VISIBLE * peek
+                        )
+                        continue
+                    }
+                    ty = thresh + L * peek
+                    scale = max(MIN_SCALE, 1f - L * SCALE_PER_L)
+                    alpha = (1f - (L - 0.2f) * 0.5f).coerceIn(0f, 1f)
+                    stacked = true
                 }
-                ty = thresh + L * peek
-                scale = max(MIN_SCALE, 1f - L * SCALE_PER_L)
-                alpha = (1f - (L - 0.2f) * 0.5f).coerceIn(0f, 1f)
-                stacked = true
             }
 
             val y = ty - h * (1f - scale) * 0.5f
@@ -205,7 +432,7 @@ object IosNotificationStackHook : FeatureHook {
         hideShelf(ambient)
         Logger.once(
             TAG,
-            "progress pe=$pe off=$listOffset eSeg=$eSeg scroll=$scrollY/$scrollRange n=${items.size}"
+            "stack sink=${isSinkAllEnabled()} pe=$pe scroll=$scrollY/$scrollRange n=${items.size}"
         )
     }
 
