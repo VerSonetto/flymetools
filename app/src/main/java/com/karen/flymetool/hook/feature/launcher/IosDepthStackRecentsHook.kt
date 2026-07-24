@@ -88,6 +88,7 @@ object IosDepthStackRecentsHook : FeatureHook {
 
         hookLayoutCallbacks(recentsClass, hooks)
         hookStateCallbacks(recentsClass, hooks)
+        hookDismissChannel(taskClass)
 
         Logger.i(
             TAG,
@@ -164,6 +165,43 @@ object IosDepthStackRecentsHook : FeatureHook {
         }
     }
 
+    /**
+     * 接管上滑删除：
+     * - setDismissTranslationY(次轴/竖屏Y)= 被删卡飞出，记录它并算删除进度，放行让其飞出。
+     * - setDismissTranslationX(主轴/竖屏X)= 原生补位平移，吃掉(置0)，补位改由 applyStack 做 iOS 收拢。
+     */
+    private fun hookDismissChannel(taskClass: Class<*>) {
+        val setY = findMethodInHierarchyNamed(taskClass, "setDismissTranslationY", Float::class.javaPrimitiveType)
+        val setX = findMethodInHierarchyNamed(taskClass, "setDismissTranslationX", Float::class.javaPrimitiveType)
+        if (setY == null || setX == null) {
+            Logger.w(TAG, "未找到 setDismissTranslationX/Y，删除接管跳过")
+            return
+        }
+        XposedBridge.hookMethod(setY, object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                val task = param.thisObject as? View ?: return
+                val recents = task.parent as? ViewGroup ?: return
+                val state = stateFor(recents)
+                val value = (param.args[0] as? Number)?.toFloat() ?: 0f
+                val height = task.height.takeIf { it > 0 } ?: return
+                if (abs(value) > EPSILON) {
+                    state.dismissingTask = task
+                    state.dismissProgress = (abs(value) / height).coerceIn(0f, 1f)
+                } else if (state.dismissingTask === task) {
+                    state.dismissingTask = null
+                    state.dismissProgress = 0f
+                }
+                requestStackApply(recents, rebuildPages = false)
+            }
+        })
+        XposedBridge.hookMethod(setX, object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                // 吃掉原生补位平移，补位交给 applyStack。
+                param.args[0] = 0f
+            }
+        })
+    }
+
     /** 事件源只置标志并请求下一帧重绘，真正重算合并到 dispatchDraw 前一次。 */
     private fun requestStackApply(recents: ViewGroup, rebuildPages: Boolean) {
         if (rebuildPages) stateFor(recents).pageRebuildPending = true
@@ -220,30 +258,57 @@ object IosDepthStackRecentsHook : FeatureHook {
             val maxPosition = (pages.size - 1).coerceAtLeast(0).toFloat()
             val clampedPosition = scrollPosition.coerceIn(0f, maxPosition)
             val overscroll = scrollPosition - clampedPosition
-            // 稳定 overview 态，堆叠量恒为 1（无入场渐变）。
             val stackLayoutAmount = 1f
             val visualCenter = if (landscape) 0f else recents.width / 2f
+
+            // dismiss 接管：被删卡从布局序数中剔除，其余卡按“压缩后的序数”重排实现 iOS 收拢补位。
+            if (state.dismissingTask?.parent !== recents) {
+                state.dismissingTask = null
+                state.dismissProgress = 0f
+            }
+            val dismissing = state.dismissingTask
+            val dismissProgress = if (dismissing != null) state.dismissProgress else 0f
+            val dismissedOrdinal = if (dismissing != null) pages.indexOfFirst { it.view === dismissing } else -1
 
             pages.forEachIndexed { ordinal, page ->
                 val task = page.view
                 val taskState = state.taskStates.getOrPut(task) { TaskVisualState(task.translationZ) }
                 val nativePrimaryTranslation = removeCustomPrimaryOffset(task, taskState, hooks, rotation)
-                val relativePosition = ordinal.toFloat() - clampedPosition
-                val visual = stackVisual(visualCenter, cardPrimarySize, relativePosition, overscroll, ordinal.toFloat())
+                val isDismissing = task === dismissing
+
+                // 补位规则(拖动中按 dismissProgress 渐进，删除确认后 rebuild 补完剩余距离)：
+                //  · 被删卡有左邻(dismissedOrdinal>0)：其左侧卡朝被删卡位置右移(+1)，右侧卡不动。
+                //  · 被删卡是最左侧(dismissedOrdinal==0)：无左邻，改由右侧卡整体左移(-1)填补空位。
+                val fullOrdinal = ordinal.toFloat()
+                val compactOrdinal = when {
+                    dismissedOrdinal < 0 -> ordinal.toFloat()
+                    dismissedOrdinal == 0 -> if (ordinal > 0) ordinal - 1f else ordinal.toFloat()
+                    else -> if (ordinal < dismissedOrdinal) ordinal + 1f else ordinal.toFloat()
+                }
+                val effectiveOrdinal = if (isDismissing) fullOrdinal else lerp(fullOrdinal, compactOrdinal, dismissProgress)
+                val relativePosition = effectiveOrdinal - clampedPosition
+                val visual = stackVisual(visualCenter, cardPrimarySize, relativePosition, overscroll, effectiveOrdinal)
 
                 updateStackPivot(task, taskState, relativePosition < -EPSILON)
-                val customPrimaryOffset = if (landscape) {
-                    val logicalDelta = page.logicalPageScroll - logicalPrimaryScroll + nativePrimaryTranslation
-                    val nativePhysicalOffset = RecentsRotationGeometry.logicalToPhysical(logicalDelta, rotation)
-                    RecentsRotationGeometry.physicalToLogical(visual.centerX - nativePhysicalOffset, rotation) * stackLayoutAmount
-                } else {
-                    val nativeCenterX = task.left + task.width / 2f - recents.scrollX + nativePrimaryTranslation
-                    (visual.centerX - nativeCenterX) * stackLayoutAmount
+                // 被删卡的主轴位移交给原生(它在飞出/回弹)，我们不写它的 offset，只保留堆叠 scale/alpha 基线。
+                if (!isDismissing) {
+                    val customPrimaryOffset = if (landscape) {
+                        val logicalDelta = page.logicalPageScroll - logicalPrimaryScroll + nativePrimaryTranslation
+                        val nativePhysicalOffset = RecentsRotationGeometry.logicalToPhysical(logicalDelta, rotation)
+                        RecentsRotationGeometry.physicalToLogical(visual.centerX - nativePhysicalOffset, rotation) * stackLayoutAmount
+                    } else {
+                        val nativeCenterX = task.left + task.width / 2f - recents.scrollX + nativePrimaryTranslation
+                        (visual.centerX - nativeCenterX) * stackLayoutAmount
+                    }
+                    applyCustomPrimaryOffset(task, taskState, hooks, rotation, customPrimaryOffset)
                 }
-                applyCustomPrimaryOffset(task, taskState, hooks, rotation, customPrimaryOffset)
                 applyScale(task, taskState, lerp(1f, visual.scale, stackLayoutAmount))
-                applyDepthOrder(task, taskState, visual.depthOrder, stackLayoutAmount)
-                applyTaskAlpha(task, taskState, lerp(1f, visual.alpha, stackLayoutAmount))
+                // Z 序按补位序数，避免删除中左卡盖右卡；被删卡压到最上以自然飞出。
+                val depthOrder = if (isDismissing) (pages.size + 1).toFloat() else effectiveOrdinal
+                applyDepthOrder(task, taskState, depthOrder, stackLayoutAmount)
+                // 被删卡额外按删除进度淡出；其余卡用堆叠 alpha。
+                val alpha = if (isDismissing) visual.alpha * (1f - dismissProgress) else visual.alpha
+                applyTaskAlpha(task, taskState, lerp(1f, alpha, stackLayoutAmount))
             }
         } catch (throwable: Throwable) {
             Logger.once(TAG, "运行时降级: ${throwable.javaClass.simpleName}: ${throwable.message}")
@@ -533,6 +598,12 @@ object IosDepthStackRecentsHook : FeatureHook {
     private fun findNoArgMethod(clazz: Class<*>, name: String): Method? =
         findMethodsInHierarchy(clazz).firstOrNull { it.name == name && it.parameterTypes.isEmpty() }?.apply { isAccessible = true }
 
+    /** 按名+参数查找（不校验返回类型）。 */
+    private fun findMethodInHierarchyNamed(clazz: Class<*>, name: String, vararg params: Class<*>?): Method? =
+        findMethodsInHierarchy(clazz).firstOrNull {
+            it.name == name && it.parameterTypes.contentEquals(params)
+        }?.apply { isAccessible = true }
+
     private fun findMethodsInHierarchy(clazz: Class<*>): Sequence<Method> = sequence {
         var current: Class<*>? = clazz
         while (current != null) {
@@ -561,6 +632,9 @@ object IosDepthStackRecentsHook : FeatureHook {
         var cachedPagesChildCount = -1
         var cachedPagesRotation = -1
         val taskStates = IdentityHashMap<View, TaskVisualState>()
+        // dismiss 接管：正在删除的卡与删除进度(0→1，按被删卡次轴位移/卡高)。
+        var dismissingTask: View? = null
+        var dismissProgress = 0f
     }
 
     private class TaskVisualState(val initialTranslationZ: Float) {
