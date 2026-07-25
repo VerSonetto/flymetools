@@ -31,6 +31,8 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
             description = "隐藏锁屏界面右下角的相机快捷方式", group = "锁屏"),
         HookFeature("hide_keyguard_status_bar", "隐藏锁屏状态栏",
             description = "隐藏锁屏界面顶部的状态栏", group = "锁屏"),
+        HookFeature("hide_keyguard_fingerprint_icon", "隐藏锁屏指纹图标",
+            description = "隐藏锁屏界面的屏下指纹图标（不影响指纹解锁）", group = "锁屏"),
         HookFeature("aod_lyric", "AOD 显示歌词",
             description = "在熄屏 AOD 界面显示当前播放的歌词", group = "锁屏"),
         HookFeature("aod_notification", "AOD 显示通知",
