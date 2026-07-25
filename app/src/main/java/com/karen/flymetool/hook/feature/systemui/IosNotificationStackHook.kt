@@ -329,6 +329,15 @@ object IosNotificationStackHook : FeatureHook {
         lastPe = pe
         val listOffset = max(0f, scrollY - eSeg)
 
+        // 控制中心/QS 展开：通知在背景，我们的 z/outline 会透出灰圆角框 → 交还系统
+        val qsFrac = readQsExpansion(ambient)
+        if (qsFrac > 0.08f) {
+            lastPe = 1f
+            restoreSystemList(items, ambient, trackedHun)
+            hideShelf(ambient)
+            return
+        }
+
         // 仅装得下或滚到底时交还系统（清 scale）；中间全程跟进度
         if (scrollRange <= 2f || (scrollRange > 2f && scrollY >= scrollRange - 4f)) {
             lastPe = 1f
@@ -635,15 +644,34 @@ object IosNotificationStackHook : FeatureHook {
             } catch (_: Throwable) {
                 XposedHelpers.callMethod(st, "setAlpha", 1f)
             }
-            // 全展开时仍保持列表序 z，避免聚合展开与下方卡片瞬态重叠穿层
-            XposedHelpers.callMethod(st, "setZTranslation", Z_BASE - item.index * Z_STEP)
+            // 交还系统时 z=0，避免控制中心背景下透出 outline 阴影框
+            XposedHelpers.callMethod(st, "setZTranslation", 0f)
+            try {
+                if (item.view.translationZ != 0f) item.view.translationZ = 0f
+            } catch (_: Throwable) {
+            }
             XposedHelpers.setIntField(st, "clipBottomAmount", 0)
             XposedHelpers.setIntField(st, "clipTopAmount", 0)
             clearShadowArtifacts(item.view)
-            if (isGroupSummary(item.view) || item.parentY != null || callBool(item.view, "isChildInGroup")) {
+            if (isGroupSummary(item.view) || item.parentY != null ||
+                callBool(item.view, "isChildInGroup")
+            ) {
                 suppressGroupOutlineShadow(item.view)
             }
         }
+    }
+
+    private fun readQsExpansion(ambient: Any): Float {
+        for (name in arrayOf("getQsExpansionFraction", "getExpansionFraction")) {
+            try {
+                when (val v = XposedHelpers.callMethod(ambient, name)) {
+                    is Float -> if (v >= 0f) return v
+                    is Double -> if (v >= 0.0) return v.toFloat()
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        return 0f
     }
 
     private fun isGroupSummary(row: View): Boolean = callBool(row, "isSummaryWithChildren")
@@ -670,39 +698,52 @@ object IosNotificationStackHook : FeatureHook {
     /**
      * Flyme ENR 全程 clipToOutline + outlineAlpha≈1，translationZ/scale 会出灰圆角边。
      * outlineAlpha=0 + 透明 spot/ambient，保留 z 分层但不画阴影框。
+     * 同时清 GroupCollapseContainer（折叠聚合卡本体）的 outline。
      */
     private fun suppressGroupOutlineShadow(row: View) {
-        try {
-            XposedHelpers.callMethod(row, "setOutlineAlpha", 0f)
-        } catch (_: Throwable) {
-            try {
-                XposedHelpers.callMethod(row, "setOutlineAlpha", java.lang.Float.valueOf(0f))
-            } catch (_: Throwable) {
-            }
-        }
-        try {
-            row.outlineSpotShadowColor = 0
-            row.outlineAmbientShadowColor = 0
-        } catch (_: Throwable) {
-        }
-        // 背景层自己的 outline 阴影
+        killOutlineShadow(row)
         try {
             val bg = XposedHelpers.getObjectField(row, "mBackgroundFlyme") as? View
-            if (bg != null) {
-                bg.elevation = 0f
-                bg.outlineSpotShadowColor = 0
-                bg.outlineAmbientShadowColor = 0
-            }
+            if (bg != null) killOutlineShadow(bg)
         } catch (_: Throwable) {
         }
         try {
             val bgN = XposedHelpers.getObjectField(row, "mBackgroundNormal") as? View
-            if (bgN != null) {
-                bgN.elevation = 0f
-                bgN.outlineSpotShadowColor = 0
-                bgN.outlineAmbientShadowColor = 0
+            if (bgN != null) killOutlineShadow(bgN)
+        } catch (_: Throwable) {
+        }
+        // 折叠态聚合：真正画圆角底的是 GroupCollapseContainer
+        try {
+            val gc = XposedHelpers.callMethod(row, "getGroupCollapseContainer") as? View
+            if (gc != null) {
+                killOutlineShadow(gc)
+                try {
+                    val gbg = XposedHelpers.getObjectField(gc, "mBackgroundFlyme") as? View
+                    if (gbg != null) killOutlineShadow(gbg)
+                } catch (_: Throwable) {
+                }
             }
         } catch (_: Throwable) {
+        }
+    }
+
+    private fun killOutlineShadow(v: View) {
+        try {
+            if (v.elevation != 0f) v.elevation = 0f
+        } catch (_: Throwable) {
+        }
+        try {
+            v.outlineSpotShadowColor = 0
+            v.outlineAmbientShadowColor = 0
+        } catch (_: Throwable) {
+        }
+        try {
+            XposedHelpers.callMethod(v, "setOutlineAlpha", 0f)
+        } catch (_: Throwable) {
+            try {
+                // View 无 setOutlineAlpha 时改 outline provider alpha 无效，至少透明 shadow color
+            } catch (_: Throwable) {
+            }
         }
     }
 
