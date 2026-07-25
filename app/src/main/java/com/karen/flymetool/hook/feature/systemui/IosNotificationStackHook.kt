@@ -1,7 +1,6 @@
 package com.karen.flymetool.hook.feature.systemui
 
 import android.content.res.Resources
-import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -13,6 +12,7 @@ import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 import java.lang.ref.WeakReference
+import java.util.IdentityHashMap
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -23,37 +23,34 @@ import kotlin.math.min
  * 折叠 p≈0：整组沉底，首卡全尺寸顶在 THRESH，下层 L*PEEK 错位 + 缩放下沉。
  * 展开 p→1：与原生列表 Y 插值；仅 overflow 继续堆叠。
  * 折叠态点击卡片：展开列表（不跳转）；有 pinned HUN 时整段不碰。
+ *
+ * 性能：prefs/dp 缓存、Item 带 viewState、阴影只抑制一次、字段变更才写。
  */
 object IosNotificationStackHook : FeatureHook {
 
     private const val TAG = "IosNotifStack"
     private const val FEATURE_KEY = "ios_notification_stack"
     private const val SINK_ALL_KEY = "sink_all"
-    /** THRESH 距内容区底的 inset（越大堆叠越高） */
     private const val DEFAULT_BOTTOM_PAD = 180
 
-    // showcase.html
     private const val STEP_DP = 108f
     private const val PEEK_DP = 46f
-    /** HTML E：前这段 scroll 只做堆叠摊开，之后才是列表滚动 */
     private const val EXPAND_E_DP = 200f
     private const val SCALE_PER_L = 0.05f
     private const val MIN_SCALE = 0.84f
     private const val MAX_L_VISIBLE = 3.5f
     private const val Z_BASE = 8f
     private const val Z_STEP = 2f
-    /** pe 低于此视为折叠，点击展开而非跳转 */
     private const val COLLAPSED_CLICK_PE = 0.92f
+    private const val PREFS_TTL_MS = 800L
 
     private var prefsPackage: String = "com.android.systemui"
     private var loadParam: XC_LoadPackage.LoadPackageParam? = null
 
-    /** 最近一次布局的 NSSL，用于点击展开 */
     private var lastHostRef: WeakReference<ViewGroup>? = null
     private var lastPe: Float = 1f
     private var lastESeg: Float = 0f
     private var lastScrollRange: Float = 0f
-    /** 折叠堆叠可点区域（NSSL 本地坐标，Y 向下） */
     private var stackHitTop: Float = 0f
     private var stackHitBottom: Float = 0f
     private var touchDownX: Float = 0f
@@ -61,16 +58,34 @@ object IosNotificationStackHook : FeatureHook {
     private var touchTracking: Boolean = false
     private var touchMoved: Boolean = false
 
+    // —— 缓存 ——
+    private var density = 0f
+    private var pxStep = 0f
+    private var pxPeek = 0f
+    private var pxExpandE = 0f
+    private var px8 = 0f
+    private var px6 = 0f
+    private var px4 = 0f
+    private var px48 = 0f
+    private var px72 = 0f
+
+    private var cachedBottomPad = DEFAULT_BOTTOM_PAD
+    private var cachedSinkAll = true
+    private var prefsCachedAt = 0L
+
+    /** 已做过 outline/elevation 抑制的 row，避免每帧反射清阴影 */
+    private val shadowDone = IdentityHashMap<View, Boolean>()
+    private var shadowGen = 0
+
     private data class Item(
         val view: View,
+        val st: Any,
         val height: Float,
-        /** NSSL 内容坐标系 Y（子卡 = parentY + childLocalY） */
         val nativeY: Float,
         val index: Int,
-        /** 展开聚合的子卡：Y 写回时要减 parentY；null=顶层 NSSL child */
         val parentY: Float? = null,
-        /** 对应的 summary row（子卡时用于压 summary 高度/clip） */
         val summary: View? = null,
+        val foldedSummary: Boolean = false,
     )
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
@@ -87,6 +102,7 @@ object IosNotificationStackHook : FeatureHook {
     }
 
     private fun mount(lpparam: XC_LoadPackage.LoadPackageParam) {
+        ensurePx()
         val algoCl = XposedHelpers.findClass(
             "com.android.systemui.statusbar.notification.stack.StackScrollAlgorithm",
             lpparam.classLoader
@@ -117,7 +133,6 @@ object IosNotificationStackHook : FeatureHook {
             }
         )
 
-        // 折叠态：任意通知点击都展开（顶卡也会走到这里）
         try {
             val clickerCl = XposedHelpers.findClass(
                 "com.android.systemui.statusbar.notification.NotificationClicker",
@@ -143,8 +158,6 @@ object IosNotificationStackHook : FeatureHook {
             Logger.e(TAG, "点击展开 Hook 失败", e)
         }
 
-        // 整区点击：顶卡全高会盖住下层，点 peek 往往落在顶卡上；
-        // 在 NSSL 上拦截「折叠堆叠带」内的轻点，保证整摞都能展开
         try {
             val nsslCl = XposedHelpers.findClass(
                 "com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout",
@@ -183,7 +196,6 @@ object IosNotificationStackHook : FeatureHook {
                                     isInStackHitRegion(ev.x, ev.y, host)
                                 ) {
                                     if (tryExpandStackFromClick()) {
-                                        // 消费点击，避免落到 row 再跳转
                                         param.result = true
                                         Logger.d(TAG, "折叠整区点击 → 展开列表")
                                     }
@@ -204,24 +216,19 @@ object IosNotificationStackHook : FeatureHook {
 
     private fun isInStackHitRegion(x: Float, y: Float, host: ViewGroup): Boolean {
         if (stackHitBottom <= stackHitTop + 1f) return false
-        // 左右略放宽，上下用堆叠带
-        val padX = dp(8f)
+        val padX = px8
         if (x < -padX || x > host.width + padX) return false
-        return y in (stackHitTop - dp(4f))..(stackHitBottom + dp(12f))
+        return y in (stackHitTop - px4)..(stackHitBottom + px(12f))
     }
 
-    /**
-     * 点击展开：走 NSSL 同款 OverScroller 动画（与 scrollTo / 手指滑动一致），
-     * 不用瞬时 setOwnScrollY。
-     */
     private fun tryExpandStackFromClick(): Boolean {
         val host = lastHostRef?.get() ?: return false
         val eSeg = lastESeg
         val range = lastScrollRange
         if (eSeg <= 1f && range <= 2f) return false
         val target = when {
-            range > 2f -> min(max(eSeg, expandEPx()), range).toInt()
-            else -> max(eSeg, expandEPx()).toInt()
+            range > 2f -> min(max(eSeg, pxExpandE), range).toInt()
+            else -> max(eSeg, pxExpandE).toInt()
         }.coerceAtLeast(1)
 
         val cur = try {
@@ -243,11 +250,7 @@ object IosNotificationStackHook : FeatureHook {
             } catch (_: Throwable) {
                 0
             }
-            // 与 NSSL.scrollTo 相同：startScroll + animateScroll
-            XposedHelpers.callMethod(
-                scroller, "startScroll",
-                scrollX, cur, 0, dy
-            )
+            XposedHelpers.callMethod(scroller, "startScroll", scrollX, cur, 0, dy)
             try {
                 XposedHelpers.setBooleanField(host, "mDontReportNextOverScroll", true)
             } catch (_: Throwable) {
@@ -266,30 +269,32 @@ object IosNotificationStackHook : FeatureHook {
         }
     }
 
-    private fun expandEPx(): Float = dp(EXPAND_E_DP)
-
-    private fun readBottomPadDp(): Int {
-        val lp = loadParam ?: return DEFAULT_BOTTOM_PAD
-        return XposedPrefs.getFeatureValue(
-            lp, prefsPackage, FEATURE_KEY, DEFAULT_BOTTOM_PAD
-        ).coerceIn(0, 280)
-    }
-
-    /** 整组沉底开关：默认开启；关闭后只堆叠溢出卡（顶部保持列表） */
-    private fun isSinkAllEnabled(): Boolean {
-        val lp = loadParam ?: return true
-        val key = "$prefsPackage:$SINK_ALL_KEY"
-        return try {
+    private fun refreshPrefsIfNeeded() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - prefsCachedAt < PREFS_TTL_MS) return
+        prefsCachedAt = now
+        val lp = loadParam
+        cachedBottomPad = if (lp != null) {
+            XposedPrefs.getFeatureValue(lp, prefsPackage, FEATURE_KEY, DEFAULT_BOTTOM_PAD)
+                .coerceIn(80, 400)
+        } else {
+            DEFAULT_BOTTOM_PAD
+        }
+        cachedSinkAll = try {
             val prefs = de.robv.android.xposed.XSharedPreferences(
                 "com.karen.flymetool", "flymetool_prefs"
             )
-            prefs.getBoolean(key, true)
+            prefs.reload()
+            prefs.getBoolean("$prefsPackage:$SINK_ALL_KEY", true)
         } catch (_: Throwable) {
             true
         }
     }
 
     private fun apply(ambient: Any, algo: Any, rowCl: Class<*>) {
+        ensurePx()
+        refreshPrefsIfNeeded()
+
         val host = XposedHelpers.getObjectField(algo, "mHostView") as? ViewGroup ?: return
         lastHostRef = WeakReference(host)
         if (hasPinnedHeadsUp(host, rowCl)) {
@@ -297,6 +302,8 @@ object IosNotificationStackHook : FeatureHook {
             return
         }
 
+        // QS 先读：展开控制中心时尽量少干活
+        val qsFrac = readQsExpansion(ambient)
         val trackedHun = readTrackedHun(ambient)
         val items = collect(host, rowCl, ambient, trackedHun)
         if (items.isEmpty()) {
@@ -309,16 +316,17 @@ object IosNotificationStackHook : FeatureHook {
         if (innerH <= 0) return
 
         val contentBottom = stackY + innerH
-        // THRESH：折叠时首卡顶边（整组沉底锚点）
-        val thresh = contentBottom - dp(readBottomPadDp().toFloat())
-        val step = dp(STEP_DP)
-        val peek = dp(PEEK_DP)
+        val thresh = contentBottom - cachedBottomPad * density
+        val step = pxStep
+        val peek = pxPeek
         val pad = readPadding(algo)
         val scrollY = readScrollY(ambient)
-        val scrollRange = readScrollRange(host, ambient, items, pad, innerH)
-        val expandE = dp(EXPAND_E_DP)
-        // HTML: p=clamp(scroll/E)；listOffset=max(0, scroll-E) — 后半段继续跟进度滚，不瞬间全开
-        val eSeg = if (scrollRange > 2f) min(expandE, max(scrollRange * 0.35f, expandE * 0.5f)) else expandE
+        val scrollRange = readScrollRange(host, items, pad, innerH)
+        val eSeg = if (scrollRange > 2f) {
+            min(pxExpandE, max(scrollRange * 0.35f, pxExpandE * 0.5f))
+        } else {
+            pxExpandE
+        }
         lastESeg = eSeg
         lastScrollRange = scrollRange
         val pe = if (eSeg <= 1f || scrollRange <= 2f) {
@@ -327,10 +335,7 @@ object IosNotificationStackHook : FeatureHook {
             (scrollY / eSeg).coerceIn(0f, 1f)
         }
         lastPe = pe
-        val listOffset = max(0f, scrollY - eSeg)
 
-        // 控制中心/QS 展开：通知在背景，我们的 z/outline 会透出灰圆角框 → 交还系统
-        val qsFrac = readQsExpansion(ambient)
         if (qsFrac > 0.08f) {
             lastPe = 1f
             restoreSystemList(items, ambient, trackedHun)
@@ -338,7 +343,6 @@ object IosNotificationStackHook : FeatureHook {
             return
         }
 
-        // 仅装得下或滚到底时交还系统（清 scale）；中间全程跟进度
         if (scrollRange <= 2f || (scrollRange > 2f && scrollY >= scrollRange - 4f)) {
             lastPe = 1f
             restoreSystemList(items, ambient, trackedHun)
@@ -346,60 +350,51 @@ object IosNotificationStackHook : FeatureHook {
             return
         }
 
-        // showcase: winTop = lerp(THRESH, WIN_TOP, easeOut(p))
-        //           et = winTop + i*STEP - listOffset
-        val listTop = stackY + dp(8f)
+        val sinkAll = cachedSinkAll
+        val listTop = stackY + px8
         val ease = pe * (2f - pe)
-        // 整组沉底：winTop 从 THRESH（底部）开始；关闭时从 listTop（顶部）开始 → 只堆叠溢出卡
-        val collapsedTop = if (isSinkAllEnabled()) thresh else listTop
+        val collapsedTop = if (sinkAll) thresh else listTop
+        // winTop 保留与 showcase 一致（后续 et 用 nativeY lerp，不直接用 winTop）
+        @Suppress("UNUSED_VARIABLE")
         val winTop = lerp(collapsedTop, listTop, ease)
 
-        // 折叠堆叠整区命中：首卡顶 → 末层 peek 底（相对 host 内容坐标系 ≈ translationY）
-        // 顶卡全高会盖住下层，但整区仍可用 NSSL 点击展开
         val maxLayer = min(items.size - 1, MAX_L_VISIBLE.toInt())
         stackHitTop = thresh
         stackHitBottom = thresh + maxLayer * peek +
-            (items.firstOrNull()?.height ?: dp(72f))
+            (items.firstOrNull()?.height ?: px72)
 
-        // 非沉底时，找第一张溢出卡索引，用于堆叠的 relativeI
-        val firstOverflow = if (isSinkAllEnabled()) 0 else {
-            items.indexOfFirst { it.nativeY >= thresh - dp(8f) }.coerceAtLeast(0)
+        val firstOverflow = if (sinkAll) {
+            0
+        } else {
+            items.indexOfFirst { it.nativeY >= thresh - px8 }.coerceAtLeast(0)
         }
-        // 非沉底时，堆叠锚点 = 最后一张完整卡底边 + 间隙，避免与完整区重叠
-        val stackAnchor = if (isSinkAllEnabled() || firstOverflow <= 0) {
+        val stackAnchor = if (sinkAll || firstOverflow <= 0) {
             thresh
         } else {
             val lastFull = items[firstOverflow - 1]
-            max(thresh, lastFull.nativeY + lastFull.height + dp(6f))
+            max(thresh, lastFull.nativeY + lastFull.height + px6)
         }
 
-        // 展开 summary 在 collect 里已被子卡替换；这里再给仍折叠的 summary 做防阴影
-        val touchedSummaries = LinkedHashSet<View>()
+        val touchedSummaries = ArrayList<View>(2)
 
         for (item in items) {
-            if (isPinnedOrAnimatingHun(item.view, viewState(item.view), ambient, trackedHun)) {
-                continue
-            }
-            val st = viewState(item.view) ?: continue
+            if (isPinnedOrAnimatingHun(item.view, item.st, ambient, trackedHun)) continue
+            val st = item.st
             val h = max(item.height, 1f)
             val i = item.index
             val childInGroup = item.parentY != null
-            val foldedSummary = !childInGroup && isGroupSummary(item.view)
+            val foldedSummary = item.foldedSummary
 
             val ty: Float
             var scale: Float
             val alpha: Float
-            var stacked: Boolean
 
-            // 非沉底模式：未溢出卡直接用原生 Y（原生间距），仅溢出卡走堆叠
-            if (!isSinkAllEnabled() && item.nativeY < thresh - dp(8f)) {
+            if (!sinkAll && item.nativeY < thresh - px8) {
                 ty = item.nativeY
                 scale = 1f
                 alpha = 1f
-                stacked = false
             } else {
-                // 沉底模式 或 溢出卡：lerp 堆叠位 → 原生位
-                val relativeI = if (isSinkAllEnabled()) i else (i - firstOverflow).coerceAtLeast(0)
+                val relativeI = if (sinkAll) i else (i - firstOverflow).coerceAtLeast(0)
                 val collapsedEt = stackAnchor + relativeI * step
                 val et = lerp(collapsedEt, item.nativeY, pe)
                 val over = et - thresh
@@ -408,62 +403,48 @@ object IosNotificationStackHook : FeatureHook {
                     ty = et
                     scale = 1f
                     alpha = 1f
-                    stacked = false
                 } else {
                     val L = over / step
                     if (L >= MAX_L_VISIBLE) {
-                        XposedHelpers.setBooleanField(st, "hidden", true)
-                        XposedHelpers.callMethod(st, "setAlpha", 0f)
-                        XposedHelpers.callMethod(st, "setScaleX", MIN_SCALE)
-                        XposedHelpers.callMethod(st, "setScaleY", MIN_SCALE)
-                        XposedHelpers.callMethod(st, "setZTranslation", 0f)
-                        clearShadowArtifacts(item.view)
-                        val hideY = stackAnchor + MAX_L_VISIBLE * peek
-                        writeY(st, item, hideY)
+                        setBool(st, "hidden", true)
+                        setAlpha(st, 0f)
+                        setScale(st, MIN_SCALE)
+                        setZ(st, 0f)
+                        writeY(st, item, stackAnchor + MAX_L_VISIBLE * peek)
                         continue
                     }
                     ty = thresh + L * peek
                     scale = max(MIN_SCALE, 1f - L * SCALE_PER_L)
                     alpha = (1f - (L - 0.2f) * 0.5f).coerceIn(0f, 1f)
-                    stacked = true
                 }
             }
 
-            // 折叠 summary：不 scale（灰边）；展开子卡：完整参与堆叠 scale/z
             if (foldedSummary) {
                 scale = 1f
-                stacked = false
             }
 
             val yAbs = if (foldedSummary) ty else ty - h * (1f - scale) * 0.5f
             val z = Z_BASE - i * Z_STEP
 
             writeY(st, item, yAbs)
-            XposedHelpers.callMethod(st, "setScaleX", scale)
-            XposedHelpers.callMethod(st, "setScaleY", scale)
-            XposedHelpers.callMethod(st, "setAlpha", alpha)
-            XposedHelpers.callMethod(st, "setZTranslation", z)
-            XposedHelpers.setBooleanField(st, "hidden", false)
-            XposedHelpers.setBooleanField(st, "inShelf", false)
-            XposedHelpers.setIntField(st, "clipBottomAmount", 0)
-            XposedHelpers.setIntField(st, "clipTopAmount", 0)
+            // 堆叠布局使用的高度写回 ViewState，避免系统按大布局 intrinsic 撑高
+            setInt(st, "height", h.toInt().coerceAtLeast(1))
+            setScale(st, scale)
+            setAlpha(st, alpha)
+            setZ(st, z)
+            setBool(st, "hidden", false)
+            setBool(st, "inShelf", false)
+            setInt(st, "clipBottomAmount", 0)
+            setInt(st, "clipTopAmount", 0)
 
-            clearShadowArtifacts(item.view)
-            // Flyme row 全程 clipToOutline；组 summary/子卡在 z/scale 下都会出灰圆角边
+            clearElevationIfNeeded(item.view)
             if (foldedSummary || childInGroup) {
-                if (foldedSummary) {
-                    try {
-                        if (item.view.scaleX != 1f) item.view.scaleX = 1f
-                        if (item.view.scaleY != 1f) item.view.scaleY = 1f
-                    } catch (_: Throwable) {
-                    }
-                }
-                suppressGroupOutlineShadow(item.view)
+                suppressShadowOnce(item.view)
             }
-            item.summary?.let { touchedSummaries += it }
+            val sum = item.summary
+            if (sum != null && sum !in touchedSummaries) touchedSummaries += sum
         }
 
-        // 展开聚合：summary 本体只作容器，压高度/清 outline，避免整组大框
         for (summary in touchedSummaries) {
             flattenExpandedSummaryShell(summary, items, ambient, trackedHun)
         }
@@ -471,79 +452,71 @@ object IosNotificationStackHook : FeatureHook {
         hideShelf(ambient)
         Logger.once(
             TAG,
-            "stack sink=${isSinkAllEnabled()} pe=$pe scroll=$scrollY/$scrollRange n=${items.size}"
+            "stack sink=$sinkAll pe=$pe scroll=$scrollY/$scrollRange n=${items.size}"
         )
     }
 
-    /** 子卡 nativeY 是 NSSL 绝对坐标，ViewState 要 parent 本地 Y */
     private fun writeY(st: Any, item: Item, yAbs: Float) {
         val local = item.parentY?.let { yAbs - it } ?: yAbs
-        XposedHelpers.callMethod(st, "setYTranslation", local)
+        setY(st, local)
     }
 
-    /**
-     * 展开后的 summary：子卡已各自堆叠，summary 只作容器。
-     * 组头/收起按钮在 ChildrenContainer 顶（Y≈0），子卡 localY 不得压到 0。
-     * summary 顶 = 首子绝对 Y - headerInset，子卡 local 从 headerInset 起排。
-     */
     private fun flattenExpandedSummaryShell(
         summary: View,
         items: List<Item>,
         ambient: Any,
         trackedHun: Any?,
     ) {
-        if (isPinnedOrAnimatingHun(summary, viewState(summary), ambient, trackedHun)) return
-        val st = viewState(summary) ?: return
+        val sst = viewState(summary) ?: return
+        if (isPinnedOrAnimatingHun(summary, sst, ambient, trackedHun)) return
         val kids = items.filter { it.summary === summary }
         if (kids.isEmpty()) return
         val oldParentY = kids.first().parentY ?: return
         val headerInset = groupHeaderInset(summary)
 
-        data class KidAbs(val view: View, val st: Any, val absY: Float, val h: Float, val index: Int)
-        val absKids = ArrayList<KidAbs>(kids.size)
-        for (k in kids) {
-            val kst = viewState(k.view) ?: continue
-            val localY = try {
-                XposedHelpers.callMethod(kst, "getYTranslation") as Float
-            } catch (_: Throwable) {
-                continue
-            }
-            absKids += KidAbs(k.view, kst, oldParentY + localY, max(k.height, 1f), k.index)
+        var minAbs = Float.MAX_VALUE
+        var maxBottom = Float.MIN_VALUE
+        var minIndex = Int.MAX_VALUE
+        val n = kids.size
+        val absYArr = FloatArray(n)
+        val hArr = FloatArray(n)
+        val stArr = arrayOfNulls<Any>(n)
+        var k = 0
+        for (c in kids) {
+            val localY = getY(c.st)
+            val absY = oldParentY + localY
+            val h = max(c.height, 1f)
+            absYArr[k] = absY
+            hArr[k] = h
+            stArr[k] = c.st
+            if (absY < minAbs) minAbs = absY
+            if (absY + h > maxBottom) maxBottom = absY + h
+            if (c.index < minIndex) minIndex = c.index
+            k++
         }
-        if (absKids.isEmpty()) return
+        if (minAbs == Float.MAX_VALUE) return
 
-        val minAbs = absKids.minOf { it.absY }
-        val maxBottom = absKids.maxOf { it.absY + it.h }
-        // summary 顶上留组头；子卡相对 summary 至少 headerInset
         val shellTop = minAbs - headerInset
-        val shellH = max(maxBottom - shellTop, headerInset + absKids.first().h)
-            .toInt().coerceAtLeast(1)
-        val topZ = Z_BASE - absKids.minOf { it.index } * Z_STEP
+        val shellH = max(maxBottom - shellTop, headerInset + hArr[0]).toInt().coerceAtLeast(1)
+        val topZ = Z_BASE - minIndex * Z_STEP
 
-        try {
-            XposedHelpers.callMethod(st, "setYTranslation", shellTop)
-            XposedHelpers.setIntField(st, "height", shellH)
-            XposedHelpers.callMethod(st, "setScaleX", 1f)
-            XposedHelpers.callMethod(st, "setScaleY", 1f)
-            XposedHelpers.callMethod(st, "setAlpha", 1f)
-            // 容器略低于子卡，组头单独抬 z
-            XposedHelpers.callMethod(st, "setZTranslation", topZ - 0.5f)
-            XposedHelpers.setBooleanField(st, "hidden", false)
-            XposedHelpers.setIntField(st, "clipBottomAmount", 0)
-            XposedHelpers.setIntField(st, "clipTopAmount", 0)
-        } catch (_: Throwable) {
-        }
+        setY(sst, shellTop)
+        setInt(sst, "height", shellH)
+        setScale(sst, 1f)
+        setAlpha(sst, 1f)
+        setZ(sst, topZ - 0.5f)
+        setBool(sst, "hidden", false)
+        setInt(sst, "clipBottomAmount", 0)
+        setInt(sst, "clipTopAmount", 0)
 
-        for (k in absKids) {
-            try {
-                XposedHelpers.callMethod(k.st, "setYTranslation", k.absY - shellTop)
-            } catch (_: Throwable) {
-            }
+        for (i in 0 until n) {
+            val s = stArr[i] ?: continue
+            setY(s, absYArr[i] - shellTop)
         }
 
         raiseGroupHeaderAboveChildren(summary, topZ + Z_STEP)
-        clearShadowArtifacts(summary)
-        suppressGroupOutlineShadow(summary)
+        clearElevationIfNeeded(summary)
+        suppressShadowOnce(summary)
         try {
             if (summary.scaleX != 1f) summary.scaleX = 1f
             if (summary.scaleY != 1f) summary.scaleY = 1f
@@ -551,7 +524,6 @@ object IosNotificationStackHook : FeatureHook {
         }
     }
 
-    /** 展开组头高度（收起按钮所在条），读不到则 48dp */
     private fun groupHeaderInset(summary: View): Float {
         try {
             val container = XposedHelpers.callMethod(summary, "getChildrenContainer")
@@ -572,10 +544,9 @@ object IosNotificationStackHook : FeatureHook {
             }
         } catch (_: Throwable) {
         }
-        return dp(48f)
+        return px48
     }
 
-    /** 组头/收起钮抬到子卡之上，避免被堆叠卡挡住点击 */
     private fun raiseGroupHeaderAboveChildren(summary: View, z: Float) {
         try {
             val container = XposedHelpers.callMethod(summary, "getChildrenContainer") ?: return
@@ -585,33 +556,24 @@ object IosNotificationStackHook : FeatureHook {
                 null
             }
             if (header != null) {
-                header.translationZ = z
-                header.elevation = 0f
-                try {
-                    header.bringToFront()
-                } catch (_: Throwable) {
-                }
+                if (header.translationZ != z) header.translationZ = z
+                if (header.elevation != 0f) header.elevation = 0f
                 val hst = try {
                     XposedHelpers.getObjectField(container, "mHeaderViewState")
                 } catch (_: Throwable) {
                     null
                 }
                 if (hst != null) {
-                    XposedHelpers.callMethod(hst, "setZTranslation", z)
-                    XposedHelpers.callMethod(hst, "setYTranslation", 0f)
-                    XposedHelpers.callMethod(hst, "setAlpha", 1f)
-                    try {
-                        XposedHelpers.setBooleanField(hst, "hidden", false)
-                    } catch (_: Throwable) {
-                    }
+                    setZ(hst, z)
+                    setY(hst, 0f)
+                    setAlpha(hst, 1f)
+                    setBool(hst, "hidden", false)
                 }
             }
-            // Flyme 折叠容器上的 header（若仍可见）
             try {
                 val gc = XposedHelpers.callMethod(summary, "getGroupCollapseContainer") as? View
                 if (gc != null && gc.visibility == View.VISIBLE && gc.alpha > 0.01f) {
-                    gc.translationZ = z
-                    gc.bringToFront()
+                    if (gc.translationZ != z) gc.translationZ = z
                 }
             } catch (_: Throwable) {
             }
@@ -619,57 +581,42 @@ object IosNotificationStackHook : FeatureHook {
         }
     }
 
-    /** pe=1：清掉我们写过的 scale/alpha/z，保留系统 Y */
     private fun restoreSystemList(
         items: List<Item>,
         ambient: Any,
         trackedHun: Any?,
     ) {
         for (item in items) {
-            if (isPinnedOrAnimatingHun(item.view, viewState(item.view), ambient, trackedHun)) {
-                continue
-            }
-            val st = viewState(item.view) ?: continue
-            XposedHelpers.callMethod(st, "setScaleX", 1f)
-            XposedHelpers.callMethod(st, "setScaleY", 1f)
-            // 不强制 alpha/hidden：交给系统（含敏感内容等）
-            if (boolField(st, "inShelf")) {
-                XposedHelpers.setBooleanField(st, "inShelf", false)
-            }
+            if (isPinnedOrAnimatingHun(item.view, item.st, ambient, trackedHun)) continue
+            val st = item.st
+            setScale(st, 1f)
+            if (boolField(st, "inShelf")) setBool(st, "inShelf", false)
             try {
                 val a = XposedHelpers.callMethod(st, "getAlpha") as Float
-                if (a in 0.01f..0.99f && !boolField(st, "hidden")) {
-                    XposedHelpers.callMethod(st, "setAlpha", 1f)
-                }
+                if (a in 0.01f..0.99f && !boolField(st, "hidden")) setAlpha(st, 1f)
             } catch (_: Throwable) {
-                XposedHelpers.callMethod(st, "setAlpha", 1f)
+                setAlpha(st, 1f)
             }
-            // 交还系统时 z=0，避免控制中心背景下透出 outline 阴影框
-            XposedHelpers.callMethod(st, "setZTranslation", 0f)
+            setZ(st, 0f)
             try {
                 if (item.view.translationZ != 0f) item.view.translationZ = 0f
             } catch (_: Throwable) {
             }
-            XposedHelpers.setIntField(st, "clipBottomAmount", 0)
-            XposedHelpers.setIntField(st, "clipTopAmount", 0)
-            clearShadowArtifacts(item.view)
-            if (isGroupSummary(item.view) || item.parentY != null ||
-                callBool(item.view, "isChildInGroup")
-            ) {
-                suppressGroupOutlineShadow(item.view)
+            setInt(st, "clipBottomAmount", 0)
+            setInt(st, "clipTopAmount", 0)
+            clearElevationIfNeeded(item.view)
+            if (item.foldedSummary || item.parentY != null) {
+                suppressShadowOnce(item.view)
             }
         }
     }
 
     private fun readQsExpansion(ambient: Any): Float {
-        for (name in arrayOf("getQsExpansionFraction", "getExpansionFraction")) {
-            try {
-                when (val v = XposedHelpers.callMethod(ambient, name)) {
-                    is Float -> if (v >= 0f) return v
-                    is Double -> if (v >= 0.0) return v.toFloat()
-                }
-            } catch (_: Throwable) {
-            }
+        try {
+            val v = XposedHelpers.callMethod(ambient, "getQsExpansionFraction")
+            if (v is Float && v >= 0f) return v
+            if (v is Double && v >= 0.0) return v.toFloat()
+        } catch (_: Throwable) {
         }
         return 0f
     }
@@ -679,28 +626,24 @@ object IosNotificationStackHook : FeatureHook {
     private fun isGroupExpandedLike(row: View): Boolean {
         if (callBool(row, "isGroupExpanded")) return true
         if (callBool(row, "areChildrenExpanded")) return true
-        // 展开动画中 needsOutline 仍 true，按已展开处理避免闪阴影
         return callBool(row, "isGroupExpansionChanging")
     }
 
-    /** elevation + FakeShadow + 残留 translationZ */
-    private fun clearShadowArtifacts(row: View) {
+    private fun clearElevationIfNeeded(row: View) {
         try {
             if (row.elevation != 0f) row.elevation = 0f
         } catch (_: Throwable) {
         }
-        try {
-            XposedHelpers.callMethod(row, "setFakeShadowIntensity", 0f, 0f, 0, 0)
-        } catch (_: Throwable) {
-        }
     }
 
-    /**
-     * Flyme ENR 全程 clipToOutline + outlineAlpha≈1，translationZ/scale 会出灰圆角边。
-     * outlineAlpha=0 + 透明 spot/ambient，保留 z 分层但不画阴影框。
-     * 同时清 GroupCollapseContainer（折叠聚合卡本体）的 outline。
-     */
-    private fun suppressGroupOutlineShadow(row: View) {
+    private fun suppressShadowOnce(row: View) {
+        if (shadowDone.put(row, true) != null) return
+        // 防止无限涨：偶发清理
+        if (shadowDone.size > 64) {
+            shadowDone.clear()
+            shadowDone[row] = true
+            shadowGen++
+        }
         killOutlineShadow(row)
         try {
             val bg = XposedHelpers.getObjectField(row, "mBackgroundFlyme") as? View
@@ -712,7 +655,6 @@ object IosNotificationStackHook : FeatureHook {
             if (bgN != null) killOutlineShadow(bgN)
         } catch (_: Throwable) {
         }
-        // 折叠态聚合：真正画圆角底的是 GroupCollapseContainer
         try {
             val gc = XposedHelpers.callMethod(row, "getGroupCollapseContainer") as? View
             if (gc != null) {
@@ -723,6 +665,10 @@ object IosNotificationStackHook : FeatureHook {
                 } catch (_: Throwable) {
                 }
             }
+        } catch (_: Throwable) {
+        }
+        try {
+            XposedHelpers.callMethod(row, "setFakeShadowIntensity", 0f, 0f, 0, 0)
         } catch (_: Throwable) {
         }
     }
@@ -740,10 +686,6 @@ object IosNotificationStackHook : FeatureHook {
         try {
             XposedHelpers.callMethod(v, "setOutlineAlpha", 0f)
         } catch (_: Throwable) {
-            try {
-                // View 无 setOutlineAlpha 时改 outline provider alpha 无效，至少透明 shadow color
-            } catch (_: Throwable) {
-            }
         }
     }
 
@@ -756,12 +698,11 @@ object IosNotificationStackHook : FeatureHook {
     private fun readPadding(algo: Any): Float = try {
         XposedHelpers.getFloatField(algo, "mPaddingBetweenElements")
     } catch (_: Throwable) {
-        dp(4f)
+        px4
     }
 
     private fun readScrollRange(
         host: ViewGroup,
-        ambient: Any,
         items: List<Item>,
         pad: Float,
         innerH: Int,
@@ -789,7 +730,6 @@ object IosNotificationStackHook : FeatureHook {
             if (r > 2f) return r
         } catch (_: Throwable) {
         }
-        // 兜底：用卡片总高估算（息屏回来 host 方法可能暂时为 0）
         var total = 0f
         for (item in items) total += max(item.height, 1f) + pad
         return max(0f, total - innerH)
@@ -811,7 +751,7 @@ object IosNotificationStackHook : FeatureHook {
         ambient: Any,
         trackedHun: Any?,
     ): List<Item> {
-        val tops = ArrayList<View>()
+        val tops = ArrayList<View>(host.childCount)
         for (i in 0 until host.childCount) {
             val child = host.getChildAt(i) ?: continue
             if (!rowCl.isInstance(child)) continue
@@ -829,16 +769,11 @@ object IosNotificationStackHook : FeatureHook {
             }
         }
 
-        // 展开聚合：拆成子卡进全局堆叠；折叠 summary 仍作一张卡
-        val flat = ArrayList<Item>(tops.size * 2)
+        val flat = ArrayList<Item>(tops.size + 4)
         var idx = 0
         for (v in tops) {
             val st = viewState(v)!!
-            val parentY = try {
-                XposedHelpers.callMethod(st, "getYTranslation") as Float
-            } catch (_: Throwable) {
-                0f
-            }
+            val parentY = getY(st)
             if (isGroupExpandedLike(v)) {
                 val children = attachedChildren(v)
                 if (children.isNotEmpty()) {
@@ -846,15 +781,11 @@ object IosNotificationStackHook : FeatureHook {
                         if (c.visibility == View.GONE) continue
                         val cst = viewState(c) ?: continue
                         if (boolField(cst, "gone")) continue
-                        val localY = try {
-                            XposedHelpers.callMethod(cst, "getYTranslation") as Float
-                        } catch (_: Throwable) {
-                            0f
-                        }
                         flat += Item(
                             view = c,
-                            height = readHeight(c, cst),
-                            nativeY = parentY + localY,
+                            st = cst,
+                            height = readStackHeight(c, cst),
+                            nativeY = parentY + getY(cst),
                             index = idx++,
                             parentY = parentY,
                             summary = v,
@@ -865,9 +796,11 @@ object IosNotificationStackHook : FeatureHook {
             }
             flat += Item(
                 view = v,
-                height = readHeight(v, st),
+                st = st,
+                height = readStackHeight(v, st),
                 nativeY = parentY,
                 index = idx++,
+                foldedSummary = isGroupSummary(v),
             )
         }
         return flat
@@ -889,7 +822,7 @@ object IosNotificationStackHook : FeatureHook {
         ambient: Any,
         trackedHun: Any?,
     ): Boolean {
-        if (callBool(row, "isHeadsUp") && callBool(row, "isPinned")) return true
+        if (trackedHun != null && trackedHun === row) return true
         if (callBool(row, "isPinned")) return true
         if (callBool(row, "isHeadsUpAnimatingAway")) return true
         if (callBool(row, "showingPulsing")) return true
@@ -900,17 +833,6 @@ object IosNotificationStackHook : FeatureHook {
             } catch (_: Throwable) {
             }
         }
-        if (trackedHun != null && trackedHun === row) return true
-        try {
-            val tracked = XposedHelpers.callMethod(ambient, "getTrackedHeadsUpRow")
-            if (tracked != null && tracked === row) return true
-        } catch (_: Throwable) {
-        }
-        try {
-            val pinnedStatus = XposedHelpers.getObjectField(row, "mPinnedStatus")
-            if (pinnedStatus != null && callBool(pinnedStatus, "isPinned")) return true
-        } catch (_: Throwable) {
-        }
         return false
     }
 
@@ -918,17 +840,6 @@ object IosNotificationStackHook : FeatureHook {
         XposedHelpers.callMethod(obj, name) as Boolean
     } catch (_: Throwable) {
         false
-    }
-
-    private fun callFloat(obj: Any, name: String, default: Float): Float = try {
-        when (val v = XposedHelpers.callMethod(obj, name)) {
-            is Float -> v
-            is Double -> v.toFloat()
-            is Int -> v.toFloat()
-            else -> default
-        }
-    } catch (_: Throwable) {
-        default
     }
 
     private fun readTrackedHun(ambient: Any): Any? = try {
@@ -941,13 +852,40 @@ object IosNotificationStackHook : FeatureHook {
         try {
             val shelf = XposedHelpers.callMethod(ambient, "getShelf") ?: return
             val st = XposedHelpers.callMethod(shelf, "getViewState") ?: return
-            XposedHelpers.setBooleanField(st, "hidden", true)
-            XposedHelpers.callMethod(st, "setAlpha", 0f)
+            setBool(st, "hidden", true)
+            setAlpha(st, 0f)
         } catch (_: Throwable) {
         }
     }
 
-    private fun readHeight(row: View, st: Any): Float {
+    /**
+     * 堆叠态高度：未手动展开 → 强制折叠高（不被长文撑开）；
+     * 用户手动展开 → 保留系统内容高度。
+     */
+    private fun readStackHeight(row: View, st: Any): Float {
+        if (allowContentExpand(row)) {
+            return readSystemHeight(row, st)
+        }
+        val collapsed = try {
+            (XposedHelpers.callMethod(row, "getCollapsedHeight") as Int).toFloat()
+        } catch (_: Throwable) {
+            try {
+                (XposedHelpers.callMethod(row, "getMinHeight") as Int).toFloat()
+            } catch (_: Throwable) {
+                0f
+            }
+        }
+        if (collapsed > 1f) return collapsed
+        return readSystemHeight(row, st)
+    }
+
+    /** 用户点开单卡展开（含 hasUserChangedExpansion）才允许内容撑高 */
+    private fun allowContentExpand(row: View): Boolean {
+        if (callBool(row, "isUserExpanded")) return true
+        return callBool(row, "hasUserChangedExpansion") && callBool(row, "isExpanded")
+    }
+
+    private fun readSystemHeight(row: View, st: Any): Float {
         val h = try {
             XposedHelpers.getIntField(st, "height").toFloat()
         } catch (_: Throwable) {
@@ -957,7 +895,7 @@ object IosNotificationStackHook : FeatureHook {
         return try {
             (XposedHelpers.callMethod(row, "getIntrinsicHeight") as Int).toFloat()
         } catch (_: Throwable) {
-            dp(72f)
+            px72
         }
     }
 
@@ -993,14 +931,77 @@ object IosNotificationStackHook : FeatureHook {
         }
     }
 
-    private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+    // —— ViewState 写：尽量少反射失败分支 ——
 
-    private fun smoothstep(t: Float): Float {
-        val x = t.coerceIn(0f, 1f)
-        return x * x * (3f - 2f * x)
+    private fun getY(st: Any): Float = try {
+        XposedHelpers.callMethod(st, "getYTranslation") as Float
+    } catch (_: Throwable) {
+        0f
     }
 
-    private fun dp(v: Float): Float = TypedValue.applyDimension(
-        TypedValue.COMPLEX_UNIT_DIP, v, Resources.getSystem().displayMetrics
-    )
+    private fun setY(st: Any, y: Float) {
+        try {
+            XposedHelpers.callMethod(st, "setYTranslation", y)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun setScale(st: Any, s: Float) {
+        try {
+            XposedHelpers.callMethod(st, "setScaleX", s)
+            XposedHelpers.callMethod(st, "setScaleY", s)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun setAlpha(st: Any, a: Float) {
+        try {
+            XposedHelpers.callMethod(st, "setAlpha", a)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun setZ(st: Any, z: Float) {
+        try {
+            XposedHelpers.callMethod(st, "setZTranslation", z)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun setBool(st: Any, name: String, v: Boolean) {
+        try {
+            XposedHelpers.setBooleanField(st, name, v)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun setInt(st: Any, name: String, v: Int) {
+        try {
+            XposedHelpers.setIntField(st, name, v)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+
+    private fun ensurePx() {
+        val d = Resources.getSystem().displayMetrics.density
+        if (d == density && pxStep > 0f) return
+        density = d
+        pxStep = STEP_DP * d
+        pxPeek = PEEK_DP * d
+        pxExpandE = EXPAND_E_DP * d
+        px8 = 8f * d
+        px6 = 6f * d
+        px4 = 4f * d
+        px48 = 48f * d
+        px72 = 72f * d
+    }
+
+    private fun px(v: Float): Float = v * density
+
+    private fun dp(v: Float): Float {
+        ensurePx()
+        return v * density
+    }
 }

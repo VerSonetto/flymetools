@@ -147,7 +147,7 @@ fun IosNotificationStackConfig(
                     context, packageName, featureKey, bottomPad.toInt()
                 )
             },
-            valueRange = 40f..280f,
+            valueRange = 80f..400f,
             valueDisplay = "${bottomPad.toInt()} dp"
         )
 
