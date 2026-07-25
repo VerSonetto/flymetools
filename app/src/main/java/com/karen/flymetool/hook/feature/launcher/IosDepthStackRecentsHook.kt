@@ -369,6 +369,8 @@ object IosDepthStackRecentsHook : FeatureHook {
                         blurIndex = index
                     }
                 }
+                // 可滑动范围最左侧(第一张卡，index 0)左侧无卡可堆叠遮挡，不加模糊。
+                if (blurIndex == 0) blurIndex = -1
                 pages.forEachIndexed { index, page ->
                     val ts = state.taskStates.getValue(page.view)
                     applyHeaderBlur(page.view, ts, index == blurIndex)
