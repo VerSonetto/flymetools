@@ -1,6 +1,7 @@
 package com.karen.flymetool.hook.feature.launcher
 
 import android.animation.ObjectAnimator
+import android.graphics.Canvas
 import android.util.Property
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedHelpers
@@ -20,9 +21,11 @@ object FolderBlurHook : FeatureHook {
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (lpparam.packageName != "com.meizu.flyme.launcher") return
 
-        val iconEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, "folder_icon_blur")
+        val noMaskEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, "folder_icon_no_mask")
+        val iconEnabled = !noMaskEnabled &&
+            XposedPrefs.isFeatureEnabled(lpparam, packageName, "folder_icon_blur")
         val openEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, "folder_open_blur")
-        if (!iconEnabled && !openEnabled) return
+        if (!noMaskEnabled && !iconEnabled && !openEnabled) return
 
         val iconRadius = if (iconEnabled) {
             XposedPrefs.getFeatureValue(lpparam, packageName, "folder_icon_blur", 30)
@@ -30,6 +33,8 @@ object FolderBlurHook : FeatureHook {
         val openStrength = if (openEnabled) {
             XposedPrefs.getFeatureValue(lpparam, packageName, "folder_open_blur", 80) / 100f
         } else -1f
+
+        if (noMaskEnabled) hookRemoveFolderMask(lpparam)
 
         when {
             FlymeVersionUtils.isFlyme12() -> hookFlyme12(lpparam, iconRadius, openStrength)
@@ -47,6 +52,64 @@ object FolderBlurHook : FeatureHook {
         if (openStrength >= 0f) hookOpenBlurStrengthLegacy(lpparam, openStrength)
     }
 
+    // 去掉文件夹图标底色遮罩：跳过纯色绘制，并禁用 FolderIcon 专用 BackgroundBlurUtils(View, boolean)
+    private fun hookRemoveFolderMask(lpparam: XC_LoadPackage.LoadPackageParam) {
+        try {
+            val previewBg = XposedHelpers.findClass(
+                "com.android.launcher3.folder.PreviewBackground",
+                lpparam.classLoader
+            )
+            XposedHelpers.findAndHookMethod(
+                previewBg,
+                "drawBackground",
+                Canvas::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        param.result = null
+                    }
+                }
+            )
+
+            val blurUtils = XposedHelpers.findClass(
+                "com.meizu.flyme.launcher.utils.BackgroundBlurUtils",
+                lpparam.classLoader
+            )
+            fun disableFolderBlur(instance: Any) {
+                try {
+                    XposedHelpers.setBooleanField(instance, "mBlurEnable", false)
+                    XposedHelpers.callMethod(instance, "removeBlurDrawable")
+                } catch (_: Throwable) {
+                }
+            }
+            // FolderIcon 专用构造：new BackgroundBlurUtils(this, isBigFolderIcon())
+            XposedHelpers.findAndHookConstructor(
+                blurUtils,
+                android.view.View::class.java,
+                Boolean::class.javaPrimitiveType,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        disableFolderBlur(param.thisObject)
+                    }
+                }
+            )
+            // 主题/图标包切换时可能重新打开模糊（仅 FolderIcon，避免影响小组件等）
+            XposedHelpers.findAndHookMethod(
+                blurUtils,
+                "updateBlurShow",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val view = XposedHelpers.getObjectField(param.thisObject, "mView") ?: return
+                        if (!view.javaClass.name.contains("FolderIcon")) return
+                        disableFolderBlur(param.thisObject)
+                    }
+                }
+            )
+            Logger.i(TAG, "去掉文件夹遮罩已启用")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "去掉文件夹遮罩Hook失败", e)
+        }
+    }
+
     // Flyme 12: setBlurRadius 只在创建时调一次，后续帧直接读 mBlurRadius 字段
     // 必须 afterHook 里把字段也改掉
     private fun hookIconBlurRadius12(lpparam: XC_LoadPackage.LoadPackageParam, radius: Int) {
@@ -62,9 +125,9 @@ object FolderBlurHook : FeatureHook {
                     }
                 }
             )
-            Logger.i(TAG, "图标毛玻璃半径(Flyme12): $radius")
+            Logger.i(TAG, "文件夹模糊半径(Flyme12): $radius")
         } catch (e: Throwable) {
-            Logger.e(TAG, "图标毛玻璃半径Hook失败(Flyme12)", e)
+            Logger.e(TAG, "文件夹模糊半径Hook失败(Flyme12)", e)
         }
     }
 
@@ -137,9 +200,9 @@ object FolderBlurHook : FeatureHook {
                     }
                 }
             )
-            Logger.i(TAG, "图标毛玻璃半径: $radius")
+            Logger.i(TAG, "文件夹模糊半径: $radius")
         } catch (e: Throwable) {
-            Logger.e(TAG, "图标毛玻璃半径Hook失败", e)
+            Logger.e(TAG, "文件夹模糊半径Hook失败", e)
         }
     }
 

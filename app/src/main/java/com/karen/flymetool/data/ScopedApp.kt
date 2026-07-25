@@ -11,6 +11,7 @@ data class HookFeature(
     val description: String = "",
     val dependsOn: String? = null,
     val visibleUnless: String? = null,
+    val exclusiveWith: String? = null,
     val group: String? = null,
     val requiresValues: Boolean = false,
     val minVersion: String? = null

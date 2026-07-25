@@ -351,6 +351,12 @@ private fun FeatureEntryCompact(
                 onCheckedChange = { newValue ->
                     featureStates[feature.key]?.value = newValue
                     PrefsHelper.setFeatureEnabled(context, packageName, feature.key, newValue)
+                    if (newValue) {
+                        feature.exclusiveWith?.let { otherKey ->
+                            featureStates[otherKey]?.value = false
+                            PrefsHelper.setFeatureEnabled(context, packageName, otherKey, false)
+                        }
+                    }
                 }
             )
 
@@ -422,6 +428,12 @@ private fun FeatureEntry(
                 onCheckedChange = { newValue ->
                     featureStates[feature.key]?.value = newValue
                     PrefsHelper.setFeatureEnabled(context, packageName, feature.key, newValue)
+                    if (newValue) {
+                        feature.exclusiveWith?.let { otherKey ->
+                            featureStates[otherKey]?.value = false
+                            PrefsHelper.setFeatureEnabled(context, packageName, otherKey, false)
+                        }
+                    }
                 }
             )
 

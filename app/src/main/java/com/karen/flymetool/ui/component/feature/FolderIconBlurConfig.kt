@@ -20,7 +20,7 @@ fun FolderIconBlurConfig(
     }
 
     AppSlider(
-        label = "毛玻璃半径",
+        label = "模糊半径",
         value = radiusValue,
         onValueChange = { radiusValue = it },
         onValueChangeFinished = {
