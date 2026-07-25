@@ -368,9 +368,9 @@ object IosNotificationStackHook : FeatureHook {
             val i = item.index
 
             val ty: Float
-            val scale: Float
+            var scale: Float
             val alpha: Float
-            val stacked: Boolean
+            var stacked: Boolean
 
             // 非沉底模式：未溢出卡直接用原生 Y（原生间距），仅溢出卡走堆叠
             if (!isSinkAllEnabled() && item.nativeY < thresh - dp(8f)) {
@@ -398,6 +398,8 @@ object IosNotificationStackHook : FeatureHook {
                         XposedHelpers.callMethod(st, "setAlpha", 0f)
                         XposedHelpers.callMethod(st, "setScaleX", MIN_SCALE)
                         XposedHelpers.callMethod(st, "setScaleY", MIN_SCALE)
+                        XposedHelpers.callMethod(st, "setZTranslation", 0f)
+                        clearShadowArtifacts(item.view)
                         XposedHelpers.callMethod(
                             st, "setYTranslation", stackAnchor + MAX_L_VISIBLE * peek
                         )
@@ -410,7 +412,16 @@ object IosNotificationStackHook : FeatureHook {
                 }
             }
 
-            val y = ty - h * (1f - scale) * 0.5f
+            // 聚合 summary：不 scale（会露灰边），但仍要按列表序抬 z，
+            // 否则展开/沉底重叠时会被下层堆叠（z>0）盖住
+            val groupSummary = isGroupSummary(item.view)
+            if (groupSummary) {
+                scale = 1f
+                stacked = false
+            }
+
+            val y = if (groupSummary) ty else ty - h * (1f - scale) * 0.5f
+            // 全列表统一：index 小的在上；展开卡与堆叠 peek 重叠时靠此分层
             val z = Z_BASE - i * Z_STEP
 
             XposedHelpers.callMethod(st, "setYTranslation", y)
@@ -423,9 +434,15 @@ object IosNotificationStackHook : FeatureHook {
             XposedHelpers.setIntField(st, "clipBottomAmount", 0)
             XposedHelpers.setIntField(st, "clipTopAmount", 0)
 
-            try {
-                item.view.elevation = if (stacked) max(0f, (1f - scale) * 12f) else 0f
-            } catch (_: Throwable) {
+            clearShadowArtifacts(item.view)
+            if (groupSummary) {
+                try {
+                    if (item.view.scaleX != 1f) item.view.scaleX = 1f
+                    if (item.view.scaleY != 1f) item.view.scaleY = 1f
+                } catch (_: Throwable) {
+                }
+                // 保留 translationZ 做层叠；只关 outline 阴影色/alpha，避免灰圆角框
+                suppressGroupOutlineShadow(item.view)
             }
         }
 
@@ -461,13 +478,56 @@ object IosNotificationStackHook : FeatureHook {
             } catch (_: Throwable) {
                 XposedHelpers.callMethod(st, "setAlpha", 1f)
             }
-            XposedHelpers.callMethod(st, "setZTranslation", 0f)
+            // 全展开时仍保持列表序 z，避免聚合展开与下方卡片瞬态重叠穿层
+            XposedHelpers.callMethod(st, "setZTranslation", Z_BASE - item.index * Z_STEP)
             XposedHelpers.setIntField(st, "clipBottomAmount", 0)
             XposedHelpers.setIntField(st, "clipTopAmount", 0)
+            clearShadowArtifacts(item.view)
+            if (isGroupSummary(item.view)) {
+                suppressGroupOutlineShadow(item.view)
+            }
+        }
+    }
+
+    private fun isGroupSummary(row: View): Boolean = callBool(row, "isSummaryWithChildren")
+
+    private fun isGroupExpandedLike(row: View): Boolean {
+        if (callBool(row, "isGroupExpanded")) return true
+        if (callBool(row, "areChildrenExpanded")) return true
+        // 展开动画中 needsOutline 仍 true，按已展开处理避免闪阴影
+        return callBool(row, "isGroupExpansionChanging")
+    }
+
+    /** elevation + FakeShadow + 残留 translationZ */
+    private fun clearShadowArtifacts(row: View) {
+        try {
+            if (row.elevation != 0f) row.elevation = 0f
+        } catch (_: Throwable) {
+        }
+        try {
+            XposedHelpers.callMethod(row, "setFakeShadowIntensity", 0f, 0f, 0, 0)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * Flyme summary 全程 clipToOutline + outlineAlpha≈1，outline 阴影靠 translationZ。
+     * 再把 spot 阴影色透明化，双保险避免灰圆角框。
+     */
+    private fun suppressGroupOutlineShadow(row: View) {
+        try {
+            XposedHelpers.callMethod(row, "setOutlineAlpha", 0f)
+        } catch (_: Throwable) {
             try {
-                item.view.elevation = 0f
+                XposedHelpers.callMethod(row, "setOutlineAlpha", java.lang.Float.valueOf(0f))
             } catch (_: Throwable) {
             }
+        }
+        try {
+            // 透明 spot shadow（系统默认 Integer.MIN_VALUE 仍可能出边）
+            row.outlineSpotShadowColor = 0
+            row.outlineAmbientShadowColor = 0
+        } catch (_: Throwable) {
         }
     }
 
