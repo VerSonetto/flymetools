@@ -24,6 +24,8 @@ import com.karen.flymetool.hook.feature.systemui.StatusBarClockHook
 import com.karen.flymetool.hook.feature.systemui.StatusBarClockSecondsHook
 import com.karen.flymetool.hook.feature.systemui.TickerClickHook
 import com.karen.flymetool.hook.feature.systemui.CustomCarrierNameHook
+import com.karen.flymetool.hook.feature.systemui.EdgeBackHoldPreviousAppHook
+import com.karen.flymetool.hook.feature.systemui.EdgeBackVibrateHook
 import com.karen.flymetool.hook.feature.systemui.MediaCardRadiusHook
 import com.karen.flymetool.hook.feature.systemui.ForceLiveNotificationHook
 import com.karen.flymetool.hook.feature.systemui.IosNotificationStackHook
@@ -58,6 +60,8 @@ object SystemUIEntry : HookEntry {
         CustomCarrierNameHook,
         ForceLiveNotificationHook,
         IosNotificationStackHook,
+        EdgeBackVibrateHook,
+        EdgeBackHoldPreviousAppHook,
     )
 
     override fun initHooks(lpparam: XC_LoadPackage.LoadPackageParam) {

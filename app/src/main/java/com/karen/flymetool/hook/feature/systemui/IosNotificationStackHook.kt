@@ -459,10 +459,6 @@ object IosNotificationStackHook : FeatureHook {
         }
 
         hideShelf(ambient)
-        Logger.once(
-            TAG,
-            "stack sink=$sinkAll pe=$pe scroll=$scrollY/$scrollRange n=${items.size}"
-        )
     }
 
     private fun writeY(st: Any, item: Item, yAbs: Float) {

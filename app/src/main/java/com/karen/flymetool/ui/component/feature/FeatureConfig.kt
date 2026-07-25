@@ -30,5 +30,6 @@ fun FeatureConfig(
         "custom_charge_limit" -> ChargeLimitConfig(packageName, featureKey)
         "force_live_notification" -> ForceLiveNotificationConfig(packageName, featureKey, onNavigate)
         "ios_notification_stack" -> IosNotificationStackConfig(packageName, featureKey)
+        "edge_back_vibrate_intensity" -> EdgeBackVibrateConfig(packageName, featureKey)
     }
 }
