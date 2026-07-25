@@ -64,8 +64,13 @@ object IosNotificationStackHook : FeatureHook {
     private data class Item(
         val view: View,
         val height: Float,
+        /** NSSL 内容坐标系 Y（子卡 = parentY + childLocalY） */
         val nativeY: Float,
         val index: Int,
+        /** 展开聚合的子卡：Y 写回时要减 parentY；null=顶层 NSSL child */
+        val parentY: Float? = null,
+        /** 对应的 summary row（子卡时用于压 summary 高度/clip） */
+        val summary: View? = null,
     )
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
@@ -359,6 +364,9 @@ object IosNotificationStackHook : FeatureHook {
             max(thresh, lastFull.nativeY + lastFull.height + dp(6f))
         }
 
+        // 展开 summary 在 collect 里已被子卡替换；这里再给仍折叠的 summary 做防阴影
+        val touchedSummaries = LinkedHashSet<View>()
+
         for (item in items) {
             if (isPinnedOrAnimatingHun(item.view, viewState(item.view), ambient, trackedHun)) {
                 continue
@@ -366,6 +374,8 @@ object IosNotificationStackHook : FeatureHook {
             val st = viewState(item.view) ?: continue
             val h = max(item.height, 1f)
             val i = item.index
+            val childInGroup = item.parentY != null
+            val foldedSummary = !childInGroup && isGroupSummary(item.view)
 
             val ty: Float
             var scale: Float
@@ -380,7 +390,6 @@ object IosNotificationStackHook : FeatureHook {
                 stacked = false
             } else {
                 // 沉底模式 或 溢出卡：lerp 堆叠位 → 原生位
-                // 非沉底时溢出卡用相对层号（relativeI），避免 i 过大导致层号塌
                 val relativeI = if (isSinkAllEnabled()) i else (i - firstOverflow).coerceAtLeast(0)
                 val collapsedEt = stackAnchor + relativeI * step
                 val et = lerp(collapsedEt, item.nativeY, pe)
@@ -400,9 +409,8 @@ object IosNotificationStackHook : FeatureHook {
                         XposedHelpers.callMethod(st, "setScaleY", MIN_SCALE)
                         XposedHelpers.callMethod(st, "setZTranslation", 0f)
                         clearShadowArtifacts(item.view)
-                        XposedHelpers.callMethod(
-                            st, "setYTranslation", stackAnchor + MAX_L_VISIBLE * peek
-                        )
+                        val hideY = stackAnchor + MAX_L_VISIBLE * peek
+                        writeY(st, item, hideY)
                         continue
                     }
                     ty = thresh + L * peek
@@ -412,19 +420,16 @@ object IosNotificationStackHook : FeatureHook {
                 }
             }
 
-            // 聚合 summary：不 scale（会露灰边），但仍要按列表序抬 z，
-            // 否则展开/沉底重叠时会被下层堆叠（z>0）盖住
-            val groupSummary = isGroupSummary(item.view)
-            if (groupSummary) {
+            // 折叠 summary：不 scale（灰边）；展开子卡：完整参与堆叠 scale/z
+            if (foldedSummary) {
                 scale = 1f
                 stacked = false
             }
 
-            val y = if (groupSummary) ty else ty - h * (1f - scale) * 0.5f
-            // 全列表统一：index 小的在上；展开卡与堆叠 peek 重叠时靠此分层
+            val yAbs = if (foldedSummary) ty else ty - h * (1f - scale) * 0.5f
             val z = Z_BASE - i * Z_STEP
 
-            XposedHelpers.callMethod(st, "setYTranslation", y)
+            writeY(st, item, yAbs)
             XposedHelpers.callMethod(st, "setScaleX", scale)
             XposedHelpers.callMethod(st, "setScaleY", scale)
             XposedHelpers.callMethod(st, "setAlpha", alpha)
@@ -435,15 +440,23 @@ object IosNotificationStackHook : FeatureHook {
             XposedHelpers.setIntField(st, "clipTopAmount", 0)
 
             clearShadowArtifacts(item.view)
-            if (groupSummary) {
-                try {
-                    if (item.view.scaleX != 1f) item.view.scaleX = 1f
-                    if (item.view.scaleY != 1f) item.view.scaleY = 1f
-                } catch (_: Throwable) {
+            // Flyme row 全程 clipToOutline；组 summary/子卡在 z/scale 下都会出灰圆角边
+            if (foldedSummary || childInGroup) {
+                if (foldedSummary) {
+                    try {
+                        if (item.view.scaleX != 1f) item.view.scaleX = 1f
+                        if (item.view.scaleY != 1f) item.view.scaleY = 1f
+                    } catch (_: Throwable) {
+                    }
                 }
-                // 保留 translationZ 做层叠；只关 outline 阴影色/alpha，避免灰圆角框
                 suppressGroupOutlineShadow(item.view)
             }
+            item.summary?.let { touchedSummaries += it }
+        }
+
+        // 展开聚合：summary 本体只作容器，压高度/清 outline，避免整组大框
+        for (summary in touchedSummaries) {
+            flattenExpandedSummaryShell(summary, items, ambient, trackedHun)
         }
 
         hideShelf(ambient)
@@ -451,6 +464,150 @@ object IosNotificationStackHook : FeatureHook {
             TAG,
             "stack sink=${isSinkAllEnabled()} pe=$pe scroll=$scrollY/$scrollRange n=${items.size}"
         )
+    }
+
+    /** 子卡 nativeY 是 NSSL 绝对坐标，ViewState 要 parent 本地 Y */
+    private fun writeY(st: Any, item: Item, yAbs: Float) {
+        val local = item.parentY?.let { yAbs - it } ?: yAbs
+        XposedHelpers.callMethod(st, "setYTranslation", local)
+    }
+
+    /**
+     * 展开后的 summary：子卡已各自堆叠，summary 只作容器。
+     * 组头/收起按钮在 ChildrenContainer 顶（Y≈0），子卡 localY 不得压到 0。
+     * summary 顶 = 首子绝对 Y - headerInset，子卡 local 从 headerInset 起排。
+     */
+    private fun flattenExpandedSummaryShell(
+        summary: View,
+        items: List<Item>,
+        ambient: Any,
+        trackedHun: Any?,
+    ) {
+        if (isPinnedOrAnimatingHun(summary, viewState(summary), ambient, trackedHun)) return
+        val st = viewState(summary) ?: return
+        val kids = items.filter { it.summary === summary }
+        if (kids.isEmpty()) return
+        val oldParentY = kids.first().parentY ?: return
+        val headerInset = groupHeaderInset(summary)
+
+        data class KidAbs(val view: View, val st: Any, val absY: Float, val h: Float, val index: Int)
+        val absKids = ArrayList<KidAbs>(kids.size)
+        for (k in kids) {
+            val kst = viewState(k.view) ?: continue
+            val localY = try {
+                XposedHelpers.callMethod(kst, "getYTranslation") as Float
+            } catch (_: Throwable) {
+                continue
+            }
+            absKids += KidAbs(k.view, kst, oldParentY + localY, max(k.height, 1f), k.index)
+        }
+        if (absKids.isEmpty()) return
+
+        val minAbs = absKids.minOf { it.absY }
+        val maxBottom = absKids.maxOf { it.absY + it.h }
+        // summary 顶上留组头；子卡相对 summary 至少 headerInset
+        val shellTop = minAbs - headerInset
+        val shellH = max(maxBottom - shellTop, headerInset + absKids.first().h)
+            .toInt().coerceAtLeast(1)
+        val topZ = Z_BASE - absKids.minOf { it.index } * Z_STEP
+
+        try {
+            XposedHelpers.callMethod(st, "setYTranslation", shellTop)
+            XposedHelpers.setIntField(st, "height", shellH)
+            XposedHelpers.callMethod(st, "setScaleX", 1f)
+            XposedHelpers.callMethod(st, "setScaleY", 1f)
+            XposedHelpers.callMethod(st, "setAlpha", 1f)
+            // 容器略低于子卡，组头单独抬 z
+            XposedHelpers.callMethod(st, "setZTranslation", topZ - 0.5f)
+            XposedHelpers.setBooleanField(st, "hidden", false)
+            XposedHelpers.setIntField(st, "clipBottomAmount", 0)
+            XposedHelpers.setIntField(st, "clipTopAmount", 0)
+        } catch (_: Throwable) {
+        }
+
+        for (k in absKids) {
+            try {
+                XposedHelpers.callMethod(k.st, "setYTranslation", k.absY - shellTop)
+            } catch (_: Throwable) {
+            }
+        }
+
+        raiseGroupHeaderAboveChildren(summary, topZ + Z_STEP)
+        clearShadowArtifacts(summary)
+        suppressGroupOutlineShadow(summary)
+        try {
+            if (summary.scaleX != 1f) summary.scaleX = 1f
+            if (summary.scaleY != 1f) summary.scaleY = 1f
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** 展开组头高度（收起按钮所在条），读不到则 48dp */
+    private fun groupHeaderInset(summary: View): Float {
+        try {
+            val container = XposedHelpers.callMethod(summary, "getChildrenContainer")
+            if (container != null) {
+                for (field in arrayOf("mHeaderHeight", "mCollapsedHeaderMargin")) {
+                    try {
+                        val v = XposedHelpers.getIntField(container, field)
+                        if (v > 8) return v.toFloat()
+                    } catch (_: Throwable) {
+                    }
+                }
+                try {
+                    val header = XposedHelpers.callMethod(container, "getGroupHeader") as? View
+                    val h = header?.height ?: 0
+                    if (h > 8) return h.toFloat()
+                } catch (_: Throwable) {
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return dp(48f)
+    }
+
+    /** 组头/收起钮抬到子卡之上，避免被堆叠卡挡住点击 */
+    private fun raiseGroupHeaderAboveChildren(summary: View, z: Float) {
+        try {
+            val container = XposedHelpers.callMethod(summary, "getChildrenContainer") ?: return
+            val header = try {
+                XposedHelpers.callMethod(container, "getGroupHeader") as? View
+            } catch (_: Throwable) {
+                null
+            }
+            if (header != null) {
+                header.translationZ = z
+                header.elevation = 0f
+                try {
+                    header.bringToFront()
+                } catch (_: Throwable) {
+                }
+                val hst = try {
+                    XposedHelpers.getObjectField(container, "mHeaderViewState")
+                } catch (_: Throwable) {
+                    null
+                }
+                if (hst != null) {
+                    XposedHelpers.callMethod(hst, "setZTranslation", z)
+                    XposedHelpers.callMethod(hst, "setYTranslation", 0f)
+                    XposedHelpers.callMethod(hst, "setAlpha", 1f)
+                    try {
+                        XposedHelpers.setBooleanField(hst, "hidden", false)
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+            // Flyme 折叠容器上的 header（若仍可见）
+            try {
+                val gc = XposedHelpers.callMethod(summary, "getGroupCollapseContainer") as? View
+                if (gc != null && gc.visibility == View.VISIBLE && gc.alpha > 0.01f) {
+                    gc.translationZ = z
+                    gc.bringToFront()
+                }
+            } catch (_: Throwable) {
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     /** pe=1：清掉我们写过的 scale/alpha/z，保留系统 Y */
@@ -483,7 +640,7 @@ object IosNotificationStackHook : FeatureHook {
             XposedHelpers.setIntField(st, "clipBottomAmount", 0)
             XposedHelpers.setIntField(st, "clipTopAmount", 0)
             clearShadowArtifacts(item.view)
-            if (isGroupSummary(item.view)) {
+            if (isGroupSummary(item.view) || item.parentY != null || callBool(item.view, "isChildInGroup")) {
                 suppressGroupOutlineShadow(item.view)
             }
         }
@@ -511,8 +668,8 @@ object IosNotificationStackHook : FeatureHook {
     }
 
     /**
-     * Flyme summary 全程 clipToOutline + outlineAlpha≈1，outline 阴影靠 translationZ。
-     * 再把 spot 阴影色透明化，双保险避免灰圆角框。
+     * Flyme ENR 全程 clipToOutline + outlineAlpha≈1，translationZ/scale 会出灰圆角边。
+     * outlineAlpha=0 + 透明 spot/ambient，保留 z 分层但不画阴影框。
      */
     private fun suppressGroupOutlineShadow(row: View) {
         try {
@@ -524,9 +681,27 @@ object IosNotificationStackHook : FeatureHook {
             }
         }
         try {
-            // 透明 spot shadow（系统默认 Integer.MIN_VALUE 仍可能出边）
             row.outlineSpotShadowColor = 0
             row.outlineAmbientShadowColor = 0
+        } catch (_: Throwable) {
+        }
+        // 背景层自己的 outline 阴影
+        try {
+            val bg = XposedHelpers.getObjectField(row, "mBackgroundFlyme") as? View
+            if (bg != null) {
+                bg.elevation = 0f
+                bg.outlineSpotShadowColor = 0
+                bg.outlineAmbientShadowColor = 0
+            }
+        } catch (_: Throwable) {
+        }
+        try {
+            val bgN = XposedHelpers.getObjectField(row, "mBackgroundNormal") as? View
+            if (bgN != null) {
+                bgN.elevation = 0f
+                bgN.outlineSpotShadowColor = 0
+                bgN.outlineAmbientShadowColor = 0
+            }
         } catch (_: Throwable) {
         }
     }
@@ -595,7 +770,7 @@ object IosNotificationStackHook : FeatureHook {
         ambient: Any,
         trackedHun: Any?,
     ): List<Item> {
-        val raw = ArrayList<View>()
+        val tops = ArrayList<View>()
         for (i in 0 until host.childCount) {
             val child = host.getChildAt(i) ?: continue
             if (!rowCl.isInstance(child)) continue
@@ -603,23 +778,67 @@ object IosNotificationStackHook : FeatureHook {
             val st = viewState(child) ?: continue
             if (boolField(st, "gone")) continue
             if (isPinnedOrAnimatingHun(child, st, ambient, trackedHun)) continue
-            raw += child
+            tops += child
         }
-        raw.sortBy {
+        tops.sortBy {
             try {
                 XposedHelpers.getIntField(viewState(it)!!, "notGoneIndex")
             } catch (_: Throwable) {
                 Int.MAX_VALUE
             }
         }
-        return raw.mapIndexed { idx, v ->
+
+        // 展开聚合：拆成子卡进全局堆叠；折叠 summary 仍作一张卡
+        val flat = ArrayList<Item>(tops.size * 2)
+        var idx = 0
+        for (v in tops) {
             val st = viewState(v)!!
-            Item(
+            val parentY = try {
+                XposedHelpers.callMethod(st, "getYTranslation") as Float
+            } catch (_: Throwable) {
+                0f
+            }
+            if (isGroupExpandedLike(v)) {
+                val children = attachedChildren(v)
+                if (children.isNotEmpty()) {
+                    for (c in children) {
+                        if (c.visibility == View.GONE) continue
+                        val cst = viewState(c) ?: continue
+                        if (boolField(cst, "gone")) continue
+                        val localY = try {
+                            XposedHelpers.callMethod(cst, "getYTranslation") as Float
+                        } catch (_: Throwable) {
+                            0f
+                        }
+                        flat += Item(
+                            view = c,
+                            height = readHeight(c, cst),
+                            nativeY = parentY + localY,
+                            index = idx++,
+                            parentY = parentY,
+                            summary = v,
+                        )
+                    }
+                    continue
+                }
+            }
+            flat += Item(
                 view = v,
                 height = readHeight(v, st),
-                nativeY = XposedHelpers.callMethod(st, "getYTranslation") as Float,
-                index = idx,
+                nativeY = parentY,
+                index = idx++,
             )
+        }
+        return flat
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun attachedChildren(summary: View): List<View> {
+        return try {
+            val list = XposedHelpers.callMethod(summary, "getAttachedChildren") as? List<*>
+            list?.filterIsInstance<View>() ?: emptyList()
+        } catch (_: Throwable) {
+            emptyList()
         }
     }
 
