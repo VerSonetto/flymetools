@@ -368,11 +368,20 @@ object IosNotificationStackHook : FeatureHook {
         } else {
             items.indexOfFirst { it.nativeY >= thresh - px8 }.coerceAtLeast(0)
         }
+        // 堆叠起点（通知与媒体共用，媒体不占位挤通知）
         val stackAnchor = if (sinkAll || firstOverflow <= 0) {
             thresh
         } else {
             val lastFull = items[firstOverflow - 1]
             max(thresh, lastFull.nativeY + lastFull.height + px6)
+        }
+
+        // 媒体：沉在堆叠起点之上（Y = stackAnchor - h - pad），不挤通知、不参与 L 堆叠
+        if (sinkAll) {
+            val media = findMediaContainer(host)
+            if (media != null) {
+                placeMediaAboveStack(media, pe, stackAnchor, pad)
+            }
         }
 
         val touchedSummaries = ArrayList<View>(2)
@@ -743,6 +752,81 @@ object IosNotificationStackHook : FeatureHook {
             if (boolField(child, "mIsHeadsUpStatus") && callBool(child, "isPinned")) return true
         }
         return false
+    }
+
+    /**
+     * 锁屏媒体容器 MediaContainerView（非 ExpandableNotificationRow）。
+     * 特征：类名 MediaContainerView / 继承 ExpandableView 且非 Row。
+     */
+    private fun findMediaContainer(host: ViewGroup): View? {
+        for (i in 0 until host.childCount) {
+            val child = host.getChildAt(i) ?: continue
+            if (child.visibility == View.GONE) continue
+            val name = child.javaClass.name
+            if (name.endsWith("MediaContainerView") || name.contains("MediaContainerView")) {
+                val st = viewState(child) ?: continue
+                if (boolField(st, "gone")) continue
+                // shouldBeVisible=false 时系统视为不展示
+                if (!mediaShouldBeVisible(st)) continue
+                return child
+            }
+        }
+        return null
+    }
+
+    private fun mediaShouldBeVisible(st: Any): Boolean {
+        return try {
+            XposedHelpers.callMethod(st, "getShouldBeVisible") as? Boolean ?: true
+        } catch (_: Throwable) {
+            try {
+                XposedHelpers.getBooleanField(st, "shouldBeVisible")
+            } catch (_: Throwable) {
+                true
+            }
+        }
+    }
+
+    /**
+     * 媒体沉到堆叠起点之上：折叠时底边贴 stackAnchor（Y = stackAnchor - h - pad），
+     * 通知仍从 stackAnchor 堆叠；展开插值回 nativeY。不改 stackAnchor、不参与 L 缩放。
+     */
+    private fun placeMediaAboveStack(media: View, pe: Float, stackAnchor: Float, pad: Float) {
+        val st = viewState(media) ?: return
+        val h = readMediaHeight(media, st)
+        if (h <= 1f) return
+        val nativeY = getY(st)
+        // 折叠：媒体在堆叠首卡正上方
+        val collapsedY = stackAnchor - h - pad
+        val y = lerp(collapsedY, nativeY, pe)
+        setY(st, y)
+        setInt(st, "height", h.toInt().coerceAtLeast(1))
+        setScale(st, 1f)
+        setAlpha(st, 1f)
+        setZ(st, Z_BASE + Z_STEP)
+        setBool(st, "hidden", false)
+        setBool(st, "inShelf", false)
+        setInt(st, "clipBottomAmount", 0)
+        setInt(st, "clipTopAmount", 0)
+        clearElevationIfNeeded(media)
+    }
+
+    private fun readMediaHeight(media: View, st: Any): Float {
+        try {
+            val h = XposedHelpers.getIntField(st, "height").toFloat()
+            if (h > 1f) return h
+        } catch (_: Throwable) {
+        }
+        try {
+            val ih = XposedHelpers.callMethod(media, "getIntrinsicHeight") as Int
+            if (ih > 1) return ih.toFloat()
+        } catch (_: Throwable) {
+        }
+        try {
+            val ah = XposedHelpers.callMethod(media, "getActualHeight") as Int
+            if (ah > 1) return ah.toFloat()
+        } catch (_: Throwable) {
+        }
+        return media.height.toFloat().coerceAtLeast(0f)
     }
 
     private fun collect(
