@@ -212,7 +212,7 @@ private fun ensureChannel(nm: NotificationManager) {
             "通知堆叠测试",
             NotificationManager.IMPORTANCE_DEFAULT
         ).apply {
-            description = "仅用于测试 iOS 通知堆叠，每条独立不分组"
+            description = "仅用于测试通知堆叠，每条独立不分组"
             setShowBadge(false)
         }
     )

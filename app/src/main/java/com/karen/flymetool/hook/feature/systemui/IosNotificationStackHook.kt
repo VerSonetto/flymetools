@@ -75,7 +75,7 @@ object IosNotificationStackHook : FeatureHook {
         loadParam = lpparam
         try {
             mount(lpparam)
-            Logger.i(TAG, "iOS 堆叠 Hook 完成 (showcase layoutFor)")
+            Logger.i(TAG, "堆叠 Hook 完成 (showcase layoutFor)")
         } catch (e: Throwable) {
             Logger.e(TAG, "Hook 挂载失败", e)
         }

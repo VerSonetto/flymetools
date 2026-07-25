@@ -16,7 +16,6 @@ import com.karen.flymetool.data.ScopedApp
 
 sealed class Screen(val route: String) {
     data object Home : Screen("home")
-    data object About : Screen("about")
     data object AppDetail : Screen("app_detail/{packageName}") {
         fun createRoute(packageName: String) = "app_detail/$packageName"
     }
@@ -66,15 +65,11 @@ fun AppNavHost(
         }
     ) {
         composable(route = Screen.Home.route) {
-            HomeScreen(
+            MainScreen(
                 onAppClick = { app ->
                     navController.navigate(Screen.AppDetail.createRoute(app.packageName))
-                },
-                onAboutClick = { navController.navigate(Screen.About.route) }
+                }
             )
-        }
-        composable(route = Screen.About.route) {
-            AboutScreen(onBack = { navController.popBackStack() })
         }
         composable(route = Screen.AppDetail.route) { backStackEntry ->
             val packageName = backStackEntry.arguments?.getString("packageName") ?: return@composable

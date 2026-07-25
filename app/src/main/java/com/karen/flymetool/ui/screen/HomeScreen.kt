@@ -8,11 +8,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,9 +20,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,7 +27,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -46,13 +41,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.DpSize
+import com.karen.flymetool.R
 import com.karen.flymetool.data.AppData
 import com.karen.flymetool.data.PrefsHelper
 import com.karen.flymetool.data.ScopedApp
 import com.karen.flymetool.ui.component.AppIcon
+import com.karen.flymetool.ui.component.DonatePanel
 import com.karen.flymetool.util.RootUtils
 import com.karen.flymetool.util.UpdateManager
 import com.karen.flymetool.util.UpdateInfo
@@ -62,9 +60,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
-import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.FloatingActionButton
-import top.yukonga.miuix.kmp.basic.IconButton as MiuixIconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -76,12 +72,13 @@ import androidx.compose.ui.state.ToggleableState
 @Composable
 fun HomeScreen(
     onAppClick: (ScopedApp) -> Unit,
-    onAboutClick: () -> Unit
+    modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val apps = remember(context) { AppData.getScopedApps(context) }
     var showRestartDialog by remember { mutableStateOf(false) }
     var showIntroDialog by remember { mutableStateOf(false) }
+    var showDonateDialog by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var checkingUpdate by remember { mutableStateOf(true) }
     var showUpdateDialog by remember { mutableStateOf(false) }
@@ -94,8 +91,9 @@ fun HomeScreen(
     var updateChecked by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        if (!PrefsHelper.isIntroShown(context)) {
-            showIntroDialog = true
+        when {
+            !PrefsHelper.isIntroShown(context) -> showIntroDialog = true
+            !PrefsHelper.isDonateDialogShown(context) -> showDonateDialog = true
         }
 
         if (!updateChecked) {
@@ -111,35 +109,16 @@ fun HomeScreen(
         }
     }
 
-    Scaffold(
-        containerColor = MiuixTheme.colorScheme.background,
-        contentWindowInsets = WindowInsets.systemBars.exclude(WindowInsets.navigationBars),
-        floatingActionButton = {
-            FloatingActionButton(
-                modifier = Modifier
-                    .navigationBarsPadding()
-                    .padding(bottom = 8.dp),
-                onClick = { showRestartDialog = true }
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Refresh,
-                    contentDescription = null,
-                    tint = MiuixTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
-    ) { paddingValues ->
+    Box(
+        modifier = modifier.fillMaxSize()
+    ) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
+            modifier = Modifier.fillMaxSize()
         ) {
             HomeHeader(
                 updateInfo = updateInfo,
                 checkingUpdate = checkingUpdate,
-                onCheckUpdate = { showUpdateDialog = true },
-                onAboutClick = onAboutClick,
+                onCheckUpdate = { showUpdateDialog = true }
             )
 
             LazyColumn(
@@ -160,6 +139,20 @@ fun HomeScreen(
                     )
                 }
             }
+        }
+
+        FloatingActionButton(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 24.dp, bottom = 24.dp),
+            onClick = { showRestartDialog = true }
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Refresh,
+                contentDescription = null,
+                tint = MiuixTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(24.dp)
+            )
         }
     }
 
@@ -217,6 +210,18 @@ fun HomeScreen(
             onDismiss = {
                 PrefsHelper.markIntroShown(context)
                 showIntroDialog = false
+                if (!PrefsHelper.isDonateDialogShown(context)) {
+                    showDonateDialog = true
+                }
+            }
+        )
+    }
+
+    if (showDonateDialog) {
+        DonateDialog(
+            onDismiss = {
+                PrefsHelper.markDonateDialogShown(context)
+                showDonateDialog = false
             }
         )
     }
@@ -375,6 +380,30 @@ private fun IntroDialog(
 }
 
 @Composable
+private fun DonateDialog(
+    onDismiss: () -> Unit
+) {
+    WindowDialog(
+        show = true,
+        title = stringResource(R.string.donate_title),
+        onDismissRequest = onDismiss
+    ) {
+        val dismiss = LocalDismissState.current
+
+        DonatePanel(imageSize = 130)
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        TextButton(
+            text = stringResource(R.string.donate_dismiss),
+            onClick = { dismiss?.invoke() },
+            colors = ButtonDefaults.textButtonColorsPrimary(),
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+@Composable
 private fun UpdateDialog(
     info: UpdateInfo,
     downloading: Boolean,
@@ -494,42 +523,26 @@ private fun InstallConfirmDialog(
 private fun HomeHeader(
     updateInfo: UpdateInfo?,
     checkingUpdate: Boolean,
-    onCheckUpdate: () -> Unit,
-    onAboutClick: () -> Unit,
+    onCheckUpdate: () -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 24.dp, end = 24.dp, top = 28.dp, bottom = 12.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "FlymeTool",
-                    style = MiuixTheme.textStyles.title1,
-                    color = MiuixTheme.colorScheme.onBackground,
-                    fontWeight = FontWeight.ExtraBold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Flyme 系统增强工具",
-                    style = MiuixTheme.textStyles.body2,
-                    color = MiuixTheme.colorScheme.onBackgroundVariant,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-            MiuixIconButton(onClick = onAboutClick) {
-                Icon(
-                    imageVector = Icons.Outlined.Info,
-                    contentDescription = "关于",
-                    tint = MiuixTheme.colorScheme.onBackground,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
+        Text(
+            text = "FlymeTool",
+            style = MiuixTheme.textStyles.title1,
+            color = MiuixTheme.colorScheme.onBackground,
+            fontWeight = FontWeight.ExtraBold
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Flyme 系统增强工具",
+            style = MiuixTheme.textStyles.body2,
+            color = MiuixTheme.colorScheme.onBackgroundVariant,
+            fontWeight = FontWeight.Medium
+        )
     }
 
     if (updateInfo != null) {

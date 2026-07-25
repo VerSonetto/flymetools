@@ -8,6 +8,7 @@ object PrefsHelper {
     private const val PREFS_NAME = "flymetool_prefs"
     private const val INTRO_VERSION_KEY = "intro_version"
     private const val CURRENT_INTRO_VERSION = 1
+    private const val DONATE_DIALOG_SHOWN_KEY = "donate_dialog_shown"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return try {
@@ -63,5 +64,13 @@ object PrefsHelper {
 
     fun markIntroShown(context: Context) {
         getPrefs(context).edit().putInt(INTRO_VERSION_KEY, CURRENT_INTRO_VERSION).apply()
+    }
+
+    fun isDonateDialogShown(context: Context): Boolean {
+        return getPrefs(context).getBoolean(DONATE_DIALOG_SHOWN_KEY, false)
+    }
+
+    fun markDonateDialogShown(context: Context) {
+        getPrefs(context).edit().putBoolean(DONATE_DIALOG_SHOWN_KEY, true).apply()
     }
 }

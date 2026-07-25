@@ -18,16 +18,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,23 +40,22 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.karen.flymetool.BuildConfig
+import com.karen.flymetool.R
 import com.karen.flymetool.ui.component.AppIcon
+import com.karen.flymetool.ui.component.DonatePanel
 import com.karen.flymetool.ui.component.FeatureSwitch
 import com.karen.flymetool.util.GithubAvatarLoader
 import com.karen.flymetool.util.FlymeVersionUtils
 import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import top.yukonga.miuix.kmp.icon.extended.Community
 import top.yukonga.miuix.kmp.icon.extended.Favorites
 import top.yukonga.miuix.kmp.icon.extended.Info
 import top.yukonga.miuix.kmp.icon.extended.Settings
-import top.yukonga.miuix.kmp.basic.IconButton as MiuixIconButton
-import top.yukonga.miuix.kmp.basic.Scaffold
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -86,36 +81,14 @@ private val openSourceProjects = listOf(
 )
 
 @Composable
-fun AboutScreen(onBack: () -> Unit) {
+fun AboutScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
 
-    Scaffold(
-        containerColor = MiuixTheme.colorScheme.background,
-        contentWindowInsets = WindowInsets.systemBars.exclude(WindowInsets.navigationBars),
-        topBar = {
-            SmallTopAppBar(
-                title = "关于",
-                color = MiuixTheme.colorScheme.background,
-                titleColor = MiuixTheme.colorScheme.onBackground,
-                navigationIcon = {
-                    MiuixIconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = MiuixIcons.Back,
-                            contentDescription = "返回",
-                            tint = MiuixTheme.colorScheme.onBackground
-                        )
-                    }
-                }
-            )
-        }
-    ) { paddingValues ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 36.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
-        ) {
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 36.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
+    ) {
             item(key = "hero", contentType = "hero") {
                 AboutHero()
             }
@@ -174,6 +147,24 @@ fun AboutScreen(onBack: () -> Unit) {
                 RuyueCard(onClick = { openUrl(context, RUYUE_GITHUB_URL) })
             }
 
+            item(key = "donate_title", contentType = "section_title") {
+                SectionTitle(
+                    title = stringResource(R.string.donate_title),
+                    icon = {
+                        Icon(
+                            imageVector = MiuixIcons.Favorites,
+                            contentDescription = null,
+                            tint = MiuixTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                )
+            }
+
+            item(key = "donate", contentType = "card") {
+                DonateSection()
+            }
+
             item(key = "opensource_title", contentType = "section_title") {
                 SectionTitle(
                     title = "主要开源项目",
@@ -213,7 +204,6 @@ fun AboutScreen(onBack: () -> Unit) {
                 LegalNotice()
             }
         }
-    }
 }
 
 @Composable
@@ -398,6 +388,19 @@ private fun DeviceInfoSection() {
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun DonateSection() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(MiuixTheme.colorScheme.surface)
+            .padding(18.dp)
+    ) {
+        DonatePanel(imageSize = 140)
     }
 }
 

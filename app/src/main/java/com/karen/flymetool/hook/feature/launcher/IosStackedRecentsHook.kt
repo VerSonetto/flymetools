@@ -67,9 +67,9 @@ object IosStackedRecentsHook : FeatureHook {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
         try {
             mount(lpparam)
-            Logger.i(TAG, "iOS 堆叠后台 Hook 完成")
+            Logger.i(TAG, "堆叠后台 Hook 完成")
         } catch (e: Throwable) {
-            Logger.e(TAG, "iOS 堆叠后台 Hook 挂载失败", e)
+            Logger.e(TAG, "堆叠后台 Hook 挂载失败", e)
         }
     }
 
