@@ -137,4 +137,9 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         HookFeature("custom_charge_limit", "自定义充电上限",
             description = "将充电上限选择替换为自定义数值输入（50-100%）"),
     ),
+    "com.flyme.systemuitools" to listOf(
+        HookFeature("slide_gesture_multi_arc", "小窗快捷菜单多圆弧",
+            description = "自定义斜滑唤出的小窗快捷菜单圆弧条数，最多 4 条；更多应用入口保留在系统默认圆弧",
+            group = "小窗"),
+    ),
 )

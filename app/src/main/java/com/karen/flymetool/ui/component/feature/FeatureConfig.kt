@@ -32,5 +32,6 @@ fun FeatureConfig(
         "ios_notification_stack" -> IosNotificationStackConfig(packageName, featureKey)
         "edge_back_vibrate_intensity" -> EdgeBackVibrateConfig(packageName, featureKey)
         "edge_back_hold_previous_app" -> EdgeBackHoldPreviousAppConfig(packageName, featureKey)
+        "slide_gesture_multi_arc" -> SlideGestureMultiArcConfig(packageName, featureKey)
     }
 }

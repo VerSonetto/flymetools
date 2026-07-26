@@ -13,6 +13,7 @@ import com.karen.flymetool.hook.entry.SettingsEntry
 import com.karen.flymetool.hook.entry.FlymeUpdateEntry
 import com.karen.flymetool.hook.entry.ShareEntry
 import com.karen.flymetool.hook.entry.SuggestionEntry
+import com.karen.flymetool.hook.entry.SystemToolsEntry
 import com.karen.flymetool.hook.entry.SystemUIEntry
 import com.karen.flymetool.util.FlymeVersionUtils
 import de.robv.android.xposed.IXposedHookLoadPackage
@@ -35,7 +36,8 @@ class XposedInit : IXposedHookLoadPackage {
             SuggestionEntry,
             PickerEntry,
             FlymeUpdateEntry,
-            BatteryEntry
+            BatteryEntry,
+            SystemToolsEntry
         )
 
         private val ENTRY_MAP: Map<String, HookEntry> = ENTRIES.associateBy { it.targetPackage }

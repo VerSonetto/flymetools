@@ -47,6 +47,10 @@
     {
       "package": "com.meizu.battery",
       "name": "电池"
+    },
+    {
+      "package": "com.flyme.systemuitools",
+      "name": "系统界面工具"
     }
   ]
 }
