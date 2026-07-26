@@ -42,6 +42,27 @@ object PrefsHelper {
         getPrefs(context).edit().putInt("$packageName:$featureKey:value", value).apply()
     }
 
+    /** 同一功能的额外 int 参数，key 为 package:feature:suffix */
+    fun getFeatureExtraValue(
+        context: Context,
+        packageName: String,
+        featureKey: String,
+        suffix: String,
+        defaultValue: Int
+    ): Int {
+        return getPrefs(context).getInt("$packageName:$featureKey:$suffix", defaultValue)
+    }
+
+    fun setFeatureExtraValue(
+        context: Context,
+        packageName: String,
+        featureKey: String,
+        suffix: String,
+        value: Int
+    ) {
+        getPrefs(context).edit().putInt("$packageName:$featureKey:$suffix", value).apply()
+    }
+
     fun getFeatureStringSet(context: Context, packageName: String, featureKey: String, defaultValue: Set<String>): Set<String> {
         return getPrefs(context).getStringSet("$packageName:$featureKey:values", defaultValue) ?: defaultValue
     }

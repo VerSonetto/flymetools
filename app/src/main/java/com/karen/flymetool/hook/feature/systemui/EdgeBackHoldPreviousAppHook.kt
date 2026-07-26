@@ -29,9 +29,9 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
 
     private const val HOOK_NAME = "EdgeBackHoldPrev"
     private const val FEATURE_KEY = "edge_back_hold_previous_app"
-    private const val HOLD_MS = 1000L
-    /** 相对系统 drag_threshold(16dp) 的倍数；2.0 ≈ 32dp，避免太容易触发 */
-    private const val THRESHOLD_SCALE = 2.0f
+    private const val DEFAULT_HOLD_MS = 1000
+    private const val DEFAULT_THRESHOLD_DP = 32
+    private const val PREFS_TTL_MS = 800L
     private const val EDGE_BACK_VIEW =
         "com.flyme.systemui.navigationbar.gestural.EdgeBackView"
     private const val HANDLER =
@@ -39,6 +39,16 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
     private const val EDGE_PANEL_PARAMS =
         "com.android.systemui.navigationbar.gestural.EdgePanelParams"
     private const val ICON_SIZE_DP = 20f
+    /** 系统默认 drag_threshold ≈ 16dp，用于换算 AOSP getStaticTriggerThreshold */
+    private const val SYSTEM_BASE_THRESHOLD_DP = 16f
+
+    @Volatile
+    private var holdMs: Long = DEFAULT_HOLD_MS.toLong()
+    @Volatile
+    private var thresholdDp: Int = DEFAULT_THRESHOLD_DP
+    private var prefsCachedAt = 0L
+    private var prefsPackage: String = "com.android.systemui"
+    private var loadParam: XC_LoadPackage.LoadPackageParam? = null
 
     @Volatile
     private var armedAtElapsed: Long = 0L
@@ -67,13 +77,13 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
     private val holdReadyRunnable = Runnable {
         if (armedAtElapsed <= 0L) return@Runnable
         val held = SystemClock.elapsedRealtime() - armedAtElapsed
-        if (held < HOLD_MS) return@Runnable
+        if (held < holdMs) return@Runnable
         val ctx = resolveContext()
         preparePreviewIcon(ctx)
         showPreview = previewIcon != null && previewTaskId > 0
         Logger.i(
             HOOK_NAME,
-            "hold ready show=$showPreview task=$previewTaskId pkg=$previewPkg icon=${previewIcon != null} ctx=${ctx != null}"
+            "hold ready show=$showPreview task=$previewTaskId pkg=$previewPkg icon=${previewIcon != null}"
         )
         // 手指可能不再 move，持续 invalidate 才能看到图标
         pulseInvalidate()
@@ -116,10 +126,31 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         }
     }
 
+    private fun refreshPrefsIfNeeded() {
+        val now = SystemClock.uptimeMillis()
+        if (now - prefsCachedAt < PREFS_TTL_MS) return
+        prefsCachedAt = now
+        val lp = loadParam
+        holdMs = if (lp != null) {
+            XposedPrefs.getFeatureValue(lp, prefsPackage, FEATURE_KEY, DEFAULT_HOLD_MS)
+                .coerceIn(300, 2000)
+        } else {
+            DEFAULT_HOLD_MS
+        }.toLong()
+        thresholdDp = if (lp != null) {
+            XposedPrefs.getFeatureExtraValue(
+                lp, prefsPackage, FEATURE_KEY, "threshold_dp", DEFAULT_THRESHOLD_DP
+            ).coerceIn(16, 80)
+        } else {
+            DEFAULT_THRESHOLD_DP
+        }
+    }
+
     private fun postHoldReady() {
         try {
+            refreshPrefsIfNeeded()
             mainHandler.removeCallbacks(holdReadyRunnable)
-            mainHandler.postDelayed(holdReadyRunnable, HOLD_MS)
+            mainHandler.postDelayed(holdReadyRunnable, holdMs)
         } catch (t: Throwable) {
             Logger.e(HOOK_NAME, "postHoldReady failed", t)
         }
@@ -137,6 +168,9 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
         if (lpparam.packageName != "com.android.systemui") return
         classLoader = lpparam.classLoader
+        prefsPackage = packageName
+        loadParam = lpparam
+        refreshPrefsIfNeeded()
 
         try {
             appContext = XposedHelpers.callStaticMethod(
@@ -150,7 +184,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         hookAospThreshold(lpparam)
         hookCallbackFromHandler(lpparam)
 
-        Logger.i(HOOK_NAME, "Loaded hold=${HOLD_MS}ms thresholdScale=$THRESHOLD_SCALE + icon preview")
+        Logger.i(HOOK_NAME, "Loaded hold=${holdMs}ms threshold=${thresholdDp}dp + icon preview")
     }
 
     private fun hookFlymeEdgeBackView(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -161,9 +195,9 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                 try {
                     XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) {
-                            scaleField(param.thisObject, "mSwipeThreshold", THRESHOLD_SCALE)
-                            scaleField(param.thisObject, "mMinDeltaForSwitch", THRESHOLD_SCALE)
-                            edgeViewRef = WeakReference(param.thisObject as View)
+                            val view = param.thisObject as View
+                            applyThresholdPx(view)
+                            edgeViewRef = WeakReference(view)
                         }
                     })
                 } catch (_: Throwable) {
@@ -202,9 +236,10 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                                 // 兜底：若 resetOnDown 未走到，在首次 move 开表
                                 startGestureTimer()
                             }
+                            refreshPrefsIfNeeded()
                             val trigger = XposedHelpers.getBooleanField(view, "mTriggerBack")
                             val held = SystemClock.elapsedRealtime() - armedAtElapsed
-                            if (trigger && held >= HOLD_MS) {
+                            if (trigger && held >= holdMs) {
                                 if (!showPreview) {
                                     preparePreviewIcon(view.context)
                                     showPreview = previewIcon != null && previewTaskId > 0
@@ -246,11 +281,12 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         // 已幅度够才会进 triggerBack；再卡时长（与幅度并行从按下起算）
+                        refreshPrefsIfNeeded()
                         val armed = armedAtElapsed
                         val held = if (armed > 0L) SystemClock.elapsedRealtime() - armed else 0L
                         val taskId = previewTaskId
                         clearArmedState()
-                        if (held < HOLD_MS) return
+                        if (held < holdMs) return
                         val ok = if (taskId > 0) {
                             startFromRecents(taskId)
                         } else {
@@ -434,7 +470,10 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val v = param.result as? Float ?: return
-                        param.result = v * THRESHOLD_SCALE
+                        refreshPrefsIfNeeded()
+                        // 按配置 dp 相对系统 16dp 缩放
+                        val scale = thresholdDp / SYSTEM_BASE_THRESHOLD_DP
+                        param.result = v * scale
                     }
                 }
             )
@@ -445,7 +484,9 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                     object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) {
                             val v = param.result as? Float ?: return
-                            param.result = v * THRESHOLD_SCALE
+                            refreshPrefsIfNeeded()
+                            val scale = thresholdDp / SYSTEM_BASE_THRESHOLD_DP
+                            param.result = v * scale
                         }
                     }
                 )
@@ -469,11 +510,12 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                         val m = cb.javaClass.getDeclaredMethod("triggerBack")
                         XposedBridge.hookMethod(m, object : XC_MethodHook() {
                             override fun beforeHookedMethod(p: MethodHookParam) {
+                                refreshPrefsIfNeeded()
                                 val armed = armedAtElapsed
                                 val held = if (armed > 0L) SystemClock.elapsedRealtime() - armed else 0L
                                 val taskId = previewTaskId
                                 clearArmedState()
-                                if (held < HOLD_MS) return
+                                if (held < holdMs) return
                                 val ok = if (taskId > 0) startFromRecents(taskId) else switchToPreviousApp()
                                 if (!ok) return
                                 p.result = null
@@ -499,18 +541,23 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         }
     }
 
-    private fun scaleField(obj: Any, name: String, scale: Float) {
+    /** 将 Flyme EdgeBackView 触发阈值写成配置的绝对 dp */
+    private fun applyThresholdPx(view: View) {
+        refreshPrefsIfNeeded()
+        val px = thresholdDp * view.resources.displayMetrics.density
         try {
-            val f = XposedHelpers.getFloatField(obj, name)
-            if (f > 0f) XposedHelpers.setFloatField(obj, name, f * scale)
+            XposedHelpers.setFloatField(view, "mSwipeThreshold", px)
         } catch (_: Throwable) {
             try {
-                val f = XposedHelpers.getIntField(obj, name)
-                if (f > 0) {
-                    XposedHelpers.setIntField(obj, name, (f * scale).toInt().coerceAtLeast(1))
-                }
+                XposedHelpers.setIntField(view, "mSwipeThreshold", px.toInt().coerceAtLeast(1))
             } catch (_: Throwable) {
             }
+        }
+        // 回滑取消阈值略小于触发幅度
+        val minDelta = (px * 0.75f).coerceAtLeast(8f * view.resources.displayMetrics.density)
+        try {
+            XposedHelpers.setFloatField(view, "mMinDeltaForSwitch", minDelta)
+        } catch (_: Throwable) {
         }
     }
 

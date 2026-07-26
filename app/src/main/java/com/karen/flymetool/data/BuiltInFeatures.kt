@@ -59,7 +59,7 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         HookFeature("edge_back_vibrate_intensity", "侧滑返回震动强度",
             description = "自定义侧滑返回触发时的震动强度，0 为关闭", group = "界面"),
         HookFeature("edge_back_hold_previous_app", "侧滑长按回上个应用",
-            description = "侧滑开始即计时，松手时幅度够且满约 1 秒则回上个应用；否则仍为返回",
+            description = "侧滑开始即计时，松手时幅度与时长都满足则回上个应用；可配置触发幅度与保持时长",
             group = "界面"),
     ),
     "com.android.settings" to listOf(

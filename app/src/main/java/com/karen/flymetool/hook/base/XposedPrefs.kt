@@ -34,9 +34,32 @@ object XposedPrefs {
                 Logger.e(HOOK_NAME, "XSharedPreferences file not readable")
                 return defaultValue
             }
+            prefs.reload()
             val value = prefs.getInt(key, defaultValue)
             Logger.d(HOOK_NAME, "Read: $key = $value")
             value
+        } catch (e: Throwable) {
+            Logger.e(HOOK_NAME, "Read error", e)
+            defaultValue
+        }
+    }
+
+    fun getFeatureExtraValue(
+        lpparam: XC_LoadPackage.LoadPackageParam,
+        packageName: String,
+        featureKey: String,
+        suffix: String,
+        defaultValue: Int
+    ): Int {
+        val key = "$packageName:$featureKey:$suffix"
+        return try {
+            val prefs = XSharedPreferences(MODULE_PACKAGE, PREFS_NAME)
+            if (!prefs.file.canRead()) {
+                Logger.e(HOOK_NAME, "XSharedPreferences file not readable")
+                return defaultValue
+            }
+            prefs.reload()
+            prefs.getInt(key, defaultValue)
         } catch (e: Throwable) {
             Logger.e(HOOK_NAME, "Read error", e)
             defaultValue
