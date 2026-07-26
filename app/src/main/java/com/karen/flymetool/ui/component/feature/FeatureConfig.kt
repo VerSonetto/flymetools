@@ -29,6 +29,7 @@ fun FeatureConfig(
         "custom_carrier_name" -> CustomCarrierNameConfig(packageName, featureKey)
         "custom_charge_limit" -> ChargeLimitConfig(packageName, featureKey)
         "force_live_notification" -> ForceLiveNotificationConfig(packageName, featureKey, onNavigate)
+        "circle_battery_status_bar_icon" -> CircleBatteryStatusBarIconConfig(packageName, featureKey)
         "ios_notification_stack" -> IosNotificationStackConfig(packageName, featureKey)
         "edge_back_vibrate_intensity" -> EdgeBackVibrateConfig(packageName, featureKey)
         "edge_back_hold_previous_app" -> EdgeBackHoldPreviousAppConfig(packageName, featureKey)

@@ -27,6 +27,7 @@ import com.karen.flymetool.hook.feature.systemui.CustomCarrierNameHook
 import com.karen.flymetool.hook.feature.systemui.EdgeBackHoldPreviousAppHook
 import com.karen.flymetool.hook.feature.systemui.EdgeBackVibrateHook
 import com.karen.flymetool.hook.feature.systemui.MediaCardRadiusHook
+import com.karen.flymetool.hook.feature.systemui.ForceCircleBatteryHook
 import com.karen.flymetool.hook.feature.systemui.ForceLiveNotificationHook
 import com.karen.flymetool.hook.feature.systemui.IosNotificationStackHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
@@ -45,6 +46,7 @@ object SystemUIEntry : HookEntry {
         ShowDataSimOnlyHook,
         HideStatusBarIconHook,
         AppIconNotificationHook,
+        ForceCircleBatteryHook,
         HideKeyguardShortcutsHook,
         HideKeyguardStatusBarHook,
         HideKeyguardFingerprintIconHook,
