@@ -14,6 +14,7 @@ import com.karen.flymetool.hook.feature.systemui.HideKeyguardShortcutsHook
 import com.karen.flymetool.hook.feature.systemui.HideKeyguardStatusBarHook
 import com.karen.flymetool.hook.feature.systemui.HideMediaAppIconBgHook
 import com.karen.flymetool.hook.feature.systemui.HideStatusBarIconHook
+import com.karen.flymetool.hook.feature.systemui.NotificationCardMaskHook
 import com.karen.flymetool.hook.feature.systemui.NotificationCardRadiusHook
 import com.karen.flymetool.hook.feature.systemui.NotificationIconLimitHook
 import com.karen.flymetool.hook.feature.systemui.NotificationManageHook
@@ -54,6 +55,7 @@ object SystemUIEntry : HookEntry {
         AODNotificationHook,
         HideChargingAnimationHook,
         NotificationCardRadiusHook,
+        NotificationCardMaskHook,
         TickerClickHook,
         NotificationManageHook,
         HideMediaAppIconBgHook,

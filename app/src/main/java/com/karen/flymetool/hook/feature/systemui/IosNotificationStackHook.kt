@@ -1,5 +1,6 @@
 package com.karen.flymetool.hook.feature.systemui
 
+import android.content.res.Configuration
 import android.content.res.Resources
 import android.view.MotionEvent
 import android.view.View
@@ -319,9 +320,28 @@ object IosNotificationStackHook : FeatureHook {
         if (innerH <= 0) return
 
         val contentBottom = stackY + innerH
-        val thresh = contentBottom - cachedBottomPad * density
+        val landscape = isLandscape(host)
+        // 横屏可视高度小：收紧底部留白，避免锚点过高把堆叠顶出屏幕
+        val bottomPadPx = if (landscape) {
+            landscapeBottomPadPx(innerH, items)
+        } else {
+            cachedBottomPad * density
+        }
+        val listTop = stackY + px8
         val step = pxStep
         val peek = pxPeek
+        val firstCollapsedH = items.firstOrNull()?.collapsedH ?: px72
+        val maxLayer = min(items.size - 1, MAX_L_VISIBLE.toInt())
+        // 堆叠本体最小占用：首卡 + 下层 peek
+        val minStackBody = firstCollapsedH + maxLayer * peek
+        val threshRaw = contentBottom - bottomPadPx
+        // 横屏再夹紧：锚点不得高于 listTop，且保证堆叠底不超出 contentBottom
+        val thresh = if (landscape) {
+            val maxThresh = (contentBottom - minStackBody).coerceAtLeast(listTop)
+            threshRaw.coerceIn(listTop, maxThresh)
+        } else {
+            threshRaw
+        }
         val pad = readPadding(algo)
         val scrollY = readScrollY(ambient)
         val scrollRange = readScrollRange(host, items, pad, innerH)
@@ -354,37 +374,50 @@ object IosNotificationStackHook : FeatureHook {
         }
 
         val sinkAll = cachedSinkAll
-        val listTop = stackY + px8
         val ease = pe * (2f - pe)
         val collapsedTop = if (sinkAll) thresh else listTop
         // winTop 保留与 showcase 一致（后续 et 用 nativeY lerp，不直接用 winTop）
         @Suppress("UNUSED_VARIABLE")
         val winTop = lerp(collapsedTop, listTop, ease)
 
-        val maxLayer = min(items.size - 1, MAX_L_VISIBLE.toInt())
-        stackHitTop = thresh
-        stackHitBottom = thresh + maxLayer * peek +
-            (items.firstOrNull()?.collapsedH ?: px72)
+        // 横屏：媒体若按 thresh 贴顶会越出上沿时，下推通知锚点给媒体留位，
+        // 避免把媒体夹到 listTop 后底边盖住通知（竖屏空间够，无需预留）。
+        val media = findMediaContainer(host)
+        val mediaH = media?.let { readMediaHeight(it, viewState(it) ?: return@let 0f) } ?: 0f
+        val stackTopForMedia = if (landscape && media != null && mediaH > 1f) {
+            val idealAbove = thresh - mediaH - pad
+            if (idealAbove < listTop) {
+                listTop + mediaH + pad
+            } else {
+                thresh
+            }
+        } else {
+            thresh
+        }
 
         val firstOverflow = if (sinkAll) {
             0
         } else {
-            items.indexOfFirst { it.nativeY >= thresh - px8 }.coerceAtLeast(0)
+            items.indexOfFirst { it.nativeY >= stackTopForMedia - px8 }.coerceAtLeast(0)
         }
-        // 堆叠起点（通知与媒体共用，媒体不占位挤通知）
+        // 堆叠起点：横屏可能已含媒体预留
         val stackAnchor = if (sinkAll || firstOverflow <= 0) {
-            thresh
+            stackTopForMedia
         } else {
             val lastFull = items[firstOverflow - 1]
-            max(thresh, lastFull.nativeY + lastFull.systemH + px6)
+            max(stackTopForMedia, lastFull.nativeY + lastFull.systemH + px6)
         }
 
-        // 媒体：用稳定 thresh 作顶界（避免 stackAnchor/firstOverflow 抖动）
-        // sinkAll 贴锚点；!sinkAll 仅重叠时上抬，ease 插值回 native
-        val media = findMediaContainer(host)
+        // 媒体始终贴「通知堆叠顶」上方；横屏用 stackTopForMedia，随 pe 跟滚不压通知
         if (media != null) {
-            placeMediaAboveStack(media, pe, thresh, pad, stick = sinkAll)
+            placeMediaAboveStack(
+                media, pe, stackTopForMedia, pad, stick = sinkAll,
+            )
         }
+
+        // 命中区与实际锚点一致（横屏含媒体预留下推）
+        stackHitTop = stackTopForMedia
+        stackHitBottom = stackTopForMedia + maxLayer * peek + firstCollapsedH
 
         val touchedSummaries = ArrayList<View>(2)
 
@@ -404,7 +437,9 @@ object IosNotificationStackHook : FeatureHook {
             val hBlend = lerp(colH, sysH, ease)
             val h: Float
 
-            if (!sinkAll && item.nativeY < thresh - px8) {
+            // 溢出/peek 相对 stackTopForMedia（横屏含媒体预留）
+            val overflowBase = stackTopForMedia
+            if (!sinkAll && item.nativeY < overflowBase - px8) {
                 ty = item.nativeY
                 scale = 1f
                 alpha = 1f
@@ -413,7 +448,7 @@ object IosNotificationStackHook : FeatureHook {
                 val relativeI = if (sinkAll) i else (i - firstOverflow).coerceAtLeast(0)
                 val collapsedEt = stackAnchor + relativeI * step
                 val et = lerp(collapsedEt, item.nativeY, pe)
-                val over = et - thresh
+                val over = et - overflowBase
                 h = hBlend
 
                 if (over < 0f) {
@@ -431,7 +466,7 @@ object IosNotificationStackHook : FeatureHook {
                         writeY(st, item, stackAnchor + MAX_L_VISIBLE * peek)
                         continue
                     }
-                    ty = thresh + L * peek
+                    ty = overflowBase + L * peek
                     scale = max(MIN_SCALE, 1f - L * SCALE_PER_L)
                     // 约 3 层可见：L≈0/1/2 → ~1/0.68/0.24，L→2.4 渐隐
                     alpha = (1f - (L - 0.25f) * 0.44f).coerceIn(0f, 1f)
@@ -794,9 +829,10 @@ object IosNotificationStackHook : FeatureHook {
     }
 
     /**
-     * 媒体相对堆叠顶界 stackTop（thresh，帧间稳定；resetViewStates 后读到的 Y 即算法 native）：
+     * 媒体相对堆叠顶界 stackTop（帧间稳定；resetViewStates 后读到的 Y 即算法 native）：
      * - stick：折叠贴顶界上方，ease → native
      * - !stick：min(native, 放宽上界)，只防重叠
+     * 横屏由调用方下推 stackTop 预留媒体高度，此处不再抬 Y 压通知。
      */
     private fun placeMediaAboveStack(
         media: View,
@@ -1092,6 +1128,29 @@ object IosNotificationStackHook : FeatureHook {
     }
 
     private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+
+    private fun isLandscape(host: View): Boolean {
+        return try {
+            host.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        } catch (_: Throwable) {
+            host.width > host.height && host.height > 0
+        }
+    }
+
+    /**
+     * 横屏底部留白：不超过配置值，且按可视高度与首卡高度自适应，
+     * 避免固定 180dp 把折叠锚点顶出屏幕上沿。
+     */
+    private fun landscapeBottomPadPx(innerH: Int, items: List<Item>): Float {
+        val configured = cachedBottomPad * density
+        val firstH = items.firstOrNull()?.collapsedH ?: px72
+        // 预留堆叠可见区（首卡 + 约 2 层 peek），剩余才给底边
+        val stackNeed = firstH + pxPeek * 2f + px8
+        val room = (innerH - stackNeed).coerceAtLeast(0f)
+        // 底边最多占可视高度 22%，且不低于 48dp 以免贴底难看
+        val maxByHeight = (innerH * 0.22f).coerceAtLeast(px48)
+        return min(configured, min(room, maxByHeight))
+    }
 
     private fun ensurePx() {
         val d = Resources.getSystem().displayMetrics.density
