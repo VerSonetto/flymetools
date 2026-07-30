@@ -80,7 +80,10 @@ object IosNotificationStackHook : FeatureHook {
     private data class Item(
         val view: View,
         val st: Any,
-        val height: Float,
+        /** 堆叠区强制折叠高 */
+        val collapsedH: Float,
+        /** 系统布局高（列表区/间距与 nativeY 一致） */
+        val systemH: Float,
         val nativeY: Float,
         val index: Int,
         val parentY: Float? = null,
@@ -361,7 +364,7 @@ object IosNotificationStackHook : FeatureHook {
         val maxLayer = min(items.size - 1, MAX_L_VISIBLE.toInt())
         stackHitTop = thresh
         stackHitBottom = thresh + maxLayer * peek +
-            (items.firstOrNull()?.height ?: px72)
+            (items.firstOrNull()?.collapsedH ?: px72)
 
         val firstOverflow = if (sinkAll) {
             0
@@ -373,7 +376,7 @@ object IosNotificationStackHook : FeatureHook {
             thresh
         } else {
             val lastFull = items[firstOverflow - 1]
-            max(thresh, lastFull.nativeY + lastFull.height + px6)
+            max(thresh, lastFull.nativeY + lastFull.systemH + px6)
         }
 
         // 媒体：用稳定 thresh 作顶界（避免 stackAnchor/firstOverflow 抖动）
@@ -388,7 +391,8 @@ object IosNotificationStackHook : FeatureHook {
         for (item in items) {
             if (isPinnedOrAnimatingHun(item.view, item.st, ambient, trackedHun)) continue
             val st = item.st
-            val h = max(item.height, 1f)
+            val colH = max(item.collapsedH, 1f)
+            val sysH = max(item.systemH, 1f)
             val i = item.index
             val childInGroup = item.parentY != null
             val foldedSummary = item.foldedSummary
@@ -396,16 +400,21 @@ object IosNotificationStackHook : FeatureHook {
             val ty: Float
             var scale: Float
             val alpha: Float
+            // 高度随 pe 与 Y 同步 ease：colH↔sysH，无分区硬切
+            val hBlend = lerp(colH, sysH, ease)
+            val h: Float
 
             if (!sinkAll && item.nativeY < thresh - px8) {
                 ty = item.nativeY
                 scale = 1f
                 alpha = 1f
+                h = sysH
             } else {
                 val relativeI = if (sinkAll) i else (i - firstOverflow).coerceAtLeast(0)
                 val collapsedEt = stackAnchor + relativeI * step
                 val et = lerp(collapsedEt, item.nativeY, pe)
                 val over = et - thresh
+                h = hBlend
 
                 if (over < 0f) {
                     ty = et
@@ -418,6 +427,7 @@ object IosNotificationStackHook : FeatureHook {
                         setAlpha(st, 0f)
                         setScale(st, MIN_SCALE)
                         setZ(st, 0f)
+                        setInt(st, "height", h.toInt().coerceAtLeast(1))
                         writeY(st, item, stackAnchor + MAX_L_VISIBLE * peek)
                         continue
                     }
@@ -435,7 +445,6 @@ object IosNotificationStackHook : FeatureHook {
             val z = Z_BASE - i * Z_STEP
 
             writeY(st, item, yAbs)
-            // 堆叠布局使用的高度写回 ViewState，避免系统按大布局 intrinsic 撑高
             setInt(st, "height", h.toInt().coerceAtLeast(1))
             setScale(st, scale)
             setAlpha(st, alpha)
@@ -489,7 +498,7 @@ object IosNotificationStackHook : FeatureHook {
         for (c in kids) {
             val localY = getY(c.st)
             val absY = oldParentY + localY
-            val h = max(c.height, 1f)
+            val h = max(c.systemH, 1f)
             absYArr[k] = absY
             hArr[k] = h
             stArr[k] = c.st
@@ -594,6 +603,8 @@ object IosNotificationStackHook : FeatureHook {
             if (isPinnedOrAnimatingHun(item.view, item.st, ambient, trackedHun)) continue
             val st = item.st
             setScale(st, 1f)
+            // 离开堆叠路径：恢复系统高度，避免列表区仍占折叠高
+            setInt(st, "height", max(item.systemH, 1f).toInt())
             if (boolField(st, "inShelf")) setBool(st, "inShelf", false)
             try {
                 val a = XposedHelpers.callMethod(st, "getAlpha") as Float
@@ -735,7 +746,7 @@ object IosNotificationStackHook : FeatureHook {
         } catch (_: Throwable) {
         }
         var total = 0f
-        for (item in items) total += max(item.height, 1f) + pad
+        for (item in items) total += max(item.systemH, 1f) + pad
         return max(0f, total - innerH)
     }
 
@@ -879,7 +890,8 @@ object IosNotificationStackHook : FeatureHook {
                         flat += Item(
                             view = c,
                             st = cst,
-                            height = readStackHeight(c, cst),
+                            collapsedH = readCollapsedHeight(c, cst),
+                            systemH = readSystemHeight(c, cst),
                             nativeY = parentY + getY(cst),
                             index = idx++,
                             parentY = parentY,
@@ -892,7 +904,8 @@ object IosNotificationStackHook : FeatureHook {
             flat += Item(
                 view = v,
                 st = st,
-                height = readStackHeight(v, st),
+                collapsedH = readCollapsedHeight(v, st),
+                systemH = readSystemHeight(v, st),
                 nativeY = parentY,
                 index = idx++,
                 foldedSummary = isGroupSummary(v),
@@ -954,10 +967,10 @@ object IosNotificationStackHook : FeatureHook {
     }
 
     /**
-     * 堆叠态高度：未手动展开 → 强制折叠高（不被长文撑开）；
-     * 用户手动展开 → 保留系统内容高度。
+     * 堆叠 peek 区用的高度：未手动展开 → 折叠高；用户展开 → 系统高。
+     * 列表区仍写 systemH，与 nativeY 间距一致。
      */
-    private fun readStackHeight(row: View, st: Any): Float {
+    private fun readCollapsedHeight(row: View, st: Any): Float {
         if (allowContentExpand(row)) {
             return readSystemHeight(row, st)
         }
