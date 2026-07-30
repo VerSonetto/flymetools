@@ -91,8 +91,28 @@ object IosDepthStackRecentsHook : FeatureHook {
             method.name == "getPagedOrientationHandler" &&
                 method.parameterTypes.isEmpty() && method.returnType != Void.TYPE
         }?.apply { isAccessible = true }
-        val orientationRotation = pagedOrientationHandler?.returnType?.let { handlerClass ->
-            findMethod(handlerClass, "getRotation", Int::class.javaPrimitiveType)
+        val handlerClass = pagedOrientationHandler?.returnType
+        val orientationRotation = handlerClass?.let { clazz ->
+            findMethod(clazz, "getRotation", Int::class.javaPrimitiveType)
+        }
+        // 主轴原语优先走 handler 公开契约，避免本地 if(landscape) 与 Flyme 改版分叉。
+        val handlerPrimaryScroll = handlerClass?.let { clazz ->
+            findMethodsInHierarchy(clazz).firstOrNull {
+                it.name == "getPrimaryScroll" && it.parameterTypes.size == 1 &&
+                    View::class.java.isAssignableFrom(it.parameterTypes[0])
+            }?.apply { isAccessible = true }
+        }
+        val handlerPrimarySize = handlerClass?.let { clazz ->
+            findMethodsInHierarchy(clazz).firstOrNull {
+                it.name == "getPrimarySize" && it.parameterTypes.size == 1 &&
+                    View::class.java.isAssignableFrom(it.parameterTypes[0])
+            }?.apply { isAccessible = true }
+        }
+        val handlerChildStart = handlerClass?.let { clazz ->
+            findMethodsInHierarchy(clazz).firstOrNull {
+                it.name == "getChildStart" && it.parameterTypes.size == 1 &&
+                    View::class.java.isAssignableFrom(it.parameterTypes[0])
+            }?.apply { isAccessible = true }
         }
 
         val remoteHandles = findNoArgMethod(recentsClass, "getRemoteTargetHandles")
@@ -114,6 +134,9 @@ object IosDepthStackRecentsHook : FeatureHook {
             taskComponent = findNoArgMethod(taskClass, "getTaskFlowComponent"),
             pagedOrientationHandler = pagedOrientationHandler,
             orientationRotation = orientationRotation,
+            handlerPrimaryScroll = handlerPrimaryScroll,
+            handlerPrimarySize = handlerPrimarySize,
+            handlerChildStart = handlerChildStart,
             getEnableDrawingLiveTile = findMethod(recentsClass, "getEnableDrawingLiveTile", Boolean::class.javaPrimitiveType),
             getRemoteTargetHandles = remoteHandles,
             getTaskViewSimulator = remoteHandles?.returnType?.componentType?.let { findNoArgMethod(it, "getTaskViewSimulator") },
@@ -314,15 +337,10 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     /**
-     * 接管上滑删除：
-     * - setDismissTranslationY(次轴/竖屏Y)= 被删卡飞出，记录它并算删除进度，放行让其飞出。
-     * - setDismissTranslationX(主轴/竖屏X)= 原生补位平移，吃掉(置0)，补位改由 applyStack 做 iOS 收拢。
-     */
-    /**
      * 删除位移分两轴，且轴角色随方向对调（竖屏主X次Y、横屏主Y次X）：
      * - 次轴 dismiss = 被删卡飞出：记录它 + 按“次轴位移/次轴维度”算删除进度，放行。
      * - 主轴 dismiss = 原生补位平移：吃掉(置0)，补位由 applyStack 接管。
-     * 两个 setter 都按当前 rotation 判断自己此刻是主轴还是次轴。
+     * 两个 setter 都按当前 axis 判断自己此刻是主轴还是次轴。
      */
     private fun hookDismissChannel(taskClass: Class<*>, hooks: ResolvedHooks) {
         val setY = findMethodInHierarchyNamed(taskClass, "setDismissTranslationY", Float::class.javaPrimitiveType)
@@ -337,8 +355,8 @@ object IosDepthStackRecentsHook : FeatureHook {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val task = param.thisObject as? View ?: return
                     val recents = task.parent as? ViewGroup ?: return
-                    val landscape = RecentsRotationGeometry.isLandscape(rotationFor(recents, hooks))
-                    val isSecondaryAxis = if (landscape) !isYAxis else isYAxis
+                    val axis = axisFor(recents, hooks)
+                    val isSecondaryAxis = if (axis.landscape) !isYAxis else isYAxis
                     if (isSecondaryAxis) return  // 次轴=被删卡飞出，放行，进度在 after 里算
                     // 主轴 = 原生补位平移，吃掉，交给 applyStack。
                     param.args[0] = 0f
@@ -347,13 +365,13 @@ object IosDepthStackRecentsHook : FeatureHook {
                 override fun afterHookedMethod(param: MethodHookParam) {
                     val task = param.thisObject as? View ?: return
                     val recents = task.parent as? ViewGroup ?: return
-                    val landscape = RecentsRotationGeometry.isLandscape(rotationFor(recents, hooks))
-                    val isSecondaryAxis = if (landscape) !isYAxis else isYAxis
+                    val axis = axisFor(recents, hooks)
+                    val isSecondaryAxis = if (axis.landscape) !isYAxis else isYAxis
                     if (!isSecondaryAxis) return
                     val state = stateFor(recents)
                     val value = (param.args[0] as? Number)?.toFloat() ?: 0f
                     // 次轴维度：横屏次轴=X→宽，竖屏次轴=Y→高。
-                    val secondaryDim = (if (landscape) task.width else task.height).takeIf { it > 0 } ?: return
+                    val secondaryDim = axis.childSecondarySize(task).takeIf { it > 0f } ?: return
                     if (abs(value) > EPSILON) {
                         state.dismissingTask = task
                         state.dismissProgress = (abs(value) / secondaryDim).coerceIn(0f, 1f)
@@ -390,13 +408,13 @@ object IosDepthStackRecentsHook : FeatureHook {
                 return
             }
 
-            val rotation = rotationFor(recents, hooks)
+            val axis = axisFor(recents, hooks)
+            val rotation = axis.rotation
             if (state.rotation != rotation) {
                 resetAllTransforms(recents, state, hooks)
                 state.rotation = rotation
                 state.cachedPages = null
             }
-            val landscape = RecentsRotationGeometry.isLandscape(rotation)
 
             val pages = if (!allowPageRebuild &&
                 state.cachedPages != null &&
@@ -405,7 +423,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             ) {
                 state.cachedPages!!
             } else {
-                collectTaskPages(recents, hooks, state, rotation).also {
+                collectTaskPages(recents, hooks, state, axis).also {
                     state.cachedPages = it
                     state.cachedPagesChildCount = recents.childCount
                     state.cachedPagesRotation = rotation
@@ -414,12 +432,12 @@ object IosDepthStackRecentsHook : FeatureHook {
             if (pages.isEmpty()) return
 
             val cardPrimarySize = pages.firstNotNullOfOrNull { page ->
-                primarySize(page.view, rotation).takeIf { it > 0f }
+                axis.childPrimarySize(page.view).takeIf { it > 0f }
             } ?: return
 
-            val logicalPrimaryScroll = primaryScroll(recents, rotation)
-            val physicalPrimaryScroll = RecentsRotationGeometry.logicalToPhysical(logicalPrimaryScroll, rotation)
-            val scrollPosition = calculateScrollPosition(pages, physicalPrimaryScroll)
+            // pageScroll 与 primaryScroll 同处 handler 主轴逻辑空间；Landscape 的 RTL 已体现在 getScrollForPage。
+            val primaryScroll = axis.primaryScroll(recents)
+            val scrollPosition = calculateScrollPosition(pages, primaryScroll)
             val maxPosition = (pages.size - 1).coerceAtLeast(0).toFloat()
             val clampedPosition = scrollPosition.coerceIn(0f, maxPosition)
             val overscroll = scrollPosition - clampedPosition
@@ -443,20 +461,22 @@ object IosDepthStackRecentsHook : FeatureHook {
                 return if (isDismissing) fullOrdinal else lerp(fullOrdinal, compactOrdinal, dismissProgress)
             }
 
-            val visualCenter = if (landscape) 0f else recents.width / 2f
+            // 横竖屏统一：堆叠目标主轴中心 = 视口主轴中心 + 闭式曲线偏移。
+            val visualCenter = axis.primaryViewportSize(recents) / 2f
             if (TRACE_TASK_FRAMES) {
                 state.traceFrame++
                 trace(
                     recents,
-                    "frame=${state.traceFrame} pages=${pages.size} scroll=$scrollPosition clamp=$clampedPosition " +
-                        "over=$overscroll fullscreen=${state.fullscreenProgress} content=${state.contentAlpha} remote=${recents.getTag(TAG_REMOTE_TARGETS)}",
+                    "frame=${state.traceFrame} rot=$rotation land=${axis.landscape} pages=${pages.size} " +
+                        "scroll=$scrollPosition clamp=$clampedPosition over=$overscroll " +
+                        "fullscreen=${state.fullscreenProgress} content=${state.contentAlpha} remote=${recents.getTag(TAG_REMOTE_TARGETS)}",
                 )
             }
 
             pages.forEachIndexed { ordinal, page ->
                 val task = page.view
                 val taskState = state.taskStates.getOrPut(task) { TaskVisualState(task.translationZ) }
-                val nativePrimaryTranslation = removeCustomPrimaryOffset(task, taskState, hooks, rotation)
+                val nativePrimaryTranslation = removeCustomPrimaryOffset(task, taskState, hooks, axis)
                 val isDismissing = task === dismissing
                 // running task 用独立 live tile surface 渲染，若给它加 offset/scale，TaskView 空白底板
                 // (清空+dimming)会与 surface 分离而露出。故让它停在原生位置，不施加我们的位移与缩放。
@@ -470,76 +490,98 @@ object IosDepthStackRecentsHook : FeatureHook {
                 //  · 被删卡是最左侧(dismissedOrdinal==0)：无左邻，改由右侧卡整体左移(-1)填补空位。
                 val effectiveOrdinal = effectiveOrdinalFor(ordinal, isDismissing)
                 val relativePosition = effectiveOrdinal - clampedPosition
-                val visual = stackVisual(visualCenter, cardPrimarySize, relativePosition, overscroll, effectiveOrdinal)
+                // Seascape：逻辑 ordinal 与屏幕左右相反。曲线/缩放/overscroll 在「视觉空间」采样
+                // （stackRelative = -rel，使后方 peek + 缩小落在低 Z 侧），再把目标主轴坐标镜像回 layout。
+                val stackRelative = if (axis.invertStackDepth) -relativePosition else relativePosition
+                val stackOverscroll = if (axis.invertStackDepth) -overscroll else overscroll
+                val visual = stackVisual(
+                    visualCenter,
+                    cardPrimarySize,
+                    stackRelative,
+                    stackOverscroll,
+                    effectiveOrdinal,
+                )
+                val targetPrimaryCenter = if (axis.invertStackDepth) {
+                    2f * visualCenter - visual.primaryCenter
+                } else {
+                    visual.primaryCenter
+                }
 
-                updateStackPivot(task, taskState, relativePosition < -EPSILON)
+                updateStackPivot(task, taskState, stackRelative < -EPSILON)
                 // 被删卡的主轴位移交给原生(飞出/回弹)。running task 的 live tile surface 同步到相同 offset，
                 // 保持原始堆叠手感，同时避免 TaskView 底板与 surface 分离露出纯色占位层。
                 if (!isDismissing) {
-                    val customPrimaryOffset = if (landscape) {
-                        val logicalDelta = page.logicalPageScroll - logicalPrimaryScroll + nativePrimaryTranslation
-                        val nativePhysicalOffset = RecentsRotationGeometry.logicalToPhysical(logicalDelta, rotation)
-                        RecentsRotationGeometry.physicalToLogical(visual.centerX - nativePhysicalOffset, rotation) * stackLayoutAmount
-                    } else {
-                        val nativeCenterX = task.left + task.width / 2f - recents.scrollX + nativePrimaryTranslation
-                        (visual.centerX - nativeCenterX) * stackLayoutAmount
-                    }
-                    applyCustomPrimaryOffset(task, taskState, hooks, rotation, customPrimaryOffset)
+                    // 视口主轴坐标：nativeCenter = start + size/2 - scroll + nativeOffset
+                    val nativeCenter = axis.childPrimaryStart(task) +
+                        axis.childPrimarySize(task) / 2f -
+                        primaryScroll +
+                        nativePrimaryTranslation
+                    val customPrimaryOffset = (targetPrimaryCenter - nativeCenter) * stackLayoutAmount
+                    applyCustomPrimaryOffset(task, taskState, hooks, axis, customPrimaryOffset)
                     if (isRunning) {
                         syncRunningLiveTile(
                             recents,
                             hooks,
-                            primaryTranslation(task, rotation),
-                            secondaryTranslation(task, rotation),
+                            axis.primaryTranslation(task),
+                            axis.secondaryTranslation(task),
                         )
                     }
                 }
                 // running task 恢复原生缩放(factor=1)，其余卡用堆叠缩放。
                 val scaleFactor = if (isRunning) 1f else lerp(1f, visual.scale, stackLayoutAmount)
                 applyScale(task, taskState, hooks, scaleFactor)
-                if (TRACE_TASK_FRAMES && (relativePosition < 0.35f || isRunning)) {
+                if (TRACE_TASK_FRAMES && (abs(stackRelative) < 0.35f || isRunning)) {
                     val thumbnail = thumbnailViewForTask(task)
                     trace(
                         task,
-                        "frame=${state.traceFrame} task ord=$ordinal child=${page.childIndex} rel=$relativePosition eff=$effectiveOrdinal " +
+                        "frame=${state.traceFrame} task ord=$ordinal child=${page.childIndex} rel=$relativePosition stackRel=$stackRelative eff=$effectiveOrdinal " +
                             "run=$isRunning dis=$isDismissing nativePrim=$nativePrimaryTranslation custom=${taskState.customPrimaryOffset} " +
                             "scaleFactor=$scaleFactor nativeScale=${taskState.nativeScale} stableScale=${taskState.lastStableNativeScale} " +
                             "sx=${task.scaleX} sy=${task.scaleY} tx=${task.translationX} ty=${task.translationY} z=${task.translationZ} alpha=${task.alpha} " +
-                            "visX=${visual.centerX} visScale=${visual.scale} visAlpha=${visual.alpha} suppress=${thumbnail?.getTag(TAG_PLACEHOLDER_SUPPRESSED)} " +
+                            "visPrim=$targetPrimaryCenter curvePrim=${visual.primaryCenter} visScale=${visual.scale} visAlpha=${visual.alpha} suppress=${thumbnail?.getTag(TAG_PLACEHOLDER_SUPPRESSED)} " +
                             "pending=${task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)} hasThumb=${thumbnail?.let { hasThumbnailView(it) }} bounds=${task.left},${task.top},${task.right},${task.bottom}",
                     )
                 }
-                // Z 序按补位序数，避免删除中左卡盖右卡；被删卡压到最上以自然飞出。
-                val depthOrder = if (isDismissing) (pages.size + 1).toFloat() else effectiveOrdinal
+                // Z 序：默认 ordinal 越大越高；Seascape 下 ordinal 与屏幕左右相反，需镜像使右侧更高。
+                // 被删卡压到最上以自然飞出。
+                val depthOrder = when {
+                    isDismissing -> (pages.size + 1).toFloat()
+                    axis.invertStackDepth -> (pages.lastIndex - effectiveOrdinal)
+                    else -> effectiveOrdinal
+                }
                 applyDepthOrder(task, taskState, depthOrder, stackLayoutAmount)
                 // 被删卡额外按删除进度淡出；其余卡用堆叠 alpha。
                 val alpha = if (isDismissing) visual.alpha * (1f - dismissProgress) else visual.alpha
                 applyTaskAlpha(task, taskState, lerp(1f, alpha, stackLayoutAmount))
-                taskState.frameRelativePosition = relativePosition
+                // 帧快照用视觉相对位置：后方 peek 恒为 stackRel 更小的一侧，模糊选择无需再分支。
+                taskState.frameRelativePosition = stackRelative
                 taskState.frameVisibleAlpha = alpha
             }
 
             // 标题遮挡淡出：仅稳定态计算(入场/删除中略过以省 getGlobalVisibleRect 开销)。
-            // 每卡标题被其右邻卡(ordinal+1，上层)覆盖的比例决定 app_name 的 alpha。
+            // 上层邻卡覆盖 app_name：默认 ordinal+1；Seascape 镜像后上层为 ordinal-1。
             if (stackLayoutAmount >= 1f - EPSILON && dismissing == null) {
                 pages.forEach { it.view.getGlobalVisibleRect(state.taskStates.getValue(it.view).bounds) }
+                val frontOrdinalDelta = if (axis.invertStackDepth) -1 else 1
                 pages.forEachIndexed { ordinal, page ->
                     val taskState = state.taskStates.getValue(page.view)
-                    val frontBounds = pages.getOrNull(ordinal + 1)?.let { state.taskStates.getValue(it.view).bounds }
-                    applyTitleOcclusion(page.view, taskState, frontBounds, landscape)
+                    val frontBounds = pages.getOrNull(ordinal + frontOrdinalDelta)
+                        ?.let { state.taskStates.getValue(it.view).bounds }
+                    applyTitleOcclusion(page.view, taskState, frontBounds, axis)
                 }
-                // 头部模糊：只给可见区域内最左侧卡片(rel 最小且仍可见)加低强度模糊，其余清除。
+                // 头部模糊：可见堆叠中后方 peek（stackRel 最小且仍可见）。
                 var blurIndex = -1
-                var minRel = Float.MAX_VALUE
+                var minStackRel = Float.MAX_VALUE
                 pages.forEachIndexed { index, page ->
                     val ts = state.taskStates.getValue(page.view)
-                    if (ts.frameVisibleAlpha > 0.05f && ts.frameRelativePosition < minRel) {
-                        minRel = ts.frameRelativePosition
+                    if (ts.frameVisibleAlpha > 0.05f && ts.frameRelativePosition < minStackRel) {
+                        minStackRel = ts.frameRelativePosition
                         blurIndex = index
                     }
                 }
-                // 可滑动范围最左侧(第一张卡，index 0)左侧无卡可堆叠遮挡，不加模糊。
-                if (blurIndex == 0) blurIndex = -1
+                // 列表视觉最后方那张无更后遮挡源，不加模糊。
+                val rearTerminalIndex = if (axis.invertStackDepth) pages.lastIndex else 0
+                if (blurIndex == rearTerminalIndex) blurIndex = -1
                 pages.forEachIndexed { index, page ->
                     val ts = state.taskStates.getValue(page.view)
                     applyHeaderBlur(page.view, ts, index == blurIndex)
@@ -555,8 +597,8 @@ object IosDepthStackRecentsHook : FeatureHook {
     // === 闭式几何（照 4933a65）===
 
     private fun stackVisual(
-        centerX: Float,
-        cardWidth: Float,
+        viewportCenter: Float,
+        cardPrimarySize: Float,
         relativePosition: Float,
         overscroll: Float,
         depthOrder: Float,
@@ -567,23 +609,29 @@ object IosDepthStackRecentsHook : FeatureHook {
             else -> 3f + relativePosition
         }
         return StackVisual(
-            centerX = cardCenterX(centerX, cardWidth, relativePosition, overscroll),
+            primaryCenter = stackPrimaryCenter(viewportCenter, cardPrimarySize, relativePosition, overscroll),
             scale = depthScale(relativePosition) * overscrollSinkScale(relativePosition, overscroll),
             alpha = alpha,
             depthOrder = depthOrder,
         )
     }
 
-    private fun cardCenterX(centerX: Float, cardWidth: Float, relativePosition: Float, overscroll: Float): Float {
-        val leftPeek = cardWidth * LEFT_PEEK_FACTOR
-        val rightSpacing = cardWidth * RIGHT_SPACING_FACTOR
-        val baseX = if (relativePosition <= 0f) {
+    /** 主轴视口坐标下的卡片目标中心（横竖屏共用闭式曲线）。 */
+    private fun stackPrimaryCenter(
+        viewportCenter: Float,
+        cardPrimarySize: Float,
+        relativePosition: Float,
+        overscroll: Float,
+    ): Float {
+        val leftPeek = cardPrimarySize * LEFT_PEEK_FACTOR
+        val rightSpacing = cardPrimarySize * RIGHT_SPACING_FACTOR
+        val base = if (relativePosition <= 0f) {
             val distance = -relativePosition
-            centerX - leftPeek * (1f - LEFT_DECAY.pow(distance)) / (1f - LEFT_DECAY)
+            viewportCenter - leftPeek * (1f - LEFT_DECAY.pow(distance)) / (1f - LEFT_DECAY)
         } else {
-            centerX + relativePosition.pow(RIGHT_PARALLAX_EXPONENT) * rightSpacing
+            viewportCenter + relativePosition.pow(RIGHT_PARALLAX_EXPONENT) * rightSpacing
         }
-        if (abs(overscroll) <= EPSILON) return baseX
+        if (abs(overscroll) <= EPSILON) return base
         val weight = if (overscroll < 0f) {
             val distance = relativePosition.coerceAtLeast(0f)
             0.72f + 0.55f * (distance / (distance + 0.6f))
@@ -593,7 +641,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         }
         val absOverscroll = abs(overscroll)
         val damped = absOverscroll / (1f + absOverscroll * 0.8f)
-        return baseX - overscroll.sign * damped * rightSpacing * weight
+        return base - overscroll.sign * damped * rightSpacing * weight
     }
 
     private fun depthScale(relativePosition: Float): Float {
@@ -647,14 +695,14 @@ object IosDepthStackRecentsHook : FeatureHook {
      * 标题遮挡淡出：按被右邻卡覆盖的比例淡出 app_name。visibleFraction=1 全显、0 全遮。
      * frontBounds 为右邻卡的全局可见矩形；null 表示无遮挡卡。
      */
-    private fun applyTitleOcclusion(task: View, state: TaskVisualState, frontBounds: Rect?, landscape: Boolean) {
+    private fun applyTitleOcclusion(task: View, state: TaskVisualState, frontBounds: Rect?, axis: RecentsAxis) {
         val title = resolveTitle(task, state) ?: return
         val visibleFraction = if (frontBounds == null) 1f else {
             title.getGlobalVisibleRect(scratchRect)
-            val childStart = if (landscape) scratchRect.top else scratchRect.left
-            val childEnd = if (landscape) scratchRect.bottom else scratchRect.right
-            val frontStart = if (landscape) frontBounds.top else frontBounds.left
-            val frontEnd = if (landscape) frontBounds.bottom else frontBounds.right
+            val childStart = axis.boundsPrimaryStart(scratchRect)
+            val childEnd = axis.boundsPrimaryEnd(scratchRect)
+            val frontStart = axis.boundsPrimaryStart(frontBounds)
+            val frontEnd = axis.boundsPrimaryEnd(frontBounds)
             val overlaps = childEnd > frontStart && childStart < frontEnd
             if (!overlaps) 1f else {
                 val size = (childEnd - childStart).coerceAtLeast(1)
@@ -748,8 +796,8 @@ object IosDepthStackRecentsHook : FeatureHook {
     // === 变换应用（带脏检查，写前比 EPSILON）===
 
     /** 读回原生主轴位移（剥离我们上帧加的偏移），返回原生基准值。 */
-    private fun removeCustomPrimaryOffset(task: View, state: TaskVisualState, hooks: ResolvedHooks, rotation: Int): Float {
-        val property = resolveOffsetProperty(task, state, hooks, rotation)
+    private fun removeCustomPrimaryOffset(task: View, state: TaskVisualState, hooks: ResolvedHooks, axis: RecentsAxis): Float {
+        val property = resolveOffsetProperty(task, state, hooks, axis)
         if (property != null) {
             val expected = state.nativeStackOffset + state.customPrimaryOffset
             val current = property.get(task)
@@ -759,15 +807,15 @@ object IosDepthStackRecentsHook : FeatureHook {
             }
             return state.nativeStackOffset
         }
-        val current = primaryTranslation(task, rotation)
+        val current = axis.primaryTranslation(task)
         if (state.lastAppliedPrimaryTranslation.isNaN() || abs(current - state.lastAppliedPrimaryTranslation) > EPSILON) {
             state.nativePrimaryTranslation = current
         }
         return state.nativePrimaryTranslation
     }
 
-    private fun applyCustomPrimaryOffset(task: View, state: TaskVisualState, hooks: ResolvedHooks, rotation: Int, offset: Float) {
-        val property = resolveOffsetProperty(task, state, hooks, rotation)
+    private fun applyCustomPrimaryOffset(task: View, state: TaskVisualState, hooks: ResolvedHooks, axis: RecentsAxis, offset: Float) {
+        val property = resolveOffsetProperty(task, state, hooks, axis)
         if (property != null) {
             if (abs(offset - state.customPrimaryOffset) > EPSILON) {
                 property.set(task, state.nativeStackOffset + offset)
@@ -776,12 +824,12 @@ object IosDepthStackRecentsHook : FeatureHook {
             return
         }
         val translation = state.nativePrimaryTranslation + offset
-        setPrimaryTranslation(task, rotation, translation)
+        axis.setPrimaryTranslation(task, translation)
         state.lastAppliedPrimaryTranslation = translation
     }
 
-    private fun clearCustomPrimaryOffset(task: View, state: TaskVisualState, hooks: ResolvedHooks, rotation: Int) {
-        val property = resolveOffsetProperty(task, state, hooks, rotation)
+    private fun clearCustomPrimaryOffset(task: View, state: TaskVisualState, hooks: ResolvedHooks, axis: RecentsAxis) {
+        val property = resolveOffsetProperty(task, state, hooks, axis)
         if (property != null) {
             if (abs(state.customPrimaryOffset) > EPSILON) {
                 try { property.set(task, state.nativeStackOffset) } catch (_: Throwable) {}
@@ -790,16 +838,20 @@ object IosDepthStackRecentsHook : FeatureHook {
             return
         }
         if (!state.lastAppliedPrimaryTranslation.isNaN()) {
-            setPrimaryTranslation(task, rotation, state.nativePrimaryTranslation)
+            axis.setPrimaryTranslation(task, state.nativePrimaryTranslation)
             state.lastAppliedPrimaryTranslation = Float.NaN
         }
     }
 
-    private fun resolveOffsetProperty(task: View, state: TaskVisualState, hooks: ResolvedHooks, rotation: Int): FloatProperty<Any>? {
-        if (state.offsetResolved && state.offsetRotation == rotation) return state.offsetProperty
+    /**
+     * 竖屏：horizontalOffset（只进 applyTranslationX，与原生 page offset 通道分离）。
+     * 横屏：primaryTaskOffset（Landscape/Seascape 主轴 = Y，对应 TASK_OFFSET_TRANSLATION_Y）。
+     */
+    private fun resolveOffsetProperty(task: View, state: TaskVisualState, hooks: ResolvedHooks, axis: RecentsAxis): FloatProperty<Any>? {
+        if (state.offsetResolved && state.offsetRotation == axis.rotation) return state.offsetProperty
         state.offsetResolved = true
-        state.offsetRotation = rotation
-        val method = if (RecentsRotationGeometry.isLandscape(rotation)) hooks.primaryTaskOffsetProperty else hooks.horizontalOffsetProperty
+        state.offsetRotation = axis.rotation
+        val method = if (axis.landscape) hooks.primaryTaskOffsetProperty else hooks.horizontalOffsetProperty
         @Suppress("UNCHECKED_CAST")
         state.offsetProperty = try { method?.invoke(task) as? FloatProperty<Any> } catch (_: Throwable) { null }
         state.nativeStackOffset = try { state.offsetProperty?.get(task) ?: 0f } catch (_: Throwable) { 0f }
@@ -881,15 +933,28 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     private fun resetAllTransforms(recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks) {
         val it = state.taskStates.entries.iterator()
+        // 优先用 state 里记录的旧 rotation：旋转切换时 applyStack 在更新 state.rotation 之前调用本函数，
+        // 必须按旧主轴 property 清掉 custom offset，否则会清到新轴而残留旧轴位移。
+        val axis = if (state.rotation >= 0) {
+            axisForRotation(state.rotation, recents, hooks)
+        } else {
+            axisFor(recents, hooks)
+        }
         while (it.hasNext()) {
             val (task, ts) = it.next()
             if (task.parent !== recents) { it.remove(); continue }
-            val rotation = if (state.rotation >= 0) state.rotation else rotationFor(recents, hooks)
-            val property = resolveOffsetProperty(task, ts, hooks, rotation)
+            val property = resolveOffsetProperty(task, ts, hooks, axis)
             if (property != null && ts.customPrimaryOffset != 0f) {
                 try { property.set(task, ts.nativeStackOffset) } catch (_: Throwable) {}
                 ts.customPrimaryOffset = 0f
+            } else if (!ts.lastAppliedPrimaryTranslation.isNaN()) {
+                axis.setPrimaryTranslation(task, ts.nativePrimaryTranslation)
+                ts.lastAppliedPrimaryTranslation = Float.NaN
             }
+            // 旋转切换时 offset property 通道会变；额外把缓存标记打脏，下一帧按新轴重绑。
+            ts.offsetResolved = false
+            ts.offsetRotation = -1
+            ts.offsetProperty = null
             if (!ts.lastAppliedScale.isNaN()) { task.scaleX = ts.nativeScale; task.scaleY = ts.nativeScale; ts.lastAppliedScale = Float.NaN }
             if (!ts.lastAppliedAlpha.isNaN()) { task.alpha = ts.nativeAlpha; ts.lastAppliedAlpha = Float.NaN }
             if (ts.centerPivotApplied) { task.pivotX = ts.nativePivotX; task.pivotY = ts.nativePivotY; ts.centerPivotApplied = false }
@@ -997,7 +1062,7 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     // === 页面收集 ===
 
-    private fun collectTaskPages(recents: ViewGroup, hooks: ResolvedHooks, state: RecentsState, rotation: Int): List<TaskPage> {
+    private fun collectTaskPages(recents: ViewGroup, hooks: ResolvedHooks, state: RecentsState, axis: RecentsAxis): List<TaskPage> {
         val pages = ArrayList<TaskPage>()
         val homeTask = try { hooks.getHomeTaskView?.invoke(recents) as? View } catch (_: Throwable) { null }
         for (index in 0 until recents.childCount) {
@@ -1005,21 +1070,19 @@ object IosDepthStackRecentsHook : FeatureHook {
             if (!hooks.taskClass.isInstance(child)) continue
             state.taskStates.getOrPut(child) { TaskVisualState(child.translationZ) }
             if (child === homeTask || isLauncherTask(child, hooks)) continue
-            val logicalPageScroll = (hooks.getScrollForPage.invoke(recents, index) as? Number)?.toFloat() ?: continue
-            pages += TaskPage(child, index, logicalPageScroll, RecentsRotationGeometry.logicalToPhysical(logicalPageScroll, rotation))
+            // 与 axis.primaryScroll 同空间：不二次符号翻转；Landscape 的 RTL 已写入 mPageScrolls。
+            val pageScroll = (hooks.getScrollForPage.invoke(recents, index) as? Number)?.toFloat() ?: continue
+            pages += TaskPage(child, index, pageScroll)
         }
         if (pages.size <= 1) return pages
         val sorted = pages.sortedBy { it.pageScroll }
         val usable = sorted.zipWithNext().any { (a, b) -> abs(b.pageScroll - a.pageScroll) > 1f }
         if (usable) return sorted
-        // pageScroll 不可用时按视图位置回退。
+        // pageScroll 不可用时按主轴视口相对位置回退。
+        val viewportHalf = axis.primaryViewportSize(recents) / 2f
         return pages.map { page ->
-            val fallback = if (RecentsRotationGeometry.isLandscape(rotation)) {
-                page.view.top + page.view.height / 2f - recents.height / 2f
-            } else {
-                page.view.left + page.view.width / 2f - recents.width / 2f
-            }
-            page.copy(logicalPageScroll = fallback, pageScroll = RecentsRotationGeometry.logicalToPhysical(fallback, rotation))
+            val fallback = axis.childPrimaryStart(page.view) + axis.childPrimarySize(page.view) / 2f - viewportHalf
+            page.copy(pageScroll = fallback)
         }.sortedBy { it.pageScroll }
     }
 
@@ -1045,41 +1108,56 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     // === 方向/滚动/位移原语 ===
 
-    private fun rotationFor(recents: ViewGroup, hooks: ResolvedHooks): Int = try {
-        val handler = hooks.pagedOrientationHandler?.invoke(recents)
-        if (handler != null) {
+    private fun axisFor(recents: ViewGroup, hooks: ResolvedHooks): RecentsAxis {
+        val handler = try { hooks.pagedOrientationHandler?.invoke(recents) } catch (_: Throwable) { null }
+        val rotation = rotationFromHandler(handler, hooks) ?: (recents.display?.rotation ?: 0)
+        return axisForRotation(rotation, recents, hooks, handler)
+    }
+
+    private fun axisForRotation(
+        rotation: Int,
+        recents: ViewGroup,
+        hooks: ResolvedHooks,
+        handler: Any? = null,
+    ): RecentsAxis {
+        val resolvedHandler = handler ?: try {
+            hooks.pagedOrientationHandler?.invoke(recents)
+        } catch (_: Throwable) {
+            null
+        }
+        return RecentsAxis(
+            rotation = rotation,
+            landscape = RecentsAxis.isLandscape(rotation),
+            handler = resolvedHandler,
+            getPrimaryScroll = hooks.handlerPrimaryScroll,
+            getPrimarySize = hooks.handlerPrimarySize,
+            getChildStart = hooks.handlerChildStart,
+        )
+    }
+
+    private fun rotationFromHandler(handler: Any?, hooks: ResolvedHooks): Int? {
+        if (handler == null) return null
+        return try {
             val m = hooks.orientationRotation ?: synchronized(runtimeRotationMethods) {
                 runtimeRotationMethods.getOrPut(handler.javaClass) {
                     findMethodsInHierarchy(handler.javaClass).firstOrNull {
-                        it.name == "getRotation" && it.parameterTypes.isEmpty() && it.returnType == Int::class.javaPrimitiveType
+                        it.name == "getRotation" && it.parameterTypes.isEmpty() &&
+                            it.returnType == Int::class.javaPrimitiveType
                     }?.apply { isAccessible = true }
                 }
             }
-            (m?.invoke(handler) as? Number)?.let { return it.toInt() }
+            (m?.invoke(handler) as? Number)?.toInt()?.let { return it }
             val name = handler.javaClass.name
             when {
-                name.contains("Seascape", true) -> return 3
-                name.contains("Landscape", true) -> return 1
+                name.contains("Seascape", true) -> 3
+                name.contains("Landscape", true) -> 1
+                name.contains("Portrait", true) -> 0
+                else -> null
             }
+        } catch (_: Throwable) {
+            null
         }
-        recents.display?.rotation ?: 0
-    } catch (_: Throwable) { recents.display?.rotation ?: 0 }
-
-    private fun primaryScroll(recents: ViewGroup, rotation: Int): Float =
-        if (RecentsRotationGeometry.isLandscape(rotation)) recents.scrollY.toFloat() else recents.scrollX.toFloat()
-
-    private fun primaryTranslation(task: View, rotation: Int): Float =
-        if (RecentsRotationGeometry.isLandscape(rotation)) task.translationY else task.translationX
-
-    private fun secondaryTranslation(task: View, rotation: Int): Float =
-        if (RecentsRotationGeometry.isLandscape(rotation)) task.translationX else task.translationY
-
-    private fun setPrimaryTranslation(task: View, rotation: Int, value: Float) {
-        if (RecentsRotationGeometry.isLandscape(rotation)) task.translationY = value else task.translationX = value
     }
-
-    private fun primarySize(task: View, rotation: Int): Float =
-        if (RecentsRotationGeometry.isLandscape(rotation)) task.height.toFloat() else task.width.toFloat()
 
     private fun invokeBoolean(method: Method?, target: Any): Boolean =
         try { method?.invoke(target) as? Boolean ?: false } catch (_: Throwable) { false }
@@ -1160,9 +1238,9 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     // === 数据类 ===
 
-    private data class TaskPage(val view: View, val childIndex: Int, val logicalPageScroll: Float, val pageScroll: Float)
+    private data class TaskPage(val view: View, val childIndex: Int, val pageScroll: Float)
 
-    private class StackVisual(val centerX: Float, val scale: Float, val alpha: Float, val depthOrder: Float)
+    private class StackVisual(val primaryCenter: Float, val scale: Float, val alpha: Float, val depthOrder: Float)
 
     private class RecentsState {
         var applying = false
@@ -1265,6 +1343,9 @@ object IosDepthStackRecentsHook : FeatureHook {
         val taskComponent: Method?,
         val pagedOrientationHandler: Method?,
         val orientationRotation: Method?,
+        val handlerPrimaryScroll: Method?,
+        val handlerPrimarySize: Method?,
+        val handlerChildStart: Method?,
         val getEnableDrawingLiveTile: Method?,
         val getRemoteTargetHandles: Method?,
         val getTaskViewSimulator: Method?,
