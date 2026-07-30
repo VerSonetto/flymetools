@@ -844,17 +844,56 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     /**
+     * 同时清掉竖屏 horizontalOffset(X) 与横屏 primaryTaskOffset(Y) 两条堆叠通道。
+     * 切轴/退出 overview 后 state.rotation 可能已是 -1 或新方向，只清“当前轴”会让另一轴残留，
+     * 表现为横屏卡片既有 X 又有 Y → 斜对角飞出视口。
+     */
+    private fun clearAllStackOffsetChannels(task: View, state: TaskVisualState, hooks: ResolvedHooks) {
+        zeroOffsetProperty(task, hooks.horizontalOffsetProperty)
+        zeroOffsetProperty(task, hooks.primaryTaskOffsetProperty)
+        state.customPrimaryOffset = 0f
+        state.nativeStackOffset = 0f
+        state.lastAppliedPrimaryTranslation = Float.NaN
+        state.offsetResolved = false
+        state.offsetRotation = -1
+        state.offsetProperty = null
+    }
+
+    private fun zeroOffsetProperty(task: View, getter: Method?) {
+        if (getter == null) return
+        try {
+            @Suppress("UNCHECKED_CAST")
+            val property = getter.invoke(task) as? FloatProperty<Any> ?: return
+            property.set(task, 0f)
+        } catch (_: Throwable) {
+            return
+        }
+    }
+
+    /**
      * 竖屏：horizontalOffset（只进 applyTranslationX，与原生 page offset 通道分离）。
      * 横屏：primaryTaskOffset（Landscape/Seascape 主轴 = Y，对应 TASK_OFFSET_TRANSLATION_Y）。
+     * 绑定时先把“非当前轴”的堆叠通道置 0，避免竖屏→横屏残留 X 造成斜排。
      */
     private fun resolveOffsetProperty(task: View, state: TaskVisualState, hooks: ResolvedHooks, axis: RecentsAxis): FloatProperty<Any>? {
         if (state.offsetResolved && state.offsetRotation == axis.rotation) return state.offsetProperty
+        // 轴切换：清掉另一条通道上的自定义位移（property 值留在 View 上，不只是我们的 state）。
+        if (axis.landscape) {
+            zeroOffsetProperty(task, hooks.horizontalOffsetProperty)
+        } else {
+            zeroOffsetProperty(task, hooks.primaryTaskOffsetProperty)
+        }
         state.offsetResolved = true
         state.offsetRotation = axis.rotation
         val method = if (axis.landscape) hooks.primaryTaskOffsetProperty else hooks.horizontalOffsetProperty
         @Suppress("UNCHECKED_CAST")
         state.offsetProperty = try { method?.invoke(task) as? FloatProperty<Any> } catch (_: Throwable) { null }
-        state.nativeStackOffset = try { state.offsetProperty?.get(task) ?: 0f } catch (_: Throwable) { 0f }
+        // 只认原生基线；我们的 custom 从 0 重新累加，避免把残留 custom 读成 native。
+        state.nativeStackOffset = 0f
+        try {
+            state.offsetProperty?.set(task, 0f)
+        } catch (_: Throwable) {
+        }
         state.customPrimaryOffset = 0f
         return state.offsetProperty
     }
@@ -933,33 +972,16 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     private fun resetAllTransforms(recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks) {
         val it = state.taskStates.entries.iterator()
-        // 优先用 state 里记录的旧 rotation：旋转切换时 applyStack 在更新 state.rotation 之前调用本函数，
-        // 必须按旧主轴 property 清掉 custom offset，否则会清到新轴而残留旧轴位移。
-        val axis = if (state.rotation >= 0) {
-            axisForRotation(state.rotation, recents, hooks)
-        } else {
-            axisFor(recents, hooks)
-        }
         while (it.hasNext()) {
             val (task, ts) = it.next()
+            // 即便已从 parent 摘掉也要清 View 上的 offset 通道：TaskView 会被复用，
+            // 竖屏 horizontalOffset(X) 残留会在横屏再叠 Y → 斜对角。
+            clearAllStackOffsetChannels(task, ts, hooks)
             if (task.parent !== recents) { it.remove(); continue }
-            val property = resolveOffsetProperty(task, ts, hooks, axis)
-            if (property != null && ts.customPrimaryOffset != 0f) {
-                try { property.set(task, ts.nativeStackOffset) } catch (_: Throwable) {}
-                ts.customPrimaryOffset = 0f
-            } else if (!ts.lastAppliedPrimaryTranslation.isNaN()) {
-                axis.setPrimaryTranslation(task, ts.nativePrimaryTranslation)
-                ts.lastAppliedPrimaryTranslation = Float.NaN
-            }
-            // 旋转切换时 offset property 通道会变；额外把缓存标记打脏，下一帧按新轴重绑。
-            ts.offsetResolved = false
-            ts.offsetRotation = -1
-            ts.offsetProperty = null
             if (!ts.lastAppliedScale.isNaN()) { task.scaleX = ts.nativeScale; task.scaleY = ts.nativeScale; ts.lastAppliedScale = Float.NaN }
             if (!ts.lastAppliedAlpha.isNaN()) { task.alpha = ts.nativeAlpha; ts.lastAppliedAlpha = Float.NaN }
             if (ts.centerPivotApplied) { task.pivotX = ts.nativePivotX; task.pivotY = ts.nativePivotY; ts.centerPivotApplied = false }
             task.translationZ = ts.initialTranslationZ
-            ts.lastAppliedPrimaryTranslation = Float.NaN
             // 恢复标题原生 alpha 与可见性。
             if (!ts.titleLastApplied.isNaN()) {
                 ts.titleView?.let { title ->
@@ -973,6 +995,14 @@ object IosDepthStackRecentsHook : FeatureHook {
                 ts.iconView?.let { clearHeaderBlur(it, ts) }
             }
             setPlaceholderSuppressed(task, false)
+        }
+        // 仍挂在 recents 下、但尚未进入 taskStates 的 TaskView 也清一遍（旋转后新建 state 前的残留）。
+        for (i in 0 until recents.childCount) {
+            val child = recents.getChildAt(i) ?: continue
+            if (!hooks.taskClass.isInstance(child)) continue
+            if (state.taskStates.containsKey(child)) continue
+            zeroOffsetProperty(child, hooks.horizontalOffsetProperty)
+            zeroOffsetProperty(child, hooks.primaryTaskOffsetProperty)
         }
     }
 
