@@ -433,7 +433,8 @@ object IosNotificationStackHook : FeatureHook {
                     }
                     ty = thresh + L * peek
                     scale = max(MIN_SCALE, 1f - L * SCALE_PER_L)
-                    alpha = (1f - (L - 0.2f) * 0.5f).coerceIn(0f, 1f)
+                    // 约 3 层可见：L≈0/1/2 → ~1/0.68/0.24，L→2.4 渐隐
+                    alpha = (1f - (L - 0.25f) * 0.44f).coerceIn(0f, 1f)
                 }
             }
 
