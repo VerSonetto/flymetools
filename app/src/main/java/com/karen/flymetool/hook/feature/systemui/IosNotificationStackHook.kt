@@ -376,12 +376,11 @@ object IosNotificationStackHook : FeatureHook {
             max(thresh, lastFull.nativeY + lastFull.height + px6)
         }
 
-        // 媒体：沉在堆叠起点之上（Y = stackAnchor - h - pad），不挤通知、不参与 L 堆叠
-        if (sinkAll) {
-            val media = findMediaContainer(host)
-            if (media != null) {
-                placeMediaAboveStack(media, pe, stackAnchor, pad)
-            }
+        // 媒体：用稳定 thresh 作顶界（避免 stackAnchor/firstOverflow 抖动）
+        // sinkAll 贴锚点；!sinkAll 仅重叠时上抬，ease 插值回 native
+        val media = findMediaContainer(host)
+        if (media != null) {
+            placeMediaAboveStack(media, pe, thresh, pad, stick = sinkAll)
         }
 
         val touchedSummaries = ArrayList<View>(2)
@@ -783,27 +782,43 @@ object IosNotificationStackHook : FeatureHook {
     }
 
     /**
-     * 媒体沉到堆叠起点之上：折叠时底边贴 stackAnchor（Y = stackAnchor - h - pad），
-     * 通知仍从 stackAnchor 堆叠；展开插值回 nativeY。不改 stackAnchor、不参与 L 缩放。
+     * 媒体相对堆叠顶界 stackTop（thresh，帧间稳定；resetViewStates 后读到的 Y 即算法 native）：
+     * - stick：折叠贴顶界上方，ease → native
+     * - !stick：min(native, 放宽上界)，只防重叠
      */
-    private fun placeMediaAboveStack(media: View, pe: Float, stackAnchor: Float, pad: Float) {
+    private fun placeMediaAboveStack(
+        media: View,
+        pe: Float,
+        stackTop: Float,
+        pad: Float,
+        stick: Boolean,
+    ) {
         val st = viewState(media) ?: return
         val h = readMediaHeight(media, st)
         if (h <= 1f) return
         val nativeY = getY(st)
-        // 折叠：媒体在堆叠首卡正上方
-        val collapsedY = stackAnchor - h - pad
-        val y = lerp(collapsedY, nativeY, pe)
+        val above = stackTop - h - pad
+        val ease = pe * (2f - pe)
+        val y = if (stick) {
+            lerp(above, nativeY, ease)
+        } else {
+            min(nativeY, lerp(above, max(nativeY, above), ease))
+        }
         setY(st, y)
         setInt(st, "height", h.toInt().coerceAtLeast(1))
         setScale(st, 1f)
         setAlpha(st, 1f)
-        setZ(st, Z_BASE + Z_STEP)
+        val zMedia = Z_BASE + Z_STEP * 2f
+        setZ(st, zMedia)
         setBool(st, "hidden", false)
         setBool(st, "inShelf", false)
         setInt(st, "clipBottomAmount", 0)
         setInt(st, "clipTopAmount", 0)
         clearElevationIfNeeded(media)
+        try {
+            if (media.translationZ != zMedia) media.translationZ = zMedia
+        } catch (_: Throwable) {
+        }
     }
 
     private fun readMediaHeight(media: View, st: Any): Float {
