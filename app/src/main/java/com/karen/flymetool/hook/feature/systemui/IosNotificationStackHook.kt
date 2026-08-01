@@ -52,6 +52,14 @@ object IosNotificationStackHook : FeatureHook {
     private var lastPe: Float = 1f
     private var lastESeg: Float = 0f
     private var lastScrollRange: Float = 0f
+    /** Flyme 控制中心展开进度（CenterController.mExpandedFraction），AOSP QS fraction 在 legacy 下恒 0 */
+    @Volatile
+    private var controlCenterFrac: Float = 0f
+    private var centerControllerRef: WeakReference<Any>? = null
+    private var centerControllerHooked = false
+    /** 是否因控制中心把 NSSL/媒体层透明度压过；用于返回时强制恢复 */
+    @Volatile
+    private var dimmedForControlCenter = false
     private var stackHitTop: Float = 0f
     private var stackHitBottom: Float = 0f
     private var touchDownX: Float = 0f
@@ -214,6 +222,40 @@ object IosNotificationStackHook : FeatureHook {
         } catch (e: Throwable) {
             Logger.e(TAG, "NSSL 整区点击 Hook 失败", e)
         }
+
+        hookControlCenterExpansion(lpparam)
+    }
+
+    private fun hookControlCenterExpansion(lpparam: XC_LoadPackage.LoadPackageParam) {
+        if (centerControllerHooked) return
+        try {
+            val ccCl = XposedHelpers.findClass(
+                "com.flyme.systemui.controlcenter.phone.CenterController",
+                lpparam.classLoader
+            )
+            // setExpandedHeightInternal 每帧更新 mExpandedFraction
+            XposedHelpers.findAndHookMethod(
+                ccCl,
+                "setExpandedHeightInternal",
+                Float::class.javaPrimitiveType,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        centerControllerRef = WeakReference(param.thisObject)
+                        val frac = readCenterControllerFraction(param.thisObject)
+                        val prev = controlCenterFrac
+                        controlCenterFrac = frac
+                        // 不等 resetViewStates：进度一变立刻压/恢复通知层，消除「全展开后残影一会」
+                        if (frac > 0.02f || prev > 0.02f || dimmedForControlCenter) {
+                            applyControlCenterHostDim(frac, forceUpdate = frac <= 0.02f && prev > 0.02f)
+                        }
+                    }
+                }
+            )
+            centerControllerHooked = true
+            Logger.i(TAG, "CenterController 展开进度 Hook 完成")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "CenterController Hook 失败（将回退 NSSL/Ambient QS）", e)
+        }
     }
 
     private fun isStackCollapsed(): Boolean = lastPe < COLLAPSED_CLICK_PE
@@ -306,13 +348,31 @@ object IosNotificationStackHook : FeatureHook {
             return
         }
 
-        // QS 先读：展开控制中心时尽量少干活
-        val qsFrac = readQsExpansion(ambient)
+        // 控制中心 / QS 展开：必须先于堆叠布局判断。
+        // Flyme 上 AmbientState.getQsExpansionFraction() 在 legacy 模式恒为 0，
+        // 旧逻辑永远进不了退出堆叠分支，堆叠卡片会透到控制中心模糊背景上成「轮廓」。
+        val qsFrac = readControlCenterOrQsExpansion(ambient, host)
         val trackedHun = readTrackedHun(ambient)
         val items = collect(host, rowCl, ambient, trackedHun)
         if (items.isEmpty()) {
             lastPe = 1f
             return
+        }
+
+        if (qsFrac > 0.02f) {
+            lastPe = 1f
+            // 只压宿主层透明度，不改各 row 的 ViewState.hidden/alpha，避免返回后「卡住要滑一下」
+            applyControlCenterHostDim(qsFrac, forceUpdate = false)
+            // 系统本帧已算出 native 列表态；不要再叠堆叠 scale，否则轮廓会透到模糊底
+            // 也不要 restoreSystemList 把 alpha 拉回 1
+            hideShelf(ambient)
+            return
+        }
+
+        // 刚离开控制中心：先恢复宿主层，并清掉可能残留的 row 透明度
+        if (dimmedForControlCenter) {
+            applyControlCenterHostDim(0f, forceUpdate = true)
+            restoreAfterControlCenter(items, host, ambient, trackedHun)
         }
 
         val stackY = readStackY(ambient)
@@ -358,13 +418,6 @@ object IosNotificationStackHook : FeatureHook {
             (scrollY / eSeg).coerceIn(0f, 1f)
         }
         lastPe = pe
-
-        if (qsFrac > 0.08f) {
-            lastPe = 1f
-            restoreSystemList(items, ambient, trackedHun)
-            hideShelf(ambient)
-            return
-        }
 
         if (scrollRange <= 2f || (scrollRange > 2f && scrollY >= scrollRange - 4f)) {
             lastPe = 1f
@@ -642,15 +695,24 @@ object IosNotificationStackHook : FeatureHook {
             // 离开堆叠路径：恢复系统高度，避免列表区仍占折叠高
             setInt(st, "height", max(item.systemH, 1f).toInt())
             if (boolField(st, "inShelf")) setBool(st, "inShelf", false)
+            setBool(st, "hidden", false)
             try {
                 val a = XposedHelpers.callMethod(st, "getAlpha") as Float
-                if (a in 0.01f..0.99f && !boolField(st, "hidden")) setAlpha(st, 1f)
+                if (a < 0.99f) setAlpha(st, 1f)
             } catch (_: Throwable) {
                 setAlpha(st, 1f)
             }
             setZ(st, 0f)
             try {
                 if (item.view.translationZ != 0f) item.view.translationZ = 0f
+            } catch (_: Throwable) {
+            }
+            // 若控制中心路径强制 INVISIBLE，回通知栏时恢复
+            try {
+                if (item.view.visibility == View.INVISIBLE) {
+                    item.view.visibility = View.VISIBLE
+                }
+                if (item.view.alpha < 0.99f) item.view.alpha = 1f
             } catch (_: Throwable) {
             }
             setInt(st, "clipBottomAmount", 0)
@@ -660,16 +722,199 @@ object IosNotificationStackHook : FeatureHook {
                 suppressShadowOnce(item.view)
             }
         }
+        // 媒体若被控制中心路径隐藏，也恢复 View 可见性（ViewState 交给系统）
+        lastHostRef?.get()?.let { host ->
+            findMediaContainer(host)?.let { media ->
+                try {
+                    if (media.visibility == View.INVISIBLE) media.visibility = View.VISIBLE
+                    if (media.alpha < 0.99f) media.alpha = 1f
+                } catch (_: Throwable) {
+                }
+            }
+        }
     }
 
-    private fun readQsExpansion(ambient: Any): Float {
+    /**
+     * 读取「是否正在/已经展开控制中心或 QS」。
+     * 优先级：
+     * 1) Flyme CenterController.mExpandedFraction（hook 缓存）
+     * 2) NSSL.mQsExpansionFraction（AOSP 写在 View 上，不经 Ambient legacy 短路）
+     * 3) AmbientState.getQsExpansionFraction（Scene 模式才有值）
+     * 4) CentralSurfaces.isControlCenterExpanded
+     */
+    private fun readCenterControllerFraction(cc: Any?): Float {
+        if (cc == null) return 0f
+        return try {
+            XposedHelpers.getFloatField(cc, "mExpandedFraction").coerceIn(0f, 1f)
+        } catch (_: Throwable) {
+            try {
+                if (XposedHelpers.callMethod(cc, "isExpanded") as? Boolean == true) 1f else 0f
+            } catch (_: Throwable) {
+                0f
+            }
+        }
+    }
+
+    private fun readControlCenterOrQsExpansion(ambient: Any, host: ViewGroup): Float {
+        // 每帧直读 CenterController，避免折叠路径未走 setExpandedHeightInternal 导致缓存脏
+        val liveCc = readCenterControllerFraction(centerControllerRef?.get())
+        if (liveCc > 0.001f || centerControllerRef?.get() != null) {
+            controlCenterFrac = liveCc
+            if (liveCc > 0.001f) return liveCc
+        } else if (controlCenterFrac > 0.001f) {
+            return controlCenterFrac
+        }
+
         try {
-            val v = XposedHelpers.callMethod(ambient, "getQsExpansionFraction")
-            if (v is Float && v >= 0f) return v
-            if (v is Double && v >= 0.0) return v.toFloat()
+            val f = XposedHelpers.getFloatField(host, "mQsExpansionFraction")
+            if (f > 0.001f) return f.coerceIn(0f, 1f)
         } catch (_: Throwable) {
         }
+
+        try {
+            val v = XposedHelpers.callMethod(ambient, "getQsExpansionFraction")
+            when (v) {
+                is Float -> if (v > 0.001f) return v.coerceIn(0f, 1f)
+                is Double -> if (v > 0.001) return v.toFloat().coerceIn(0f, 1f)
+            }
+        } catch (_: Throwable) {
+        }
+
+        try {
+            val v = XposedHelpers.callMethod(ambient, "getFilterQsExpansionFraction")
+            when (v) {
+                is Float -> if (v > 0.001f) return v.coerceIn(0f, 1f)
+                is Double -> if (v > 0.001) return v.toFloat().coerceIn(0f, 1f)
+            }
+        } catch (_: Throwable) {
+        }
+
+        if (isControlCenterExpandedFlag()) return 1f
         return 0f
+    }
+
+    private fun isControlCenterExpandedFlag(): Boolean {
+        return try {
+            val cl = hostClassLoader()
+            val dep = XposedHelpers.findClass("com.android.systemui.Dependency", cl)
+            val utilCl = XposedHelpers.findClass(
+                "com.flyme.notification.utils.CentralSurfaceUtil",
+                cl
+            )
+            val util = XposedHelpers.callStaticMethod(dep, "get", utilCl)
+            val cs = XposedHelpers.callMethod(util, "getCentralSurfacesImpl")
+            XposedHelpers.callMethod(cs, "isControlCenterExpanded") as? Boolean == true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun hostClassLoader(): ClassLoader {
+        return loadParam?.classLoader
+            ?: lastHostRef?.get()?.javaClass?.classLoader
+            ?: IosNotificationStackHook::class.java.classLoader!!
+    }
+
+    /**
+     * 进控制中心时强制隐掉堆叠通知。
+     * 不能用 restoreSystemList：那会把 alpha 拉回 1，轮廓更容易透到模糊背景上。
+     * frac 越大越彻底隐藏；>0.12 直接 hidden。
+     */
+    /**
+     * 控制中心展开时压暗/隐藏整个通知栈宿主，而不是改每条 row 的 ViewState。
+     * 原因：
+     * - 改 row.hidden/alpha 后，返回通知栏时系统不一定立刻 resetViewStates，表现成「通知没了，滑一下才回来」
+     * - 宿主 alpha=0 可立刻去掉模糊底上的堆叠轮廓，且恢复时一次设回 1 即可
+     */
+    private fun applyControlCenterHostDim(frac: Float, forceUpdate: Boolean) {
+        val host = lastHostRef?.get() ?: return
+        val hide = frac > 0.02f
+        // 0.02→0.10 快速淡出，之后保持全隐，避免全展开后还闪一会轮廓
+        val alpha = when {
+            !hide -> 1f
+            frac >= 0.10f -> 0f
+            else -> (1f - (frac - 0.02f) / 0.08f).coerceIn(0f, 1f)
+        }
+        try {
+            if (host.alpha != alpha) host.alpha = alpha
+            // 不改 visibility，避免系统面板状态机不同步
+        } catch (_: Throwable) {
+        }
+        // 媒体容器有时不在同一 alpha 链路，一并压
+        try {
+            findMediaContainer(host)?.let { media ->
+                if (media.alpha != alpha) media.alpha = alpha
+            }
+        } catch (_: Throwable) {
+        }
+
+        val was = dimmedForControlCenter
+        dimmedForControlCenter = hide || alpha < 0.999f
+        if (forceUpdate || (was && !dimmedForControlCenter)) {
+            requestHostChildrenUpdate(host)
+        }
+    }
+
+    private fun requestHostChildrenUpdate(host: ViewGroup) {
+        for (name in arrayOf("requestChildrenUpdate", "updateChildren", "requestLayout")) {
+            try {
+                XposedHelpers.callMethod(host, name)
+                return
+            } catch (_: Throwable) {
+            }
+        }
+        try {
+            host.invalidate()
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * 离开控制中心后，确保 row 的 ViewState/View 层不被上一版 hide 逻辑残留影响。
+     * （兼容：若旧逻辑写过 hidden/alpha，这里兜底清掉）
+     */
+    private fun restoreAfterControlCenter(
+        items: List<Item>,
+        host: ViewGroup,
+        ambient: Any,
+        trackedHun: Any?,
+    ) {
+        for (item in items) {
+            if (isPinnedOrAnimatingHun(item.view, item.st, ambient, trackedHun)) continue
+            val st = item.st
+            try {
+                if (boolField(st, "hidden")) setBool(st, "hidden", false)
+            } catch (_: Throwable) {
+            }
+            try {
+                setAlpha(st, 1f)
+            } catch (_: Throwable) {
+            }
+            try {
+                if (item.view.alpha < 0.99f) item.view.alpha = 1f
+                if (item.view.visibility != View.VISIBLE) item.view.visibility = View.VISIBLE
+            } catch (_: Throwable) {
+            }
+        }
+        findMediaContainer(host)?.let { media ->
+            val st = viewState(media)
+            if (st != null) {
+                setBool(st, "hidden", false)
+                setAlpha(st, 1f)
+            }
+            try {
+                if (media.alpha < 0.99f) media.alpha = 1f
+                if (media.visibility != View.VISIBLE) media.visibility = View.VISIBLE
+            } catch (_: Throwable) {
+            }
+        }
+        if (host.alpha < 0.99f) {
+            try {
+                host.alpha = 1f
+            } catch (_: Throwable) {
+            }
+        }
+        requestHostChildrenUpdate(host)
     }
 
     private fun isGroupSummary(row: View): Boolean = callBool(row, "isSummaryWithChildren")
