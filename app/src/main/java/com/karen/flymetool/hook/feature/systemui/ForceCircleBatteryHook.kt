@@ -56,18 +56,52 @@ object ForceCircleBatteryHook : FeatureHook {
         "control_center"
     )
 
-    private val progressPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
+    // 禁止在 object 属性初始化时 new Paint()。
+    // Flyme 的 Paint 构造会走 setFlymeTypeface -> FlymeFontsHelper，
+    // 在 SystemUI 早期 / 字体未就绪时 Typeface 为 null，直接 NPE，
+    // 进而 ExceptionInInitializerError 导致整个 XposedInit 加载失败。
+    private val progressPaint by lazy { createStrokePaint() }
+    private val backgroundPaint by lazy { createStrokePaint() }
+    private val textPaint by lazy { createFillPaint() }
+
+    private fun createStrokePaint(): Paint {
+        return createPaintSafe().apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+        }
     }
 
-    private val backgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
+    private fun createFillPaint(): Paint {
+        return createPaintSafe().apply {
+            style = Paint.Style.FILL
+        }
     }
 
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
+    /**
+     * Flyme Paint 构造期可能因字体未就绪 NPE。
+     * 仅在真正绘制时创建；失败则向上抛，由调用方降级跳过自定义绘制。
+     */
+    private fun createPaintSafe(): Paint {
+        val paint = try {
+            Paint(Paint.ANTI_ALIAS_FLAG)
+        } catch (t: Throwable) {
+            Logger.w(HOOK_NAME, "Paint(ANTI_ALIAS) failed, retry bare: ${t.message}")
+            Paint()
+        }
+        try {
+            paint.isAntiAlias = true
+        } catch (_: Throwable) {
+        }
+        trySetTypefaceSafe(paint, Typeface.DEFAULT)
+        return paint
+    }
+
+    private fun trySetTypefaceSafe(paint: Paint, typeface: Typeface?) {
+        try {
+            paint.typeface = typeface ?: Typeface.DEFAULT
+        } catch (t: Throwable) {
+            Logger.w(HOOK_NAME, "setTypeface failed: ${t.message}")
+        }
     }
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
@@ -480,7 +514,7 @@ object ForceCircleBatteryHook : FeatureHook {
     private fun drawInsideBatteryText(canvas: Canvas, view: View, rect: RectF, level: Int, color: Int) {
         val text = level.toString()
         textPaint.textAlign = Paint.Align.CENTER
-        textPaint.typeface = getBatteryTextTypeface(view)
+        trySetTypefaceSafe(textPaint, getBatteryTextTypeface(view))
         textPaint.textSize = getInsideTextSize(view, rect, text)
         textPaint.color = color
         textPaint.alpha = 255
@@ -491,7 +525,7 @@ object ForceCircleBatteryHook : FeatureHook {
     private fun drawSideBatteryText(canvas: Canvas, view: View, circleSize: Int, level: Int, color: Int) {
         val text = level.toString()
         textPaint.textAlign = Paint.Align.LEFT
-        textPaint.typeface = getBatteryTextTypeface(view)
+        trySetTypefaceSafe(textPaint, getBatteryTextTypeface(view))
         textPaint.textSize = max(8f, circleSize * 0.68f)
         textPaint.color = color
         textPaint.alpha = 255
@@ -553,7 +587,7 @@ object ForceCircleBatteryHook : FeatureHook {
     private fun getSideTextWidth(view: View): Int {
         val circleSize = getStatusBarCircleSize(view)
         val level = readIntField(view, "mLastLevel", 100).coerceIn(0, 100)
-        textPaint.typeface = getBatteryTextTypeface(view)
+        trySetTypefaceSafe(textPaint, getBatteryTextTypeface(view))
         textPaint.textSize = max(8f, circleSize * 0.68f)
         val width = textPaint.measureText(level.toString()).toInt()
         return width.coerceAtLeast((circleSize * 0.75f).toInt())

@@ -1,30 +1,19 @@
 package com.karen.flymetool.hook.entry
 
 import com.karen.flymetool.hook.base.FeatureHook
-import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.feature.launcher.FolderBlurHook
-import com.karen.flymetool.hook.feature.launcher.IosDepthStackRecentsHook
-import com.karen.flymetool.hook.feature.launcher.MemoryDisplayHook
-import com.karen.flymetool.hook.feature.launcher.TaskCardHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
 object LauncherEntry : HookEntry {
     override val targetPackage = "com.meizu.flyme.launcher"
 
-    private val hooks: List<FeatureHook> = listOf(
-        TaskCardHook,
-        IosDepthStackRecentsHook,
-        MemoryDisplayHook,
-        FolderBlurHook,
+    private val hookFactories: List<Pair<String, () -> FeatureHook>> = listOf(
+        "TaskCardHook" to { com.karen.flymetool.hook.feature.launcher.TaskCardHook },
+        "IosDepthStackRecentsHook" to { com.karen.flymetool.hook.feature.launcher.IosDepthStackRecentsHook },
+        "MemoryDisplayHook" to { com.karen.flymetool.hook.feature.launcher.MemoryDisplayHook },
+        "FolderBlurHook" to { com.karen.flymetool.hook.feature.launcher.FolderBlurHook },
     )
 
     override fun initHooks(lpparam: XC_LoadPackage.LoadPackageParam) {
-        for (hook in hooks) {
-            try {
-                hook.handle(lpparam, targetPackage)
-            } catch (e: Throwable) {
-                Logger.e(targetPackage, "Hook ${hook::class.simpleName} failed", e)
-            }
-        }
+        safeInitHooks(targetPackage, lpparam, hookFactories)
     }
 }

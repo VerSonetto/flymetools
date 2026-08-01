@@ -1,80 +1,45 @@
 package com.karen.flymetool.hook.entry
 
 import com.karen.flymetool.hook.base.FeatureHook
-import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.feature.systemui.AODLyricHook
-import com.karen.flymetool.hook.feature.systemui.AODNotificationHook
-import com.karen.flymetool.hook.feature.systemui.AppIconNotificationHook
-import com.karen.flymetool.hook.feature.systemui.ConnectionRateLowSpeedHideHook
-import com.karen.flymetool.hook.feature.systemui.ControlCenterBlurHook
-import com.karen.flymetool.hook.feature.systemui.HideChargingAnimationHook
-import com.karen.flymetool.hook.feature.systemui.HideGestureBarHook
-import com.karen.flymetool.hook.feature.systemui.HideKeyguardFingerprintIconHook
-import com.karen.flymetool.hook.feature.systemui.HideKeyguardShortcutsHook
-import com.karen.flymetool.hook.feature.systemui.HideKeyguardStatusBarHook
-import com.karen.flymetool.hook.feature.systemui.HideMediaAppIconBgHook
-import com.karen.flymetool.hook.feature.systemui.HideStatusBarIconHook
-import com.karen.flymetool.hook.feature.systemui.NotificationCardMaskHook
-import com.karen.flymetool.hook.feature.systemui.NotificationCardRadiusHook
-import com.karen.flymetool.hook.feature.systemui.NotificationIconLimitHook
-import com.karen.flymetool.hook.feature.systemui.NotificationManageHook
-import com.karen.flymetool.hook.feature.systemui.PowerDisplayHook
-import com.karen.flymetool.hook.feature.systemui.PulldownAreaRatioHook
-import com.karen.flymetool.hook.feature.systemui.ShowDataSimOnlyHook
-import com.karen.flymetool.hook.feature.systemui.StatusBarClockHook
-import com.karen.flymetool.hook.feature.systemui.StatusBarClockSecondsHook
-import com.karen.flymetool.hook.feature.systemui.TickerClickHook
-import com.karen.flymetool.hook.feature.systemui.CustomCarrierNameHook
-import com.karen.flymetool.hook.feature.systemui.EdgeBackHoldPreviousAppHook
-import com.karen.flymetool.hook.feature.systemui.EdgeBackVibrateHook
-import com.karen.flymetool.hook.feature.systemui.MediaCardRadiusHook
-import com.karen.flymetool.hook.feature.systemui.ForceCircleBatteryHook
-import com.karen.flymetool.hook.feature.systemui.ForceLiveNotificationHook
-import com.karen.flymetool.hook.feature.systemui.IosNotificationStackHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
 object SystemUIEntry : HookEntry {
     override val targetPackage = "com.android.systemui"
 
-    private val hooks: List<FeatureHook> = listOf(
-        StatusBarClockHook,
-        StatusBarClockSecondsHook,
-        PowerDisplayHook,
-        ConnectionRateLowSpeedHideHook,
-        PulldownAreaRatioHook,
-        ControlCenterBlurHook,
-        NotificationIconLimitHook,
-        ShowDataSimOnlyHook,
-        HideStatusBarIconHook,
-        AppIconNotificationHook,
-        ForceCircleBatteryHook,
-        HideKeyguardShortcutsHook,
-        HideKeyguardStatusBarHook,
-        HideKeyguardFingerprintIconHook,
-        AODLyricHook,
-        AODNotificationHook,
-        HideChargingAnimationHook,
-        NotificationCardRadiusHook,
-        NotificationCardMaskHook,
-        TickerClickHook,
-        NotificationManageHook,
-        HideMediaAppIconBgHook,
-        MediaCardRadiusHook,
-        HideGestureBarHook,
-        CustomCarrierNameHook,
-        ForceLiveNotificationHook,
-        IosNotificationStackHook,
-        EdgeBackVibrateHook,
-        EdgeBackHoldPreviousAppHook,
+    // 使用 supplier，避免 Entry <clinit> 时立刻初始化全部 Hook object
+    private val hookFactories: List<Pair<String, () -> FeatureHook>> = listOf(
+        "StatusBarClockHook" to { com.karen.flymetool.hook.feature.systemui.StatusBarClockHook },
+        "StatusBarClockSecondsHook" to { com.karen.flymetool.hook.feature.systemui.StatusBarClockSecondsHook },
+        "PowerDisplayHook" to { com.karen.flymetool.hook.feature.systemui.PowerDisplayHook },
+        "ConnectionRateLowSpeedHideHook" to { com.karen.flymetool.hook.feature.systemui.ConnectionRateLowSpeedHideHook },
+        "PulldownAreaRatioHook" to { com.karen.flymetool.hook.feature.systemui.PulldownAreaRatioHook },
+        "ControlCenterBlurHook" to { com.karen.flymetool.hook.feature.systemui.ControlCenterBlurHook },
+        "NotificationIconLimitHook" to { com.karen.flymetool.hook.feature.systemui.NotificationIconLimitHook },
+        "ShowDataSimOnlyHook" to { com.karen.flymetool.hook.feature.systemui.ShowDataSimOnlyHook },
+        "HideStatusBarIconHook" to { com.karen.flymetool.hook.feature.systemui.HideStatusBarIconHook },
+        "AppIconNotificationHook" to { com.karen.flymetool.hook.feature.systemui.AppIconNotificationHook },
+        "ForceCircleBatteryHook" to { com.karen.flymetool.hook.feature.systemui.ForceCircleBatteryHook },
+        "HideKeyguardShortcutsHook" to { com.karen.flymetool.hook.feature.systemui.HideKeyguardShortcutsHook },
+        "HideKeyguardStatusBarHook" to { com.karen.flymetool.hook.feature.systemui.HideKeyguardStatusBarHook },
+        "HideKeyguardFingerprintIconHook" to { com.karen.flymetool.hook.feature.systemui.HideKeyguardFingerprintIconHook },
+        "AODLyricHook" to { com.karen.flymetool.hook.feature.systemui.AODLyricHook },
+        "AODNotificationHook" to { com.karen.flymetool.hook.feature.systemui.AODNotificationHook },
+        "HideChargingAnimationHook" to { com.karen.flymetool.hook.feature.systemui.HideChargingAnimationHook },
+        "NotificationCardRadiusHook" to { com.karen.flymetool.hook.feature.systemui.NotificationCardRadiusHook },
+        "NotificationCardMaskHook" to { com.karen.flymetool.hook.feature.systemui.NotificationCardMaskHook },
+        "TickerClickHook" to { com.karen.flymetool.hook.feature.systemui.TickerClickHook },
+        "NotificationManageHook" to { com.karen.flymetool.hook.feature.systemui.NotificationManageHook },
+        "HideMediaAppIconBgHook" to { com.karen.flymetool.hook.feature.systemui.HideMediaAppIconBgHook },
+        "MediaCardRadiusHook" to { com.karen.flymetool.hook.feature.systemui.MediaCardRadiusHook },
+        "HideGestureBarHook" to { com.karen.flymetool.hook.feature.systemui.HideGestureBarHook },
+        "CustomCarrierNameHook" to { com.karen.flymetool.hook.feature.systemui.CustomCarrierNameHook },
+        "ForceLiveNotificationHook" to { com.karen.flymetool.hook.feature.systemui.ForceLiveNotificationHook },
+        "IosNotificationStackHook" to { com.karen.flymetool.hook.feature.systemui.IosNotificationStackHook },
+        "EdgeBackVibrateHook" to { com.karen.flymetool.hook.feature.systemui.EdgeBackVibrateHook },
+        "EdgeBackHoldPreviousAppHook" to { com.karen.flymetool.hook.feature.systemui.EdgeBackHoldPreviousAppHook },
     )
 
     override fun initHooks(lpparam: XC_LoadPackage.LoadPackageParam) {
-        for (hook in hooks) {
-            try {
-                hook.handle(lpparam, targetPackage)
-            } catch (e: Throwable) {
-                Logger.e(targetPackage, "Hook ${hook::class.simpleName} failed", e)
-            }
-        }
+        safeInitHooks(targetPackage, lpparam, hookFactories)
     }
 }
