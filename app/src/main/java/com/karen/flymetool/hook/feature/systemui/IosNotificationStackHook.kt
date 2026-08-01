@@ -7,13 +7,14 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 import java.lang.ref.WeakReference
-import java.util.IdentityHashMap
+import java.util.function.Consumer
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -82,9 +83,6 @@ object IosNotificationStackHook : FeatureHook {
     private var cachedSinkAll = true
     private var prefsCachedAt = 0L
 
-    /** 已做过 outline/elevation 抑制的 row，避免每帧反射清阴影 */
-    private val shadowDone = IdentityHashMap<View, Boolean>()
-    private var shadowGen = 0
 
     private data class Item(
         val view: View,
@@ -224,6 +222,67 @@ object IosNotificationStackHook : FeatureHook {
         }
 
         hookControlCenterExpansion(lpparam)
+        hookMzBlurUtils(lpparam)
+    }
+
+    /**
+     * 控制中心过渡期禁用卡片实时毛玻璃（BackgroundBlurDrawable）。
+     *
+     * Flyme 通知卡片背景是系统级实时模糊（MzBlurUtils.setBackgroundBlurDrawable，半径 180），
+     * 跟随下拉手势更新 alpha（NSSL.updateLiveBlurAlpha → 各 row.updateLiveBlurAlpha）。
+     * 其隐藏条件 shouldHideBlurForControlCenter() 要求 panelAlpha==255 且完全展开，
+     * 过渡期间不隐藏 → 多张堆叠卡片的模糊块错位，在控制中心模糊背景上形成
+     * 「先从卡片外缘展开、最后成整张矩形模糊」的卡片轮廓。
+     * 这里在控制中心展开期间把 radius 与 alpha 都压 0（阴影清理管不到系统级模糊）。
+     */
+    private fun hookMzBlurUtils(lpparam: XC_LoadPackage.LoadPackageParam) {
+        try {
+            val blurCl = XposedHelpers.findClass(
+                "com.flyme.systemui.utils.MzBlurUtils",
+                lpparam.classLoader
+            )
+            // 创建路径：setBackgroundBlurDrawable(View,int,float,float,int,boolean,int,int,Function0,Consumer)
+            val create = blurCl.declaredMethods.singleOrNull { m ->
+                !m.isSynthetic &&
+                    m.parameterTypes.size == 10 &&
+                    m.parameterTypes[0] == View::class.java &&
+                    m.parameterTypes[1] == Int::class.javaPrimitiveType &&
+                    m.parameterTypes[2] == Float::class.javaPrimitiveType &&
+                    m.parameterTypes[3] == Float::class.javaPrimitiveType &&
+                    m.parameterTypes[4] == Int::class.javaPrimitiveType &&
+                    m.parameterTypes[5] == Boolean::class.javaPrimitiveType &&
+                    m.parameterTypes[9] == Consumer::class.java
+            }
+            if (create != null) {
+                XposedBridge.hookMethod(create, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        if (controlCenterFrac <= 0.02f) return
+                        param.args[1] = 0 // blurRadius -> 0，无模糊（保留底色/圆角）
+                    }
+                })
+                Logger.i(TAG, "MzBlurUtils.create hook ok")
+            }
+            // 更新路径：setBackgroundBlurDrawableAlpha(View,int,boolean,Function0,Consumer)
+            val update = blurCl.declaredMethods.singleOrNull { m ->
+                !m.isSynthetic &&
+                    m.parameterTypes.size == 5 &&
+                    m.parameterTypes[0] == View::class.java &&
+                    m.parameterTypes[1] == Int::class.javaPrimitiveType &&
+                    m.parameterTypes[2] == Boolean::class.javaPrimitiveType &&
+                    m.parameterTypes[4] == Consumer::class.java
+            }
+            if (update != null) {
+                XposedBridge.hookMethod(update, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        if (controlCenterFrac <= 0.02f) return
+                        param.args[1] = 0 // alpha -> 0，已创建的模糊立即隐藏
+                    }
+                })
+                Logger.i(TAG, "MzBlurUtils.alpha hook ok")
+            }
+        } catch (e: Throwable) {
+            Logger.e(TAG, "MzBlurUtils hook 失败（卡片实时模糊无法在控制中心隐藏）", e)
+        }
     }
 
     private fun hookControlCenterExpansion(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -543,10 +602,9 @@ object IosNotificationStackHook : FeatureHook {
             setInt(st, "clipBottomAmount", 0)
             setInt(st, "clipTopAmount", 0)
 
-            clearElevationIfNeeded(item.view)
-            if (foldedSummary || childInGroup) {
-                suppressShadowOnce(item.view)
-            }
+            // 每帧对所有堆叠卡片清阴影：缩小/错位后 outline 与阴影不随 scale 走，
+            // 控制中心模糊根容器时会把残留投影/假阴影放大成「卡片外廓」。
+            clearShadowHard(item.view)
             val sum = item.summary
             if (sum != null && sum !in touchedSummaries) touchedSummaries += sum
         }
@@ -617,8 +675,7 @@ object IosNotificationStackHook : FeatureHook {
         }
 
         raiseGroupHeaderAboveChildren(summary, topZ + Z_STEP)
-        clearElevationIfNeeded(summary)
-        suppressShadowOnce(summary)
+        clearShadowHard(summary)
         try {
             if (summary.scaleX != 1f) summary.scaleX = 1f
             if (summary.scaleY != 1f) summary.scaleY = 1f
@@ -717,10 +774,7 @@ object IosNotificationStackHook : FeatureHook {
             }
             setInt(st, "clipBottomAmount", 0)
             setInt(st, "clipTopAmount", 0)
-            clearElevationIfNeeded(item.view)
-            if (item.foldedSummary || item.parentY != null) {
-                suppressShadowOnce(item.view)
-            }
+            clearShadowHard(item.view)
         }
         // 媒体若被控制中心路径隐藏，也恢复 View 可见性（ViewState 交给系统）
         lastHostRef?.get()?.let { host ->
@@ -932,25 +986,50 @@ object IosNotificationStackHook : FeatureHook {
         }
     }
 
-    private fun suppressShadowOnce(row: View) {
-        if (shadowDone.put(row, true) != null) return
-        // 防止无限涨：偶发清理
-        if (shadowDone.size > 64) {
-            shadowDone.clear()
-            shadowDone[row] = true
-            shadowGen++
+    /**
+     * 堆叠模式下每帧对卡片清除一切「投影/阴影/外廓」来源：
+     * - FakeShadowView 假阴影（系统会给错位卡片 setFakeShadowIntensity 画矩形阴影）
+     * - elevation（Flyme 会给 live notification 设 elevation）
+     * - outline 阴影（ActivatableNotificationView.updateOutlineAlpha 恒为 1，
+     *   即 setZ 之后 translationZ>0 必然画投影，轮廓在控制中心模糊下被放大）
+     * - 背景视图 / 分组折叠容器的同源阴影
+     */
+    private fun clearShadowHard(row: View) {
+        // 1) 假阴影容器及内部 shadow View 直接隐藏
+        try {
+            val fs = XposedHelpers.getObjectField(row, "mFakeShadow") as? View
+            if (fs != null) {
+                if (fs.visibility != View.GONE) fs.visibility = View.GONE
+                try {
+                    val inner = XposedHelpers.getObjectField(fs, "mFakeShadow") as? View
+                    if (inner != null && inner.visibility != View.GONE) {
+                        inner.visibility = View.GONE
+                    }
+                } catch (_: Throwable) {
+                }
+            }
+        } catch (_: Throwable) {
         }
+        try {
+            XposedHelpers.callMethod(row, "setFakeShadowIntensity", 0f, 0f, 0, 0)
+        } catch (_: Throwable) {
+        }
+        // 2) elevation
+        try {
+            if (row.elevation != 0f) row.elevation = 0f
+        } catch (_: Throwable) {
+        }
+        // 3) outline 阴影（含投影色与 alpha）
         killOutlineShadow(row)
-        try {
-            val bg = XposedHelpers.getObjectField(row, "mBackgroundFlyme") as? View
-            if (bg != null) killOutlineShadow(bg)
-        } catch (_: Throwable) {
+        // 4) 背景视图
+        for (bgField in arrayOf("mBackgroundFlyme", "mBackgroundNormal")) {
+            try {
+                val bg = XposedHelpers.getObjectField(row, bgField) as? View
+                if (bg != null) killOutlineShadow(bg)
+            } catch (_: Throwable) {
+            }
         }
-        try {
-            val bgN = XposedHelpers.getObjectField(row, "mBackgroundNormal") as? View
-            if (bgN != null) killOutlineShadow(bgN)
-        } catch (_: Throwable) {
-        }
+        // 5) 分组折叠容器
         try {
             val gc = XposedHelpers.callMethod(row, "getGroupCollapseContainer") as? View
             if (gc != null) {
@@ -961,10 +1040,6 @@ object IosNotificationStackHook : FeatureHook {
                 } catch (_: Throwable) {
                 }
             }
-        } catch (_: Throwable) {
-        }
-        try {
-            XposedHelpers.callMethod(row, "setFakeShadowIntensity", 0f, 0f, 0, 0)
         } catch (_: Throwable) {
         }
     }
