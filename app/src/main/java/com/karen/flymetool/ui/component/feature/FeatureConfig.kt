@@ -10,6 +10,8 @@ fun FeatureConfig(
 ) {
     when (featureKey) {
         "statusbar_weekday" -> WeekdayFormatConfig(packageName, featureKey)
+        "statusbar_clock_period" -> StatusBarClockPeriodConfig(packageName, featureKey)
+        "statusbar_clock_custom_format" -> StatusBarClockCustomFormatConfig(packageName, featureKey)
         "notification_card_radius" -> NotificationCardRadiusConfig(packageName, featureKey)
         "media_card_radius" -> MediaCardRadiusConfig(packageName, featureKey)
         "connection_rate_low_speed_hide" -> ConnectionRateConfig(packageName, featureKey)
