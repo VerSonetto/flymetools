@@ -1,10 +1,12 @@
 package com.karen.flymetool.hook.feature.systemui
 
+import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.TextView
 import com.karen.flymetool.hook.base.FeatureHook
@@ -19,7 +21,7 @@ import java.lang.reflect.Method
 import java.util.Collections
 import java.util.WeakHashMap
 import kotlin.math.max
-import kotlin.math.min
+import kotlin.math.roundToInt
 
 object ForceCircleBatteryHook : FeatureHook {
 
@@ -40,11 +42,35 @@ object ForceCircleBatteryHook : FeatureHook {
     private const val TEXT_MODE_INSIDE = 1
     private const val TEXT_MODE_SIDE = 2
 
+    /** 相对前摄黑圈尺寸的缩放百分比，100 = 与黑圈同大 */
+    private const val DEFAULT_SIZE_SCALE = 100
+    private const val DEFAULT_OFFSET_DP = 0
+    private const val EXTRA_CUSTOM_LAYOUT = "custom_layout"
+
+    /** 系统默认圆环相对黑圈窗口的内缩比例（rect≈61px / black≈90px@3x） */
+    private const val RING_INSET_RATIO = 0.68f
+
     @Volatile
     private var replaceStatusBarIcon = false
 
     @Volatile
     private var textMode = TEXT_MODE_NONE
+
+    /** 额外开启项：自定义大小/位置，默认关闭 */
+    @Volatile
+    private var customLayoutEnabled = false
+
+    @Volatile
+    private var sizeScale = DEFAULT_SIZE_SCALE
+
+    @Volatile
+    private var offsetXDp = DEFAULT_OFFSET_DP
+
+    @Volatile
+    private var offsetYDp = DEFAULT_OFFSET_DP
+
+    private var loadParam: XC_LoadPackage.LoadPackageParam? = null
+    private var prefsPackage: String = "com.android.systemui"
 
     private val targetBatteryViews: MutableMap<Any, Boolean> =
         Collections.synchronizedMap(WeakHashMap())
@@ -108,6 +134,8 @@ object ForceCircleBatteryHook : FeatureHook {
         if (!FlymeVersionUtils.isFlyme12()) return
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_FORCE)) return
 
+        loadParam = lpparam
+        prefsPackage = packageName
         replaceStatusBarIcon = XposedPrefs.isFeatureEnabled(
             lpparam,
             packageName,
@@ -119,9 +147,26 @@ object ForceCircleBatteryHook : FeatureHook {
             FEATURE_REPLACE_STATUS_BAR,
             TEXT_MODE_NONE
         ).coerceIn(TEXT_MODE_NONE, TEXT_MODE_SIDE)
+        refreshLayoutPrefs()
 
         hookCameraStateController(lpparam)
         hookBatteryMeterView(lpparam)
+    }
+
+    private fun refreshLayoutPrefs() {
+        val lp = loadParam ?: return
+        customLayoutEnabled = XposedPrefs.getFeatureExtraValue(
+            lp, prefsPackage, FEATURE_FORCE, EXTRA_CUSTOM_LAYOUT, 0
+        ) == 1
+        sizeScale = XposedPrefs.getFeatureValue(
+            lp, prefsPackage, FEATURE_FORCE, DEFAULT_SIZE_SCALE
+        ).coerceIn(50, 150)
+        offsetXDp = XposedPrefs.getFeatureExtraValue(
+            lp, prefsPackage, FEATURE_FORCE, "offset_x_dp", DEFAULT_OFFSET_DP
+        ).coerceIn(-24, 24)
+        offsetYDp = XposedPrefs.getFeatureExtraValue(
+            lp, prefsPackage, FEATURE_FORCE, "offset_y_dp", DEFAULT_OFFSET_DP
+        ).coerceIn(-24, 24)
     }
 
     private fun hookCameraStateController(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -137,6 +182,7 @@ object ForceCircleBatteryHook : FeatureHook {
             hookForceOriginalBatteryVisible(clazz)
         } else {
             hookAlignCircleBatteryWindow(clazz)
+            hookApplyLayoutOnShowCircle(clazz)
         }
 
         try {
@@ -232,8 +278,20 @@ object ForceCircleBatteryHook : FeatureHook {
         }
         XposedBridge.hookMethod(method, object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
-                val lp = param.result as? WindowManager.LayoutParams ?: return
-                alignCircleBatteryWindow(param.thisObject, lp)
+                applyCustomCircleBatteryLayout(param.thisObject)
+            }
+        })
+    }
+
+    /** 窗口可能已缓存 LayoutParams，展示时再应用一次自定义布局 */
+    private fun hookApplyLayoutOnShowCircle(clazz: Class<*>) {
+        val method = findNoArgVoidMethod(clazz, "showCircleBatteryIfNecessary") ?: run {
+            Logger.w(TAG, "未找到 showCircleBatteryIfNecessary()（布局刷新）")
+            return
+        }
+        XposedBridge.hookMethod(method, object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                applyCustomCircleBatteryLayout(param.thisObject)
             }
         })
     }
@@ -382,21 +440,64 @@ object ForceCircleBatteryHook : FeatureHook {
         }
     }
 
-    private fun alignCircleBatteryWindow(controller: Any, batteryLp: WindowManager.LayoutParams) {
+    /**
+     * 前摄环形电量窗口布局：
+     * - 默认：仅复用黑圈 gravity/x/y（保持系统窗口与圆环 dimen 尺寸）
+     * - 开启「自定义大小与位置」后：按黑圈几何中心对齐，并套用缩放与 dp 偏移
+     */
+    private fun applyCustomCircleBatteryLayout(controller: Any) {
+        if (replaceStatusBarIcon) return
         try {
+            refreshLayoutPrefs()
+            val batteryLp = ensureBatteryWindowLayoutParams(controller) ?: return
             val blackLp = ensureBlackWindowLayoutParams(controller) ?: return
+
+            if (!customLayoutEnabled) {
+                applyLegacyAlign(batteryLp, blackLp)
+                updateCircleBatteryWindowIfAttached(controller, batteryLp)
+                Logger.once(TAG, "align_legacy", "已按黑圈坐标对齐（系统默认大小）")
+                return
+            }
+
+            val density = resolveDensity(controller)
+            val baseSize = minOf(blackLp.width, blackLp.height).coerceAtLeast(1)
+            val sizePx = (baseSize * sizeScale / 100f).roundToInt().coerceAtLeast(1)
+            val offsetXPx = (offsetXDp * density).roundToInt()
+            val offsetYPx = (offsetYDp * density).roundToInt()
+
+            // START / END gravity 下，x 均为「沿重力轴的边距」；同轴缩放用同一公式保持圆心
             batteryLp.gravity = blackLp.gravity
-            batteryLp.x = blackLp.x
-            batteryLp.y = blackLp.y
-            Logger.once(TAG, "align_black_circle", "已复用前摄黑圈坐标对齐环形电量")
+            batteryLp.width = sizePx
+            batteryLp.height = sizePx
+            batteryLp.x = blackLp.x + (blackLp.width - sizePx) / 2 + offsetXPx
+            batteryLp.y = blackLp.y + (blackLp.height - sizePx) / 2 + offsetYPx
+
+            val ringSize = (sizePx * RING_INSET_RATIO).roundToInt().coerceAtLeast(1)
+            applyCircleBatteryViewSize(controller, ringSize)
+            updateCircleBatteryWindowIfAttached(controller, batteryLp)
+
+            Logger.once(
+                TAG,
+                "align_custom_layout",
+                "已按黑圈对齐环形电量 size=${sizePx}px scale=$sizeScale% offset=(${offsetXDp}dp,${offsetYDp}dp)"
+            )
         } catch (e: Throwable) {
-            Logger.e(TAG, "环形电量坐标对齐失败", e)
+            Logger.e(TAG, "环形电量布局对齐失败", e)
         }
     }
 
+    /** 未开启自定义时：只抄黑圈坐标，不改宽高与圆环绘制尺寸 */
+    private fun applyLegacyAlign(
+        batteryLp: WindowManager.LayoutParams,
+        blackLp: WindowManager.LayoutParams
+    ) {
+        batteryLp.gravity = blackLp.gravity
+        batteryLp.x = blackLp.x
+        batteryLp.y = blackLp.y
+    }
+
     /**
-     * 仅复用系统自身维护的前摄黑圈窗口坐标，拿不到就放弃干预（保持系统原值）。
-     * 不再提供自算兜底：自算位置（屏幕居中/顶部）在打孔偏置或胶囊孔机型上反而会错位。
+     * 仅复用系统自身维护的前摄黑圈窗口坐标（含 Cutout 计算），拿不到就放弃干预。
      */
     private fun ensureBlackWindowLayoutParams(controller: Any): WindowManager.LayoutParams? {
         return try {
@@ -404,6 +505,87 @@ object ForceCircleBatteryHook : FeatureHook {
                 ?: (XposedHelpers.callMethod(controller, "initBlackWindowLp") as? WindowManager.LayoutParams)
         } catch (_: Throwable) {
             null
+        }
+    }
+
+    private fun ensureBatteryWindowLayoutParams(controller: Any): WindowManager.LayoutParams? {
+        return try {
+            XposedHelpers.getObjectField(controller, "mBatteryLpChanged") as? WindowManager.LayoutParams
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun resolveDensity(controller: Any): Float {
+        return try {
+            val context = XposedHelpers.getObjectField(controller, "mContext") as? Context
+            context?.resources?.displayMetrics?.density ?: 3f
+        } catch (_: Throwable) {
+            3f
+        }
+    }
+
+    /**
+     * 同步缩放 CircleBatteryLottieAnimationView 的布局与绘制矩形（系统在 init 时写死 dimen）。
+     */
+    private fun applyCircleBatteryViewSize(controller: Any, ringSizePx: Int) {
+        val circleView = try {
+            XposedHelpers.getObjectField(controller, "mCircleBatteryView") as? View
+        } catch (_: Throwable) {
+            null
+        } ?: return
+
+        try {
+            val lp = circleView.layoutParams
+            if (lp != null) {
+                lp.width = ringSizePx
+                lp.height = ringSizePx
+                circleView.layoutParams = lp
+            } else {
+                circleView.layoutParams = ViewGroup.LayoutParams(ringSizePx, ringSizePx)
+            }
+        } catch (_: Throwable) {
+            Logger.w(TAG, "调整圆环 View 布局失败")
+        }
+
+        val stroke = max(2f, ringSizePx * (6f / 61f))
+        try {
+            XposedHelpers.setFloatField(circleView, "mWidth", ringSizePx.toFloat())
+            XposedHelpers.setFloatField(circleView, "mHeight", ringSizePx.toFloat())
+            XposedHelpers.setFloatField(circleView, "mStrokeWidth", stroke)
+            XposedHelpers.setObjectField(
+                circleView,
+                "mRectF",
+                RectF(
+                    stroke / 2f,
+                    stroke / 2f,
+                    ringSizePx - stroke / 2f,
+                    ringSizePx - stroke / 2f
+                )
+            )
+            (XposedHelpers.getObjectField(circleView, "mPaint") as? Paint)?.strokeWidth = stroke
+            (XposedHelpers.getObjectField(circleView, "mBgPaint") as? Paint)?.strokeWidth = stroke
+            circleView.requestLayout()
+            circleView.invalidate()
+        } catch (_: Throwable) {
+            Logger.w(TAG, "调整圆环绘制尺寸失败")
+        }
+    }
+
+    private fun updateCircleBatteryWindowIfAttached(
+        controller: Any,
+        batteryLp: WindowManager.LayoutParams
+    ) {
+        try {
+            val attached = XposedHelpers.getBooleanField(controller, "mBatteryAttachToWindow")
+            if (!attached) return
+            val root = XposedHelpers.getObjectField(controller, "mBlackCircleView") as? View ?: return
+            if (root.parent == null) return
+            val wm = XposedHelpers.getObjectField(controller, "mWindowManager") as? WindowManager
+                ?: return
+            wm.updateViewLayout(root, batteryLp)
+        } catch (_: Throwable) {
+            Logger.w(TAG, "updateViewLayout 环形电量窗口失败")
         }
     }
 

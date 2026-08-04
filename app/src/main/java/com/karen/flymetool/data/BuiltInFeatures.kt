@@ -28,7 +28,7 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         HookFeature("app_icon_notification", "通知图标使用应用图标",
             description = "将状态栏通知小图标替换为应用桌面图标", group = "状态栏"),
         HookFeature("force_camera_circle_battery", "强制前摄环形电量",
-            description = "强制在前置摄像头孔位显示环形电量", group = "状态栏", minVersion = "Flyme 12"),
+            description = "强制在前置摄像头孔位显示环形电量；可额外开启自定义大小与位置（含悬浮预览）", group = "状态栏", minVersion = "Flyme 12"),
         HookFeature("circle_battery_status_bar_icon", "环形电量替换电池图标",
             description = "开启后不再显示前摄孔位环形电量，改为在状态栏电池图标位置绘制圆环", group = "状态栏",
             minVersion = "Flyme 12", dependsOn = "force_camera_circle_battery"),
