@@ -43,7 +43,6 @@ object FlymeVersionUtils {
     // 包名 -> 该作用域可见的版本前缀列表（不在列表中的作用域默认全版本可见）
     private val scopeVisibleOn: Map<String, List<String>> = mapOf(
         "com.meizu.share" to listOf("Flyme 10"),
-        "android" to listOf("Flyme 10"),
         "com.meizu.battery" to listOf("Flyme 12"),
     )
 

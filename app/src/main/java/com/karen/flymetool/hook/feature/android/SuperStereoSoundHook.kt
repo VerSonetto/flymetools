@@ -8,6 +8,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.util.FlymeVersionUtils
 
 object SuperStereoSoundHook : FeatureHook {
     private const val TAG = "SuperStereoSound"
@@ -20,6 +21,13 @@ object SuperStereoSoundHook : FeatureHook {
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "force_super_stereo")) return
         if (lpparam.packageName != "android") return
+
+        // 该功能仅适配 Flyme 10（原 android 作用域也仅对 Flyme 10 开放），
+        // 放开作用域后需在运行时兜底，避免 Flyme 11/12 误挂载。
+        if (!FlymeVersionUtils.isFlyme10()) {
+            Logger.i(TAG, "Skip - 该功能仅适用于 Flyme 10")
+            return
+        }
 
         val classLoader = lpparam.classLoader
         hookSettingsSystem(classLoader)

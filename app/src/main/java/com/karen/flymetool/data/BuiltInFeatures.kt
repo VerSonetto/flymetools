@@ -90,7 +90,8 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
     ),
     "android" to listOf(
         HookFeature("force_super_stereo", "强制立体音效",
-            description = "让扬声器立体音效在所有场景下生效，不限于游戏和横屏视频"),
+            description = "让扬声器立体音效在所有场景下生效，不限于游戏和横屏视频",
+            minVersion = "Flyme 10"),
     ),
     "com.meizu.customizecenter" to listOf(
         HookFeature("force_free_theme", "主题免费下载",
