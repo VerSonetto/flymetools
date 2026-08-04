@@ -1,6 +1,5 @@
 package com.karen.flymetool.hook.feature.systemui
 
-import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
@@ -395,68 +394,17 @@ object ForceCircleBatteryHook : FeatureHook {
         }
     }
 
+    /**
+     * 仅复用系统自身维护的前摄黑圈窗口坐标，拿不到就放弃干预（保持系统原值）。
+     * 不再提供自算兜底：自算位置（屏幕居中/顶部）在打孔偏置或胶囊孔机型上反而会错位。
+     */
     private fun ensureBlackWindowLayoutParams(controller: Any): WindowManager.LayoutParams? {
         return try {
             (XposedHelpers.getObjectField(controller, "mBlackLpChanged") as? WindowManager.LayoutParams)
                 ?: (XposedHelpers.callMethod(controller, "initBlackWindowLp") as? WindowManager.LayoutParams)
         } catch (_: Throwable) {
-            buildCutoutAlignedLayoutParams(controller)
-        }
-    }
-
-    private fun buildCutoutAlignedLayoutParams(controller: Any): WindowManager.LayoutParams? {
-        val context = getControllerContext(controller) ?: return null
-        val res = context.resources
-        val width = getDimen(res, "black_circle_width", "battery_circle_width") ?: return null
-        val height = getDimen(res, "black_circle_height", "battery_circle_height") ?: width
-        val lp = WindowManager.LayoutParams(width, height, 2006, 824, -3)
-        lp.flags = lp.flags or 16777216
-        lp.gravity = 8388659
-        lp.setTitle("CameraCircle")
-
-        val cutoutRect = runCatching {
-            val cutout = context.display?.cutout ?: return@runCatching null
-            val path = cutout.cutoutPath ?: return@runCatching null
-            RectF().also { path.computeBounds(it, false) }
-        }.getOrNull()
-
-        if (cutoutRect != null && isValidCenterCutout(cutoutRect)) {
-            lp.x = ((cutoutRect.left + cutoutRect.right) / 2f).toInt() - width / 2
-            lp.y = ((cutoutRect.top + cutoutRect.bottom) / 2f).toInt() - height / 2
-        } else {
-            val screenWidth = res.displayMetrics.widthPixels
-            lp.x = screenWidth / 2 - width / 2
-            lp.y = getDimen(res, "black_circle_y") ?: 0
-        }
-        return lp
-    }
-
-    private fun isValidCenterCutout(rect: RectF): Boolean {
-        return rect.left > 0f &&
-            rect.right > 0f &&
-            rect.top > 0f &&
-            rect.bottom > 0f &&
-            rect.right > rect.left &&
-            rect.bottom > rect.top &&
-            kotlin.math.abs((rect.right - rect.left) - (rect.bottom - rect.top)) < 1f
-    }
-
-    private fun getControllerContext(controller: Any): Context? {
-        return try {
-            XposedHelpers.getObjectField(controller, "mContext") as? Context
-        } catch (_: Throwable) {
             null
         }
-    }
-
-    private fun getDimen(res: android.content.res.Resources, vararg names: String): Int? {
-        for (name in names) {
-            val id = res.getIdentifier(name, "dimen", "com.android.systemui")
-            if (id == 0) continue
-            val value = runCatching { res.getDimensionPixelSize(id) }.getOrDefault(0)
-            if (value > 0) return value
-        }
-        return null
     }
 
     private fun forceOriginalBatteryViewsVisible(controller: Any) {
