@@ -12,7 +12,7 @@ import com.karen.flymetool.util.FlymeVersionUtils
 object HideKeyguardShortcutsHook : FeatureHook {
 
     private const val KEYGUARD_BOTTOM_AREA_VIEW = "com.flyme.systemui.affordance.MZKeyguardBottomAreaView"
-    private const val HOOK_NAME = "HideKeyguardShortcut"
+    private const val TAG = "HideKeyguardShortcut"
 
     private var hideFlashlight: Boolean = false
     private var hideCamera: Boolean = false
@@ -33,7 +33,7 @@ object HideKeyguardShortcutsHook : FeatureHook {
             FlymeVersionUtils.isFlyme10() -> hookFlyme10(lpparam)
             else -> hookFlyme10(lpparam)
         }
-        Logger.i(HOOK_NAME, "Loaded, hideFlashlight=$hideFlashlight, hideCamera=$hideCamera")
+        Logger.i(TAG, "已加载, hideFlashlight=$hideFlashlight, hideCamera=$hideCamera")
     }
 
     private fun hookFlyme12(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -62,9 +62,9 @@ object HideKeyguardShortcutsHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked updateLeftRightClickVisibility for Flyme 12")
+            Logger.i(TAG, "已挂载 updateLeftRightClickVisibility（Flyme 12）")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook Flyme 12 failed", e)
+            Logger.e(TAG, "挂载 Flyme 12 失败", e)
         }
     }
 
@@ -94,9 +94,9 @@ object HideKeyguardShortcutsHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked updateLeftRightClickVisibility for Flyme 11")
+            Logger.i(TAG, "已挂载 updateLeftRightClickVisibility（Flyme 11）")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook Flyme 11 failed", e)
+            Logger.e(TAG, "挂载 Flyme 11 失败", e)
         }
     }
 
@@ -125,9 +125,9 @@ object HideKeyguardShortcutsHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked updateLeftClickVisibility")
+            Logger.i(TAG, "已挂载 updateLeftClickVisibility")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook updateLeftClickVisibility failed", e)
+            Logger.e(TAG, "挂载 updateLeftClickVisibility 失败", e)
         }
     }
 
@@ -151,9 +151,9 @@ object HideKeyguardShortcutsHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked updateRightVisibility")
+            Logger.i(TAG, "已挂载 updateRightVisibility")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook updateRightVisibility failed", e)
+            Logger.e(TAG, "挂载 updateRightVisibility 失败", e)
         }
     }
 }

@@ -16,7 +16,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 object NotificationCardMaskHook : FeatureHook {
 
     private const val FEATURE_KEY = "notification_card_no_mask"
-    private const val HOOK_NAME = "NotificationCardMask"
+    private const val TAG = "NotificationCardMask"
     private const val BACKGROUND_VIEW =
         "com.android.systemui.statusbar.notification.row.NotificationBackgroundView"
 
@@ -36,13 +36,13 @@ object NotificationCardMaskHook : FeatureHook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         param.args[1] = Color.TRANSPARENT
-                        Logger.once(HOOK_NAME, "cleared notification blur mask color")
+                        Logger.once(TAG, "cleared_mask", "已清除通知卡片模糊遮罩颜色")
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "已启用：去除通知卡片遮罩")
+            Logger.i(TAG, "已启用：去除通知卡片遮罩")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook 失败", e)
+            Logger.e(TAG, "Hook 失败", e)
         }
     }
 }

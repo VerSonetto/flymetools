@@ -51,7 +51,7 @@ object SuperStereoSoundHook : FeatureHook {
                         if (key == SETTING_KEY) {
                             val value = param.args[2] as Int
                             mainSwitchEnabled = value == 1
-                            Logger.d(TAG, "Main switch updated via Settings: $mainSwitchEnabled")
+                            Logger.d(TAG) { "主开关已通过 Settings 更新: $mainSwitchEnabled" }
                         }
                     }
                 }
@@ -74,9 +74,9 @@ object SuperStereoSoundHook : FeatureHook {
                                 try {
                                     val currentValue = Settings.System.getInt(resolver, SETTING_KEY, 0)
                                     mainSwitchEnabled = currentValue == 1
-                                    Logger.i(TAG, "Initial main switch state: $mainSwitchEnabled")
+                                    Logger.i(TAG, "初始主开关状态: $mainSwitchEnabled")
                                 } catch (t: Throwable) {
-                                    Logger.e(TAG, "Failed to read initial state: ${t.message}")
+                                    Logger.e(TAG, "读取初始状态失败", t)
                                 }
                             }
                         }
@@ -84,10 +84,10 @@ object SuperStereoSoundHook : FeatureHook {
                 }
             )
 
-            Logger.i(TAG, "Hooked Settings.System")
+            Logger.i(TAG, "已挂载 Settings.System")
 
         } catch (t: Throwable) {
-            Logger.e(TAG, "Failed to hook Settings.System: ${t.message}")
+            Logger.e(TAG, "挂载 Settings.System 失败", t)
         }
     }
 
@@ -110,17 +110,17 @@ object SuperStereoSoundHook : FeatureHook {
                             )
                             if (newValue != keyValue) {
                                 param.args[0] = newValue
-                                Logger.i(TAG, "Forced stereo_sound_game_mode=true")
+                                Logger.i(TAG, "已强制 stereo_sound_game_mode=true")
                             }
                         }
                     }
                 }
             )
 
-            Logger.i(TAG, "SuperStereoSoundHook initialized")
+            Logger.i(TAG, "SuperStereoSoundHook 初始化完成")
 
         } catch (t: Throwable) {
-            Logger.e(TAG, "Failed to hook AudioSystem: ${t.message}")
+            Logger.e(TAG, "挂载 AudioSystem 失败", t)
         }
     }
 }

@@ -9,7 +9,7 @@ import com.karen.flymetool.hook.base.XposedPrefs
 
 object PulldownAreaRatioHook : FeatureHook {
 
-    private const val HOOK_NAME = "PulldownAreaRatio"
+    private const val TAG = "PulldownAreaRatio"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "pulldown_area_ratio")) return
@@ -44,14 +44,14 @@ object PulldownAreaRatioHook : FeatureHook {
                         }
 
                         XposedHelpers.setObjectField(thisObject, "mHandleEventRegion", newRegion)
-                        Logger.once(HOOK_NAME, "mHandleEventRegion = $newRegion (ratio=$controlCenterRatio%)")
+                        Logger.once(TAG, "event_region", "mHandleEventRegion = $newRegion (ratio=$controlCenterRatio%)")
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked CenterController.updateResources")
+            Logger.i(TAG, "已挂载 CenterController.updateResources")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook failed", e)
+            Logger.e(TAG, "挂载失败", e)
         }
     }
 }

@@ -11,7 +11,7 @@ import com.karen.flymetool.hook.base.XposedPrefs
 
 object NotificationCardRadiusHook : FeatureHook {
 
-    private const val HOOK_NAME = "NotificationCardRadius"
+    private const val TAG = "NotificationCardRadius"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "notification_card_radius")) return
@@ -50,7 +50,7 @@ object NotificationCardRadiusHook : FeatureHook {
                         if (resName == "notification_corner_radius" ||
                             resName == "notification_background_radius") {
                             param.result = radiusPx
-                            Logger.once(HOOK_NAME, "Hooked $resName = ${radiusPx}px")
+                            Logger.once(TAG, "dim_$resName", "已挂载 $resName = ${radiusPx}px")
                         }
                     }
                 }
@@ -77,9 +77,9 @@ object NotificationCardRadiusHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked Resources.getDimension* with radius=${radiusDp}dp")
+            Logger.i(TAG, "已挂载 Resources.getDimension*，圆角=${radiusDp}dp")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook Resources.getDimension* failed", e)
+            Logger.e(TAG, "挂载 Resources.getDimension* 失败", e)
         }
     }
 
@@ -104,7 +104,7 @@ object NotificationCardRadiusHook : FeatureHook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         param.args[2] = radiusPx
-                        Logger.once(HOOK_NAME, "Hooked RoundableState, maxRadius=${radiusPx}")
+                        Logger.once(TAG, "roundable", "已挂载 RoundableState, maxRadius=${radiusPx}")
                     }
                 }
             )
@@ -116,14 +116,14 @@ object NotificationCardRadiusHook : FeatureHook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         param.args[0] = radiusPx
-                        Logger.once(HOOK_NAME, "setMaxRadius override = ${radiusPx}")
+                        Logger.once(TAG, "set_max_radius", "setMaxRadius 覆盖 = ${radiusPx}")
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked RoundableState")
+            Logger.i(TAG, "已挂载 RoundableState")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook RoundableState failed", e)
+            Logger.e(TAG, "挂载 RoundableState 失败", e)
         }
     }
 }

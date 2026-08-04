@@ -13,7 +13,7 @@ import com.karen.flymetool.util.FlymeVersionUtils
 
 object CustomCarrierNameHook : FeatureHook {
 
-    private const val HOOK_NAME = "CustomCarrierName"
+    private const val TAG = "CustomCarrierName"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "custom_carrier_name")) return
@@ -51,9 +51,9 @@ object CustomCarrierNameHook : FeatureHook {
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "Hooked TextView.setText, separator: $separator")
+            Logger.i(TAG, "已挂载 TextView.setText, 分隔符: $separator")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook TextView.setText failed", e)
+            Logger.e(TAG, "挂载 TextView.setText 失败", e)
         }
     }
 
@@ -89,9 +89,9 @@ object CustomCarrierNameHook : FeatureHook {
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "Hooked ShadeCarrier.setCarrierText")
+            Logger.i(TAG, "已挂载 ShadeCarrier.setCarrierText")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook ShadeCarrier failed", e)
+            Logger.e(TAG, "挂载 ShadeCarrier 失败", e)
         }
     }
 }

@@ -28,7 +28,7 @@ object AODLyricHook : FeatureHook {
     private const val ADVERT_TICKER_VIEW_OLD = "com.flyme.statusbar.ticker.AdvertTickerView"
     private const val ADVERT_TICKER_VIEW_NEW = "com.flyme.systemui.statusbar.ticker.AdvertTickerView"
     private const val LIVE_NOTI_CONTROLLER = "com.flyme.statusbar.livenotification.LiveNotificationController"
-    private const val HOOK_NAME = "AODLyric"
+    private const val TAG = "AODLyric"
     private const val VIEW_TAG = "flymetool_aod_lyric"
     /** 与 AdvertTickerView 歌词判定一致：notification.flags & 0x1000000 */
     private const val FLYME_LYRIC_FLAG = 0x1000000
@@ -84,14 +84,14 @@ object AODLyricHook : FeatureHook {
                             val anchor = if (clockRow.parent is ViewGroup) clockRow else host.getChildAt(0) ?: return
                             attachBelow(parent, anchor, aodOnly)
                         } catch (t: Throwable) {
-                            Logger.e(HOOK_NAME, "insert below $childName failed", t)
+                            Logger.e(TAG, "插入歌词失败", t, "child" to childName)
                         }
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "Hooked $hostClass -> below $childName (aodOnly=$aodOnly)")
+            Logger.i(TAG, "已挂载 $hostClass 歌词插入（下方 $childName, aodOnly=$aodOnly）")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook $hostClass failed", e)
+            Logger.e(TAG, "挂载歌词插入失败", e, "host" to hostClass)
         }
     }
 
@@ -113,14 +113,14 @@ object AODLyricHook : FeatureHook {
                             val parent = clock.parent as? ViewGroup ?: return
                             attachBelow(parent, clock, aodOnly)
                         } catch (t: Throwable) {
-                            Logger.e(HOOK_NAME, "insert below $className failed", t)
+                            Logger.e(TAG, "插入歌词失败", t, "host" to className)
                         }
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "Hooked $className -> below self (aodOnly=$aodOnly)")
+            Logger.i(TAG, "已挂载 $className 歌词插入（自身下方, aodOnly=$aodOnly）")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook $className failed", e)
+            Logger.e(TAG, "挂载歌词插入失败", e, "host" to className)
         }
     }
 
@@ -138,14 +138,14 @@ object AODLyricHook : FeatureHook {
                             isDozing = param.args[0] as? Boolean ?: false
                             refreshAllLyricViews()
                         } catch (t: Throwable) {
-                            Logger.e(HOOK_NAME, "setDozing hook error", t)
+                            Logger.e(TAG, "setDozing 回调异常", t)
                         }
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "Hooked KeyguardDateClockView.setDozing")
+            Logger.i(TAG, "已挂载 KeyguardDateClockView.setDozing")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook setDozing failed", e)
+            Logger.e(TAG, "挂载 setDozing 失败", e)
         }
     }
 
@@ -180,8 +180,8 @@ object AODLyricHook : FeatureHook {
         parent.addView(tv, index + 1, finalLp)
         registerLyricView(tv)
         Logger.i(
-            HOOK_NAME,
-            "Lyric attached below ${anchor.javaClass.simpleName} in ${parent.javaClass.simpleName} aodOnly=$aodOnly"
+            TAG,
+            "歌词已插入 ${anchor.javaClass.simpleName} 下方（${parent.javaClass.simpleName}）aodOnly=$aodOnly"
         )
     }
 
@@ -213,14 +213,14 @@ object AODLyricHook : FeatureHook {
                                 updateLyricText(text)
                             }
                         } catch (t: Throwable) {
-                            Logger.e(HOOK_NAME, "getLyricsNotifications hook error", t)
+                            Logger.e(TAG, "getLyricsNotifications 回调异常", t)
                         }
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "Hooked LiveNotificationController.getLyricsNotifications")
+            Logger.i(TAG, "已挂载 LiveNotificationController.getLyricsNotifications")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook getLyricsNotifications failed", e)
+            Logger.e(TAG, "挂载 getLyricsNotifications 失败", e)
         }
     }
 
@@ -241,7 +241,7 @@ object AODLyricHook : FeatureHook {
                             if (tickerText.isNullOrEmpty()) return
 
                             if (!isLyricNotification(sbn, notification, param.result)) {
-                                Logger.d(HOOK_NAME, "Skip non-lyric notification")
+                                Logger.d(TAG) { "跳过非歌词通知" }
                                 return
                             }
 
@@ -250,7 +250,7 @@ object AODLyricHook : FeatureHook {
                                 updateLyricText(tickerText)
                             }
                         } catch (t: Throwable) {
-                            Logger.e(HOOK_NAME, "addNotification hook error", t)
+                            Logger.e(TAG, "addNotification 回调异常", t)
                         }
                     }
                 }
@@ -266,15 +266,15 @@ object AODLyricHook : FeatureHook {
                             currentLyric = ""
                             updateLyricText("")
                         } catch (t: Throwable) {
-                            Logger.e(HOOK_NAME, "removeNotification hook error", t)
+                            Logger.e(TAG, "removeNotification 回调异常", t)
                         }
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked $versionTag: $className")
+            Logger.i(TAG, "已挂载 $versionTag 歌词组件: $className")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook $versionTag failed", e)
+            Logger.e(TAG, "挂载 $versionTag 歌词组件失败", e, "host" to className)
         }
     }
 

@@ -15,7 +15,7 @@ import java.lang.reflect.Method
 object ControlCenterBlurHook : FeatureHook {
 
     private const val FEATURE_KEY = "control_center_blur_intensity"
-    private const val HOOK_NAME = "ControlCenterBlur"
+    private const val TAG = "ControlCenterBlur"
     private const val FLYME_BLUR_UTILS_CLASS = "com.flyme.systemui.utils.MzBlurUtils"
     private const val SHADE_DEPTH_CONTROLLER_CLASS =
         "com.android.systemui.statusbar.NotificationShadeDepthController"
@@ -82,9 +82,9 @@ object ControlCenterBlurHook : FeatureHook {
                 }
             })
 
-            Logger.i(HOOK_NAME, "锁屏控制中心内容模糊 Hook 完成: $intensity%")
+            Logger.i(TAG, "锁屏控制中心内容模糊 Hook 完成: $intensity%")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "锁屏控制中心内容模糊 Hook 失败", e)
+            Logger.e(TAG, "锁屏控制中心内容模糊 Hook 失败", e)
         }
     }
 
@@ -128,9 +128,9 @@ object ControlCenterBlurHook : FeatureHook {
                 }
             })
 
-            Logger.i(HOOK_NAME, "非锁屏控制中心窗口模糊 Hook 完成: $intensity%")
+            Logger.i(TAG, "非锁屏控制中心窗口模糊 Hook 完成: $intensity%")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "非锁屏控制中心窗口模糊 Hook 失败", e)
+            Logger.e(TAG, "非锁屏控制中心窗口模糊 Hook 失败", e)
         }
     }
 

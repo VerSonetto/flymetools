@@ -44,6 +44,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.karen.flymetool.BuildConfig
+import com.karen.flymetool.data.PrefsHelper
 import com.karen.flymetool.R
 import com.karen.flymetool.ui.component.AppIcon
 import com.karen.flymetool.ui.component.DonatePanel
@@ -109,6 +110,10 @@ fun AboutScreen(modifier: Modifier = Modifier) {
 
             item(key = "hide_icon", contentType = "card") {
                 HideLauncherIconCard()
+            }
+
+            item(key = "debug_log", contentType = "card") {
+                DebugLogCard()
             }
 
             item(key = "device_title", contentType = "section_title") {
@@ -204,6 +209,35 @@ fun AboutScreen(modifier: Modifier = Modifier) {
                 LegalNotice()
             }
         }
+}
+
+@Composable
+private fun DebugLogCard() {
+    val context = LocalContext.current
+    var debugEnabled by remember { mutableStateOf(PrefsHelper.isDebugLogEnabled(context)) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(MiuixTheme.colorScheme.surface)
+    ) {
+        FeatureSwitch(
+            title = "调试日志",
+            description = "输出详细调试日志（Logcat tag=FlymeTool）；开启后需重启目标应用进程生效，" +
+                "或用 adb shell log -t FlymeToolCmd \"debug=on\" 热开启",
+            checked = debugEnabled,
+            onCheckedChange = { enabled ->
+                PrefsHelper.setDebugLogEnabled(context, enabled)
+                debugEnabled = enabled
+                Toast.makeText(
+                    context,
+                    if (enabled) "调试日志已开启，重启目标进程生效" else "调试日志已关闭",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        )
+    }
 }
 
 @Composable

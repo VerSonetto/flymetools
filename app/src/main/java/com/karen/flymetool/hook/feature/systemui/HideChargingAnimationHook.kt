@@ -10,14 +10,14 @@ import com.karen.flymetool.hook.base.XposedPrefs
 object HideChargingAnimationHook : FeatureHook {
 
     private const val CHARGE_ANIMATION_CONTROLLER = "com.flyme.keyguard.charging.ChargeAnimationController"
-    private const val HOOK_NAME = "HideChargingAnim"
+    private const val TAG = "HideChargingAnimation"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_charging_animation")) return
         if (lpparam.packageName != "com.android.systemui") return
 
         hookStartWireAnimation(lpparam)
-        Logger.i(HOOK_NAME, "Loaded")
+        Logger.i(TAG, "已加载")
     }
 
     private fun hookStartWireAnimation(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -29,7 +29,7 @@ object HideChargingAnimationHook : FeatureHook {
                 "startWireAnimation",
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
-                        Logger.d(HOOK_NAME, "Blocking charging animation")
+                        Logger.d(TAG) { "拦截充电动画" }
 
                         val thisObject = param.thisObject
 
@@ -45,9 +45,9 @@ object HideChargingAnimationHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked ChargeAnimationController.startWireAnimation")
+            Logger.i(TAG, "已挂载 ChargeAnimationController.startWireAnimation")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook failed", e)
+            Logger.e(TAG, "挂载失败", e)
         }
     }
 }

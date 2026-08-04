@@ -10,7 +10,7 @@ import com.karen.flymetool.util.FlymeVersionUtils
 
 object HideGestureBarHook : FeatureHook {
 
-    private const val HOOK_NAME = "HideGestureBar"
+    private const val TAG = "HideGestureBar"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_gesture_bar")) return
@@ -35,9 +35,9 @@ object HideGestureBarHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked $className")
+            Logger.i(TAG, "已挂载 $className")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook failed", e)
+            Logger.e(TAG, "挂载失败", e)
         }
     }
 
@@ -51,7 +51,7 @@ object HideGestureBarHook : FeatureHook {
 
             if (mBackButton != null) {
                 XposedHelpers.callMethod(mBackButton, "setAlpha", 0.0f)
-                Logger.d(HOOK_NAME, "MBack button hidden")
+                Logger.d(TAG) { "MBack 按钮已隐藏" }
                 return
             }
 
@@ -63,10 +63,10 @@ object HideGestureBarHook : FeatureHook {
 
             if (homeHandle != null) {
                 XposedHelpers.callMethod(homeHandle, "setAlpha", 0.0f)
-                Logger.d(HOOK_NAME, "Home handle hidden")
+                Logger.d(TAG) { "Home 指示条已隐藏" }
             }
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hide gesture bar failed", e)
+            Logger.e(TAG, "隐藏手势栏失败", e)
         }
     }
 }

@@ -28,7 +28,7 @@ import java.util.Locale
 object StatusBarClockHook : FeatureHook {
 
     private const val CLOCK_CLASS = "com.android.systemui.statusbar.policy.Clock"
-    private const val HOOK_NAME = "StatusBarClock"
+    private const val TAG = "StatusBarClock"
 
     private const val KEY_WEEKDAY = "statusbar_weekday"
     private const val KEY_WEEKDAY_POSITION = "statusbar_weekday_position"
@@ -121,7 +121,7 @@ object StatusBarClockHook : FeatureHook {
             }
             if (segments.isEmpty()) DEFAULT_CUSTOM_SEGMENTS else segments
         } catch (e: Throwable) {
-            Logger.w(HOOK_NAME, "Invalid custom period json, fallback to default segments")
+            Logger.w(TAG, "自定义时段 JSON 无效，已回退默认时段")
             DEFAULT_CUSTOM_SEGMENTS
         }
     }
@@ -140,9 +140,9 @@ object StatusBarClockHook : FeatureHook {
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "Hooked Clock.getSmallTime")
+            Logger.i(TAG, "已挂载 Clock.getSmallTime")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook getSmallTime failed, try updateClock fallback", e)
+            Logger.e(TAG, "挂载 getSmallTime 失败，尝试 updateClock 回退", e)
             mountUpdateClockFallback(lpparam, config)
         }
     }
@@ -161,9 +161,9 @@ object StatusBarClockHook : FeatureHook {
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "Hooked Clock.updateClock as fallback")
+            Logger.i(TAG, "已挂载 Clock.updateClock（回退）")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Fallback updateClock also failed, try onTimeChanged", e)
+            Logger.e(TAG, "updateClock 回退也失败，尝试 onTimeChanged", e)
             mountOnTimeChangedFallback(lpparam, config)
         }
     }
@@ -182,9 +182,9 @@ object StatusBarClockHook : FeatureHook {
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "Hooked Clock.onTimeChanged as fallback")
+            Logger.i(TAG, "已挂载 Clock.onTimeChanged（回退）")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "onTimeChanged fallback also failed", e)
+            Logger.e(TAG, "onTimeChanged 回退也失败", e)
         }
     }
 
@@ -202,9 +202,9 @@ object StatusBarClockHook : FeatureHook {
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "Auto seconds: hooked onTuningChanged")
+            Logger.i(TAG, "自动秒: 已挂载 onTuningChanged")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Auto seconds onTuningChanged failed", e)
+            Logger.e(TAG, "自动秒 onTuningChanged 失败", e)
             try {
                 val clockClass = XposedHelpers.findClass(CLOCK_CLASS, lpparam.classLoader)
                 XposedHelpers.findAndHookMethod(clockClass, "updateShowSeconds", object : XC_MethodHook() {
@@ -212,9 +212,9 @@ object StatusBarClockHook : FeatureHook {
                         XposedHelpers.setBooleanField(param.thisObject, "mShowSeconds", true)
                     }
                 })
-                Logger.i(HOOK_NAME, "Auto seconds: hooked updateShowSeconds")
+                Logger.i(TAG, "自动秒: 已挂载 updateShowSeconds")
             } catch (e2: Throwable) {
-                Logger.e(HOOK_NAME, "Auto seconds updateShowSeconds also failed", e2)
+                Logger.e(TAG, "自动秒 updateShowSeconds 也失败", e2)
             }
         }
     }
@@ -264,7 +264,7 @@ object StatusBarClockHook : FeatureHook {
         return try {
             SimpleDateFormat(pattern, Locale.getDefault()).format(now.time)
         } catch (e: Throwable) {
-            Logger.w(HOOK_NAME, "Invalid custom clock format \"$pattern\", fallback to system format")
+            Logger.w(TAG, "自定义时钟格式 \"$pattern\" 无效，已回退系统格式")
             null
         }
     }

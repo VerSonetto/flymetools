@@ -37,43 +37,43 @@ object AutoAcceptShareHook : FeatureHook {
                         return
                     }
 
-                    Logger.i(TAG, "Incoming confirm activity resumed: $className")
+                    Logger.i(TAG, "收到确认弹窗 Activity: $className")
 
                     activity.window.decorView.postDelayed({
                         try {
                             autoAccept(activity)
                         } catch (e: Throwable) {
-                            Logger.e(TAG, "Auto accept failed", e)
+                            Logger.e(TAG, "自动接受失败", e)
                         }
                     }, 0)
                 }
             })
 
-            Logger.i(TAG, "Hooked BaseBluetoothPermissionActivity.onResume")
+            Logger.i(TAG, "已挂载 BaseBluetoothPermissionActivity.onResume")
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to hook onResume", e)
+            Logger.e(TAG, "挂载 onResume 失败", e)
         }
     }
 
     private fun autoAccept(activity: Activity) {
         val dialog = findDialog(activity)
         if (dialog == null) {
-            Logger.w(TAG, "Dialog not found in activity")
+            Logger.w(TAG, "Activity 中未找到对话框")
             return
         }
 
         if (!dialog.isShowing) {
-            Logger.d(TAG, "Dialog is not showing yet, skip")
+            Logger.d(TAG) { "对话框尚未显示，跳过" }
             return
         }
 
         val button = findPositiveButton(dialog)
         if (button == null) {
-            Logger.w(TAG, "Positive button not found in dialog")
+            Logger.w(TAG, "对话框中未找到确认按钮")
             return
         }
 
-        Logger.i(TAG, "Auto clicking positive button")
+        Logger.i(TAG, "正在自动点击确认按钮")
         button.performClick()
     }
 
@@ -89,7 +89,7 @@ object AutoAcceptShareHook : FeatureHook {
                             return dialog
                         }
                     } catch (e: Throwable) {
-                        Logger.d(TAG, "Failed to access dialog field: ${field.name}")
+                        Logger.d(TAG) { "访问对话框字段失败: ${field.name}" }
                     }
                 }
             }
@@ -113,7 +113,7 @@ object AutoAcceptShareHook : FeatureHook {
                             return button
                         }
                     } catch (e: Throwable) {
-                        Logger.d(TAG, "Failed to invoke getButton method: ${method.name}")
+                        Logger.d(TAG) { "调用 getButton 方法失败: ${method.name}" }
                     }
                 }
             }

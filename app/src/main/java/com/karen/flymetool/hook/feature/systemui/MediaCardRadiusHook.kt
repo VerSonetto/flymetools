@@ -14,7 +14,7 @@ import com.karen.flymetool.util.FlymeVersionUtils
 
 object MediaCardRadiusHook : FeatureHook {
 
-    private const val HOOK_NAME = "MediaCardRadius"
+    private const val TAG = "MediaCardRadius"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "media_card_radius")) return
@@ -74,9 +74,9 @@ object MediaCardRadiusHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked $classPath with radius=${radiusDp}dp")
+            Logger.i(TAG, "已挂载 $classPath，圆角=${radiusDp}dp")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook $classPath failed", e)
+            Logger.e(TAG, "挂载 $classPath 失败", e)
         }
     }
 

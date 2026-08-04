@@ -12,7 +12,7 @@ import com.karen.flymetool.hook.base.XposedPrefs
 object NotificationManageHook : FeatureHook {
 
     private const val NOTIFICATION_INFO = "com.android.systemui.statusbar.notification.row.NotificationInfo"
-    private const val HOOK_NAME = "NotificationManage"
+    private const val TAG = "NotificationManage"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "notification_manage")) return
@@ -29,14 +29,14 @@ object NotificationManageHook : FeatureHook {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val notificationInfo = param.thisObject
                         XposedHelpers.setObjectField(notificationInfo, "mDisableManagerPkgList", emptyList<String>())
-                        Logger.d(HOOK_NAME, "Cleared mDisableManagerPkgList")
+                        Logger.d(TAG) { "已清除 mDisableManagerPkgList" }
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked NotificationInfo constructor")
+            Logger.i(TAG, "已挂载 NotificationInfo 构造器")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook failed", e)
+            Logger.e(TAG, "挂载失败", e)
         }
     }
 }

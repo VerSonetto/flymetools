@@ -24,14 +24,14 @@ object CustomBrowserHook : FeatureHook {
         if (lpparam.packageName != PACKAGE_NAME) return
 
         customBrowserPackage = XposedPrefs.getFeatureString(lpparam, packageName, "custom_browser", "")
-        Logger.i(TAG, "Loaded custom browser package: $customBrowserPackage")
+        Logger.i(TAG, "已加载自定义浏览器包: $customBrowserPackage")
 
         hookIntentSetClassName(lpparam)
     }
 
     private fun hookIntentSetClassName(lpparam: XC_LoadPackage.LoadPackageParam) {
         if (customBrowserPackage.isBlank()) {
-            Logger.i(TAG, "No custom browser set, skipping hook")
+            Logger.i(TAG, "未设置自定义浏览器，跳过 Hook")
             return
         }
 
@@ -51,14 +51,14 @@ object CustomBrowserHook : FeatureHook {
 
                     param.result = intent.setPackage(customBrowserPackage)
 
-                    Logger.i(TAG, "Replaced setClassName($DEFAULT_BROWSER_PACKAGE, $DEFAULT_BROWSER_ACTIVITY) -> setPackage($customBrowserPackage), url: ${intent.data}")
+                    Logger.i(TAG, "已替换 setClassName($DEFAULT_BROWSER_PACKAGE, $DEFAULT_BROWSER_ACTIVITY) -> setPackage($customBrowserPackage), url: ${intent.data}")
                 } catch (e: Throwable) {
-                    Logger.e(TAG, "Error in setClassName hook", e)
+                    Logger.e(TAG, "setClassName Hook 异常", e)
                 }
             }
         })
 
-        Logger.i(TAG, "Hooked Intent.setClassName")
+        Logger.i(TAG, "已挂载 Intent.setClassName")
     }
 
     private fun ensureScheme(intent: Intent) {
@@ -66,7 +66,7 @@ object CustomBrowserHook : FeatureHook {
         if (uri.scheme.isNullOrEmpty()) {
             val fixedUri = Uri.parse("https://$uri")
             intent.data = fixedUri
-            Logger.i(TAG, "Fixed missing scheme: $uri -> $fixedUri")
+            Logger.i(TAG, "已修复缺失 scheme: $uri -> $fixedUri")
         }
     }
 }

@@ -28,7 +28,7 @@ object AODNotificationHook : FeatureHook {
     private const val ADVERT_TICKER_VIEW_OLD = "com.flyme.statusbar.ticker.AdvertTickerView"
     private const val ADVERT_TICKER_VIEW_NEW = "com.flyme.systemui.statusbar.ticker.AdvertTickerView"
     private const val NOTIFICATION_ENTRY = "com.android.systemui.statusbar.notification.collection.NotificationEntry"
-    private const val HOOK_NAME = "AODNotification"
+    private const val TAG = "AODNotification"
     private const val DEFAULT_MAX_LINES = 3
 
     private val handler: Handler by lazy { Handler(Looper.getMainLooper()) }
@@ -94,14 +94,14 @@ object AODNotificationHook : FeatureHook {
                             updateNotificationDisplay(data)
                         }
 
-                        Logger.i(HOOK_NAME, "Added notification container to AODBasicView")
+                        Logger.i(TAG, "已向 AODBasicView 添加通知容器")
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked AODBasicView")
+            Logger.i(TAG, "已挂载 AODBasicView")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook AODBasicView failed", e)
+            Logger.e(TAG, "挂载 AODBasicView 失败", e)
         }
     }
 
@@ -130,14 +130,14 @@ object AODNotificationHook : FeatureHook {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         cachedNotification = null
                         clearNotificationDisplay()
-                        Logger.i(HOOK_NAME, "Cleared notification (Flyme 10)")
+                        Logger.i(TAG, "已清除通知（Flyme 10）")
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked Flyme 10: AlertingNotificationManager")
+            Logger.i(TAG, "已挂载 Flyme 10: AlertingNotificationManager")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook AlertingNotificationManager failed", e)
+            Logger.e(TAG, "挂载 AlertingNotificationManager 失败", e)
         }
     }
 
@@ -169,14 +169,14 @@ object AODNotificationHook : FeatureHook {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         cachedNotification = null
                         clearNotificationDisplay()
-                        Logger.i(HOOK_NAME, "Cleared notification (Flyme 12)")
+                        Logger.i(TAG, "已清除通知（Flyme 12）")
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked Flyme 12: HeadsUpManagerImpl")
+            Logger.i(TAG, "已挂载 Flyme 12: HeadsUpManagerImpl")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook HeadsUpManagerImpl failed", e)
+            Logger.e(TAG, "挂载 HeadsUpManagerImpl 失败", e)
         }
     }
 
@@ -191,7 +191,7 @@ object AODNotificationHook : FeatureHook {
         if (title.isNotEmpty() || content.isNotEmpty()) {
             cachedNotification = NotificationData(notification.smallIcon, title, content)
             updateNotificationDisplay(cachedNotification!!)
-            Logger.i(HOOK_NAME, "Cached notification: $title")
+            Logger.i(TAG, "已缓存通知: $title")
         }
     }
 
@@ -218,7 +218,7 @@ object AODNotificationHook : FeatureHook {
                         if (tickerText.isNotEmpty()) {
                             cachedNotification = NotificationData(icon, "", tickerText)
                             updateNotificationDisplay(cachedNotification!!)
-                            Logger.i(HOOK_NAME, "Received ticker notification: $tickerText")
+                            Logger.i(TAG, "收到 ticker 通知: $tickerText")
                         }
                     }
                 }
@@ -232,14 +232,14 @@ object AODNotificationHook : FeatureHook {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         cachedNotification = null
                         clearNotificationDisplay()
-                        Logger.i(HOOK_NAME, "Cleared ticker notification")
+                        Logger.i(TAG, "已清除 ticker 通知")
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked AdvertTickerView: $className")
+            Logger.i(TAG, "已挂载 AdvertTickerView: $className")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook AdvertTickerView failed", e)
+            Logger.e(TAG, "挂载 AdvertTickerView 失败", e, "host" to className)
         }
     }
 
@@ -296,7 +296,7 @@ object AODNotificationHook : FeatureHook {
                     iv.setImageIcon(data.icon as? android.graphics.drawable.Icon)
                     iv.visibility = View.VISIBLE
                 } catch (e: Exception) {
-                    Logger.e(HOOK_NAME, "Failed to set icon", e)
+                    Logger.e(TAG, "设置图标失败", e)
                     iv.visibility = View.GONE
                 }
             }

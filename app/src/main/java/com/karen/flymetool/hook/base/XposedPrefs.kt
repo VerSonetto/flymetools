@@ -16,7 +16,10 @@ object XposedPrefs {
 
     private const val PREFS_NAME = "flymetool_prefs"
     private const val MODULE_PACKAGE = "com.karen.flymetool"
-    private const val HOOK_NAME = "XposedPrefs"
+    private const val TAG = "XposedPrefs"
+
+    /** 全局调试日志开关 key（UI「关于」页写入，不带 package 前缀） */
+    private const val KEY_DEBUG = "__debug__"
 
     @Volatile
     private var prefs: XSharedPreferences? = null
@@ -71,7 +74,7 @@ object XposedPrefs {
             logLoadStateOnce(p, file)
             p
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Failed to load XSharedPreferences", e)
+            Logger.e(TAG, "加载 XSharedPreferences 失败", e)
             null
         }
     }
@@ -107,21 +110,20 @@ object XposedPrefs {
             false
         }
         Logger.i(
-            HOOK_NAME,
-            "prefs state: path=$path exists=$exists canRead=$canRead size=$size probeOk=$probeOk"
+            TAG,
+            "配置状态: path=$path exists=$exists canRead=$canRead size=$size probeOk=$probeOk"
         )
         if (exists && !canRead) {
             Logger.w(
-                HOOK_NAME,
-                "prefs file exists but canRead=false; will still try XSharedPreferences APIs " +
-                    "(LSPosed may allow this). If all features stay off, fix module prefs permissions " +
-                    "or re-open FlymeTool once after reboot."
+                TAG,
+                "配置文件存在但 canRead=false，仍会尝试 XSharedPreferences 读取（LSPosed 可能允许）。" +
+                    "若功能全部未生效，请修复配置权限或重启后重新打开一次 FlymeTool。"
             )
         }
         if (!exists) {
             Logger.w(
-                HOOK_NAME,
-                "prefs file missing. Open FlymeTool app once and toggle any feature to create " +
+                TAG,
+                "配置文件缺失。请打开一次 FlymeTool 应用并切换任意开关，以创建 " +
                     "shared_prefs/$PREFS_NAME.xml"
             )
         }
@@ -136,10 +138,10 @@ object XposedPrefs {
         return try {
             val p = load() ?: return false
             val value = p.getBoolean(key, false)
-            Logger.d(HOOK_NAME, "Read: $key = $value")
+            Logger.d(TAG) { "读取配置: $key = $value" }
             value
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Read error key=$key", e)
+            Logger.e(TAG, "读取配置失败", e, "key" to key)
             false
         }
     }
@@ -155,10 +157,10 @@ object XposedPrefs {
             // 参数可能在 UI 中热更新，强制关注文件变化（load 内 mtime 判断）
             val p = load() ?: return defaultValue
             val value = p.getInt(key, defaultValue)
-            Logger.d(HOOK_NAME, "Read: $key = $value")
+            Logger.d(TAG) { "读取配置: $key = $value" }
             value
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Read error key=$key", e)
+            Logger.e(TAG, "读取配置失败", e, "key" to key)
             defaultValue
         }
     }
@@ -175,7 +177,7 @@ object XposedPrefs {
             val p = load() ?: return defaultValue
             p.getInt(key, defaultValue)
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Read error key=$key", e)
+            Logger.e(TAG, "读取配置失败", e, "key" to key)
             defaultValue
         }
     }
@@ -190,10 +192,10 @@ object XposedPrefs {
         return try {
             val p = load() ?: return defaultValue
             val value = p.getStringSet(key, defaultValue) ?: defaultValue
-            Logger.d(HOOK_NAME, "Read: $key = $value")
+            Logger.d(TAG) { "读取配置: $key = $value" }
             value
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Read error key=$key", e)
+            Logger.e(TAG, "读取配置失败", e, "key" to key)
             defaultValue
         }
     }
@@ -208,11 +210,23 @@ object XposedPrefs {
         return try {
             val p = load() ?: return defaultValue
             val value = p.getString(key, defaultValue) ?: defaultValue
-            Logger.d(HOOK_NAME, "Read: $key = $value")
+            Logger.d(TAG) { "读取配置: $key = $value" }
             value
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Read error key=$key", e)
+            Logger.e(TAG, "读取配置失败", e, "key" to key)
             defaultValue
+        }
+    }
+
+    /**
+     * 全局调试日志开关：UI「关于」页写入 prefs `__debug__`，Hook 侧启动时读取。
+     */
+    fun isDebugEnabled(lpparam: XC_LoadPackage.LoadPackageParam): Boolean {
+        return try {
+            val p = load() ?: return false
+            p.getBoolean(KEY_DEBUG, false)
+        } catch (_: Throwable) {
+            false
         }
     }
 

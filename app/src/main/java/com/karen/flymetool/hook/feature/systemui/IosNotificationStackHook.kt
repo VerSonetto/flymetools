@@ -159,7 +159,7 @@ object IosNotificationStackHook : FeatureHook {
                         if (!isStackCollapsed()) return
                         if (tryExpandStackFromClick()) {
                             param.result = null
-                            Logger.d(TAG, "折叠点击(row) → 展开列表")
+                            Logger.d(TAG) { "折叠点击(row) → 展开列表" }
                         }
                     }
                 }
@@ -207,7 +207,7 @@ object IosNotificationStackHook : FeatureHook {
                                 ) {
                                     if (tryExpandStackFromClick()) {
                                         param.result = true
-                                        Logger.d(TAG, "折叠整区点击 → 展开列表")
+                                        Logger.d(TAG) { "折叠整区点击 → 展开列表" }
                                     }
                                 }
                                 touchTracking = false
@@ -260,7 +260,7 @@ object IosNotificationStackHook : FeatureHook {
                         param.args[1] = 0 // blurRadius -> 0，无模糊（保留底色/圆角）
                     }
                 })
-                Logger.i(TAG, "MzBlurUtils.create hook ok")
+                Logger.i(TAG, "已挂载 MzBlurUtils.create")
             }
             // 更新路径：setBackgroundBlurDrawableAlpha(View,int,boolean,Function0,Consumer)
             val update = blurCl.declaredMethods.singleOrNull { m ->
@@ -278,7 +278,7 @@ object IosNotificationStackHook : FeatureHook {
                         param.args[1] = 0 // alpha -> 0，已创建的模糊立即隐藏
                     }
                 })
-                Logger.i(TAG, "MzBlurUtils.alpha hook ok")
+                Logger.i(TAG, "已挂载 MzBlurUtils.alpha")
             }
         } catch (e: Throwable) {
             Logger.e(TAG, "MzBlurUtils hook 失败（卡片实时模糊无法在控制中心隐藏）", e)

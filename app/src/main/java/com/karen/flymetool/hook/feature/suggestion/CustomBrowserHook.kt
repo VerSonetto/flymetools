@@ -32,7 +32,7 @@ object CustomBrowserHook : FeatureHook {
         if (lpparam.packageName != PACKAGE_NAME) return
 
         customBrowserPackage = XposedPrefs.getFeatureString(lpparam, packageName, "custom_browser", "")
-        Logger.i(TAG, "Loaded custom browser package: $customBrowserPackage")
+        Logger.i(TAG, "已加载自定义浏览器包: $customBrowserPackage")
 
         hookStartActivity()
         if (FlymeVersionUtils.isFlyme12()) {
@@ -46,9 +46,9 @@ object CustomBrowserHook : FeatureHook {
         try {
             val drawableClass = XposedHelpers.findClass("com.meizu.suggestion.R\$drawable", classLoader)
             shareChooserResId = XposedHelpers.getStaticIntField(drawableClass, "ic_share_chooser")
-            Logger.i(TAG, "Resolved ic_share_chooser: $shareChooserResId")
+            Logger.i(TAG, "已解析 ic_share_chooser: $shareChooserResId")
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to resolve ic_share_chooser", e)
+            Logger.e(TAG, "解析 ic_share_chooser 失败", e)
         }
     }
 
@@ -65,7 +65,7 @@ object CustomBrowserHook : FeatureHook {
                         if (pkg == DEFAULT_BROWSER_PACKAGE || intent.component?.className?.contains("com.android.browser") == true) {
                             intent.component = null
                             intent.setPackage(customBrowserPackage)
-                            Logger.i(TAG, "Redirected browser: $DEFAULT_BROWSER_PACKAGE -> $customBrowserPackage")
+                            Logger.i(TAG, "已重定向浏览器: $DEFAULT_BROWSER_PACKAGE -> $customBrowserPackage")
                         }
                     } else if (FlymeVersionUtils.isFlyme12() && intent.action == Intent.ACTION_CHOOSER) {
                         val share = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return
@@ -76,12 +76,12 @@ object CustomBrowserHook : FeatureHook {
                                     setPackage(customBrowserPackage)
                                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                 }
-                                Logger.i(TAG, "Redirected share URL -> $customBrowserPackage")
+                                Logger.i(TAG, "已重定向分享 URL -> $customBrowserPackage")
                             }
                         }
                     }
                 } catch (e: Throwable) {
-                    Logger.e(TAG, "Error in startActivity hook", e)
+                    Logger.e(TAG, "startActivity Hook 异常", e)
                 }
             }
         }
@@ -93,7 +93,7 @@ object CustomBrowserHook : FeatureHook {
                     if ((paramCount == 1 && method.parameterTypes[0] == Intent::class.java) ||
                         (paramCount == 2 && method.parameterTypes[0] == Intent::class.java && method.parameterTypes[1] == Bundle::class.java)) {
                         XposedBridge.hookMethod(method, hookCallback)
-                        Logger.i(TAG, "Hooked ContextWrapper.startActivity ($paramCount params)")
+                        Logger.i(TAG, "已挂载 ContextWrapper.startActivity（$paramCount 参数）")
                     }
                 }
             }
@@ -104,13 +104,13 @@ object CustomBrowserHook : FeatureHook {
                     if ((paramCount == 1 && method.parameterTypes[0] == Intent::class.java) ||
                         (paramCount == 2 && method.parameterTypes[0] == Intent::class.java && method.parameterTypes[1] == Bundle::class.java)) {
                         XposedBridge.hookMethod(method, hookCallback)
-                        Logger.i(TAG, "Hooked Activity.startActivity ($paramCount params)")
+                        Logger.i(TAG, "已挂载 Activity.startActivity（$paramCount 参数）")
                     }
                 }
             }
 
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to hook startActivity", e)
+            Logger.e(TAG, "挂载 startActivity 失败", e)
         }
     }
 
@@ -137,15 +137,15 @@ object CustomBrowserHook : FeatureHook {
                             Uri.parse("assistant.icon.app://$customBrowserPackage"),
                             size, size
                         )
-                        Logger.i(TAG, "Replaced share icon with $customBrowserPackage")
+                        Logger.i(TAG, "已替换分享图标为 $customBrowserPackage")
                     } catch (e: Throwable) {
-                        Logger.e(TAG, "Error replacing share icon", e)
+                        Logger.e(TAG, "替换分享图标异常", e)
                     }
                 }
             })
-            Logger.i(TAG, "Hooked ImageView.setImageResource for icon replacement")
+            Logger.i(TAG, "已挂载 ImageView.setImageResource（图标替换）")
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to hook setImageResource", e)
+            Logger.e(TAG, "挂载 setImageResource 失败", e)
         }
     }
 
@@ -166,24 +166,24 @@ object CustomBrowserHook : FeatureHook {
                                 if (uriString == ICON_URI_DEFAULT) {
                                     val newUriString = "$ICON_URI_PREFIX$customBrowserPackage"
                                     param.result = Uri.parse(newUriString)
-                                    Logger.i(TAG, "Replaced icon uri: $uriString -> $newUriString")
+                                    Logger.i(TAG, "已替换图标 URI: $uriString -> $newUriString")
                                 }
 
                             } catch (e: Throwable) {
-                                Logger.e(TAG, "Error in Uri.parse hook", e)
+                                Logger.e(TAG, "Uri.parse Hook 异常", e)
                             }
                         }
                     })
 
-                    Logger.i(TAG, "Hooked Uri.parse for icon replacement")
+                    Logger.i(TAG, "已挂载 Uri.parse（图标替换）")
                     return
                 }
             }
 
-            Logger.e(TAG, "Uri.parse method not found")
+            Logger.w(TAG, "未找到 Uri.parse 方法")
 
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to hook Uri.parse", e)
+            Logger.e(TAG, "挂载 Uri.parse 失败", e)
         }
     }
 }

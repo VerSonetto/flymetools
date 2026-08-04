@@ -24,7 +24,7 @@ object MemoryDisplayHook : FeatureHook {
     private const val LAUNCHER_CLASS = "com.android.launcher3.Launcher"
     private const val LAUNCHER_STATE_CLASS = "com.android.launcher3.LauncherState"
     private const val STATE_MANAGER_CLASS = "com.android.launcher3.statemanager.StateManager"
-    private const val HOOK_NAME = "MemoryDisplay"
+    private const val TAG = "MemoryDisplay"
 
     private val handler: Handler by lazy { Handler(Looper.getMainLooper()) }
     private var memoryContainer: LinearLayout? = null
@@ -48,12 +48,12 @@ object MemoryDisplayHook : FeatureHook {
             val launcherStateClass = XposedHelpers.findClass(LAUNCHER_STATE_CLASS, lpparam.classLoader)
             overviewState = XposedHelpers.getStaticObjectField(launcherStateClass, "OVERVIEW")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Get OVERVIEW state failed", e)
+            Logger.e(TAG, "获取 OVERVIEW 状态失败", e)
         }
 
         hookLauncherOnCreate(lpparam)
 
-        Logger.i(HOOK_NAME, "Hooked Launcher for memory display")
+        Logger.i(TAG, "已挂载 Launcher 内存显示")
     }
 
     private fun hookLauncherOnCreate(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -84,14 +84,14 @@ object MemoryDisplayHook : FeatureHook {
                             memoryTextView = null
 
                             createMemoryView(dragLayer, context, deviceProfile)
-                            Logger.i(HOOK_NAME, "Created memory view in DragLayer")
+                            Logger.i(TAG, "已在 DragLayer 创建内存视图")
 
                             if (stateManager != null) {
                                 addStateListener(stateManager)
-                                Logger.i(HOOK_NAME, "Added state listener")
+                                Logger.i(TAG, "已添加状态监听")
                             }
                         } else {
-                            Logger.e(HOOK_NAME, "DragLayer or DeviceProfile is null")
+                            Logger.w(TAG, "DragLayer 或 DeviceProfile 为空")
                         }
                     }
                 }
@@ -109,13 +109,13 @@ object MemoryDisplayHook : FeatureHook {
                         if (memoryContainer == null && dragLayer != null && deviceProfile != null) {
                             val context = XposedHelpers.callMethod(launcher, "getApplicationContext") as Context
                             createMemoryView(dragLayer, context, deviceProfile)
-                            Logger.i(HOOK_NAME, "Recreated memory view in onResume")
+                            Logger.i(TAG, "已在 onResume 重建内存视图")
                         }
                     }
                 }
             )
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook Launcher.onCreate failed", e)
+            Logger.e(TAG, "挂载 Launcher.onCreate 失败", e)
         }
     }
 
@@ -155,7 +155,7 @@ object MemoryDisplayHook : FeatureHook {
 
             XposedHelpers.callMethod(stateManager, "addStateListener", listener)
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Add state listener failed", e)
+            Logger.e(TAG, "添加状态监听失败", e)
         }
     }
 
@@ -206,7 +206,7 @@ object MemoryDisplayHook : FeatureHook {
         memoryContainer?.addView(memoryTextView)
         parent.addView(memoryContainer)
 
-        Logger.i(HOOK_NAME, "Memory view created with marginTop=$marginTop (taskTopMargin=$taskTopMargin)")
+        Logger.i(TAG, "内存视图已创建 marginTop=$marginTop (taskTopMargin=$taskTopMargin)")
     }
 
     private fun showMemoryView() {
@@ -270,7 +270,7 @@ object MemoryDisplayHook : FeatureHook {
 
             memoryTextView?.text = "$availStr 可用 | $totalStr"
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Update memory display failed", e)
+            Logger.e(TAG, "更新内存显示失败", e)
         }
     }
 }

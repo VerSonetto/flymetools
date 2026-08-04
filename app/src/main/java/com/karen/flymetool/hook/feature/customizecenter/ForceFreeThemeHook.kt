@@ -59,7 +59,7 @@ object ForceFreeThemeHook : FeatureHook {
                         if (param.args[0] == Manifest.permission.READ_PHONE_STATE) {
                             if (param.result as Int != PackageManager.PERMISSION_GRANTED) {
                                 param.result = PackageManager.PERMISSION_GRANTED
-                                Logger.d(TAG, "READ_PHONE_STATE permission granted by hook")
+                                Logger.d(TAG) { "READ_PHONE_STATE 权限已授予" }
                             }
                         }
                     }
@@ -82,7 +82,7 @@ object ForceFreeThemeHook : FeatureHook {
                         val result = param.result as? String ?: return
                         if (result == "/themes/public/download") {
                             param.result = "/themes/public/download/trial_url"
-                            Logger.d(TAG, "SharedPreferences URL替换: $result -> /themes/public/download/trial_url")
+                            Logger.d(TAG) { "SharedPreferences URL 替换: $result -> /themes/public/download/trial_url" }
                         }
                     }
                 }

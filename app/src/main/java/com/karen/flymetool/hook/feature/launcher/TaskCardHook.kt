@@ -62,14 +62,14 @@ object TaskCardHook : FeatureHook {
                             param.result = radiusPx
                         }
                     })
-                    Logger.i(TAG, "任务卡片圆角Hook完成: ${method.name} -> ${radiusPx}px")
+                    Logger.i(TAG, "任务卡片圆角 Hook 完成: ${method.name} -> ${radiusPx}px")
                     return
                 }
             }
 
             Logger.w(TAG, "未找到任务卡片圆角方法")
         } catch (e: Throwable) {
-            Logger.e(TAG, "任务卡片圆角Hook失败", e)
+            Logger.e(TAG, "任务卡片圆角 Hook 失败", e)
         }
     }
 
@@ -97,9 +97,9 @@ object TaskCardHook : FeatureHook {
                         param.args[1] = (radius * scale).toInt().coerceAtLeast(0)
                     }
                 })
-            Logger.i(TAG, "背景模糊强度Hook完成: $intensity (基准=$maxBlur)")
+            Logger.i(TAG, "背景模糊强度 Hook 完成: $intensity (基准=$maxBlur)")
         } catch (e: Throwable) {
-            Logger.e(TAG, "背景模糊强度Hook失败", e)
+            Logger.e(TAG, "背景模糊强度 Hook 失败", e)
         }
     }
 }

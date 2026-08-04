@@ -10,7 +10,7 @@ import com.karen.flymetool.hook.base.XposedPrefs
 object PackageInstallerHook : FeatureHook {
 
     private const val ACTIVITY_CLASS = "com.android.packageinstaller.FlymePackageInstallerActivity"
-    private const val HOOK_NAME = "PackageInstaller"
+    private const val TAG = "PackageInstaller"
 
     private var autoInstallEnabled = false
 
@@ -22,9 +22,9 @@ object PackageInstallerHook : FeatureHook {
 
         try {
             hookStartInstallScan(lpparam)
-            Logger.i(HOOK_NAME, "Hooks installed successfully")
+            Logger.i(TAG, "已成功安装 Hook")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook failed", e)
+            Logger.e(TAG, "挂载失败", e)
         }
     }
 
@@ -53,14 +53,14 @@ object PackageInstallerHook : FeatureHook {
                         XposedHelpers.setBooleanField(mzStoreAppInfo, "isBlackApp", false)
                     }
 
-                    Logger.d(HOOK_NAME, "Skipped install scan")
+                    Logger.d(TAG) { "跳过安装扫描" }
 
                     if (autoInstallEnabled) {
                         XposedHelpers.callMethod(thisObject, "doInstallFlyme")
-                        Logger.d(HOOK_NAME, "Auto install triggered")
+                        Logger.d(TAG) { "已触发自动安装" }
                     } else {
                         XposedHelpers.callMethod(thisObject, "updateViewForNewState", 3)
-                        Logger.d(HOOK_NAME, "Showing install confirm UI")
+                        Logger.d(TAG) { "显示安装确认界面" }
                     }
 
                     param.result = null
@@ -68,6 +68,6 @@ object PackageInstallerHook : FeatureHook {
             }
         )
 
-        Logger.i(HOOK_NAME, "Hooked startInstallScan")
+        Logger.i(TAG, "已挂载 startInstallScan")
     }
 }

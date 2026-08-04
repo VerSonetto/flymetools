@@ -10,7 +10,7 @@ import com.karen.flymetool.hook.base.XposedPrefs
 object StatusBarClockSecondsHook : FeatureHook {
 
     private const val CLOCK_CLASS = "com.android.systemui.statusbar.policy.Clock"
-    private const val HOOK_NAME = "StatusBarClockSeconds"
+    private const val TAG = "StatusBarClockSeconds"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "statusbar_clock_seconds")) return
@@ -26,7 +26,7 @@ object StatusBarClockSecondsHook : FeatureHook {
                 }
             })
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Primary hook failed", e)
+            Logger.e(TAG, "主 Hook 失败，尝试回退方案", e)
             tryFallbackHook(lpparam)
         }
     }
@@ -51,7 +51,7 @@ object StatusBarClockSecondsHook : FeatureHook {
                 }
             })
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Fallback hook also failed", e)
+            Logger.e(TAG, "回退 Hook 也失败", e)
         }
     }
 }

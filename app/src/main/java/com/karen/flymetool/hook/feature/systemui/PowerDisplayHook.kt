@@ -24,7 +24,7 @@ object PowerDisplayHook : FeatureHook {
 
     private const val PHONE_STATUS_BAR_VIEW = "com.android.systemui.statusbar.phone.PhoneStatusBarView"
     private const val DARK_ICON_DISPATCHER = "com.android.systemui.plugins.DarkIconDispatcher"
-    private const val HOOK_NAME = "PowerDisplay"
+    private const val TAG = "PowerDisplay"
 
     private val handler: Handler by lazy { Handler(Looper.getMainLooper()) }
     private var powerTextView: TextView? = null
@@ -61,7 +61,7 @@ object PowerDisplayHook : FeatureHook {
                 }
             })
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook failed", e)
+            Logger.e(TAG, "挂载失败", e)
         }
     }
 
@@ -116,7 +116,7 @@ object PowerDisplayHook : FeatureHook {
             val darkIconDispatcher = XposedHelpers.callStaticMethod(dependencyClass, "get", darkIconDispatcherClass)
             XposedHelpers.callMethod(darkIconDispatcher, "addDarkReceiver", darkReceiver)
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Register DarkIconDispatcher failed", e)
+            Logger.e(TAG, "注册 DarkIconDispatcher 失败", e)
             textView.setTextColor(0xFFFFFFFF.toInt())
         }
     }

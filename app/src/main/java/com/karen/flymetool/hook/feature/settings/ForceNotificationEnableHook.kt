@@ -11,7 +11,7 @@ import com.karen.flymetool.hook.base.XposedPrefs
 object ForceNotificationEnableHook : FeatureHook {
 
     private const val NOTIFICATION_BACKEND = "com.android.settings.notification.NotificationBackend"
-    private const val HOOK_NAME = "ForceNotificationEnable"
+    private const val TAG = "ForceNotificationEnable"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "force_notification_enable")) return
@@ -22,9 +22,9 @@ object ForceNotificationEnableHook : FeatureHook {
             hookRecordCanBeBlocked(lpparam)
             hookGetNotificationsBanned(lpparam)
 
-            Logger.i(HOOK_NAME, "All hooks installed successfully")
+            Logger.i(TAG, "全部 Hook 安装成功")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook failed", e)
+            Logger.e(TAG, "挂载失败", e)
         }
     }
 
@@ -35,7 +35,7 @@ object ForceNotificationEnableHook : FeatureHook {
                 param.result = true
             }
         })
-        Logger.i(HOOK_NAME, "Hooked enableSwitch")
+        Logger.i(TAG, "已挂载 enableSwitch")
     }
 
     private fun hookRecordCanBeBlocked(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -50,7 +50,7 @@ object ForceNotificationEnableHook : FeatureHook {
                 } catch (_: Throwable) {}
             }
         })
-        Logger.i(HOOK_NAME, "Hooked recordCanBeBlocked")
+        Logger.i(TAG, "已挂载 recordCanBeBlocked")
     }
 
     private fun hookGetNotificationsBanned(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -60,6 +60,6 @@ object ForceNotificationEnableHook : FeatureHook {
                 param.result = false
             }
         })
-        Logger.i(HOOK_NAME, "Hooked getNotificationsBanned")
+        Logger.i(TAG, "已挂载 getNotificationsBanned")
     }
 }

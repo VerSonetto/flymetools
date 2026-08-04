@@ -1,5 +1,6 @@
 package com.karen.flymetool
 
+import android.os.Build
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 import com.karen.flymetool.hook.entry.HookEntry
@@ -18,36 +19,56 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 class XposedInit : IXposedHookLoadPackage {
 
     companion object {
-        private const val TAG = "XposedInit"
+        private const val TAG = "Boot"
+
+        /** 日志系统每个进程只需初始化一次 */
+        private var loggerInitialized = false
     }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         val packageName = lpparam.packageName
         val entryFactory = entryFactories[packageName] ?: return
 
+        initLoggerOnce(lpparam)
+
         if (!FlymeVersionUtils.isScopeAvailable(packageName)) {
-            Logger.i(TAG, "Skipping $packageName - hidden on this version")
+            Logger.i(TAG, "跳过 $packageName（当前 Flyme 版本不可用）")
             return
         }
 
-        Logger.i(TAG, "Loading hooks for $packageName")
+        Logger.i(TAG, "加载 $packageName 的 Hook")
         try {
             // 触发一次 prefs 状态诊断日志（仅首次）
             XposedPrefs.isFeatureEnabled(lpparam, packageName, "__prefs_diag__")
 
             val entry = loadEntry(packageName, entryFactory)
             entry.initHooks(lpparam)
-            Logger.i(TAG, "Hooks loaded successfully for $packageName")
+            Logger.i(TAG, "$packageName Hook 全部加载完成")
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to load hooks for $packageName", e)
+            Logger.e(TAG, "$packageName Hook 加载失败", e)
         }
+    }
+
+    /** 每个进程只初始化一次：注入版本号、读取调试开关、启动 logcat 热切换监听，并输出启动横幅。 */
+    private fun initLoggerOnce(lpparam: XC_LoadPackage.LoadPackageParam) {
+        if (loggerInitialized) return
+        loggerInitialized = true
+        Logger.init(BuildConfig.VERSION_NAME, XposedPrefs.isDebugEnabled(lpparam))
+        Logger.startCommandListener()
+        Logger.i(
+            TAG,
+            "FlymeTool v${Logger.moduleVersion} 已加载 " +
+                "| pkg=${lpparam.packageName} " +
+                "| flyme=${FlymeVersionUtils.getFullVersion()} " +
+                "| sdk=${Build.VERSION.SDK_INT}"
+        )
     }
 
     private fun loadEntry(packageName: String, factory: () -> HookEntry): HookEntry {
         return try {
             factory()
         } catch (t: Throwable) {
-            Logger.e(TAG, "Entry init failed for $packageName", t)
+            Logger.e(TAG, "$packageName Entry 初始化失败", t)
             object : HookEntry {
                 override val targetPackage: String = packageName
                 override fun initHooks(lpparam: XC_LoadPackage.LoadPackageParam) = Unit

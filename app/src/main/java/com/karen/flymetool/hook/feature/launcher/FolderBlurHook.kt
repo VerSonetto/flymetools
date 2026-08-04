@@ -106,7 +106,7 @@ object FolderBlurHook : FeatureHook {
             )
             Logger.i(TAG, "去掉文件夹遮罩已启用")
         } catch (e: Throwable) {
-            Logger.e(TAG, "去掉文件夹遮罩Hook失败", e)
+            Logger.e(TAG, "去掉文件夹遮罩 Hook 失败", e)
         }
     }
 
@@ -127,7 +127,7 @@ object FolderBlurHook : FeatureHook {
             )
             Logger.i(TAG, "文件夹模糊半径(Flyme12): $radius")
         } catch (e: Throwable) {
-            Logger.e(TAG, "文件夹模糊半径Hook失败(Flyme12)", e)
+            Logger.e(TAG, "文件夹模糊半径 Hook 失败(Flyme12)", e)
         }
     }
 
@@ -182,7 +182,7 @@ object FolderBlurHook : FeatureHook {
             )
             Logger.i(TAG, "文件夹展开模糊强度(Flyme12): $strength")
         } catch (e: Throwable) {
-            Logger.e(TAG, "文件夹展开模糊强度Hook失败(Flyme12)", e)
+            Logger.e(TAG, "文件夹展开模糊强度 Hook 失败(Flyme12)", e)
         }
     }
 
@@ -202,7 +202,7 @@ object FolderBlurHook : FeatureHook {
             )
             Logger.i(TAG, "文件夹模糊半径: $radius")
         } catch (e: Throwable) {
-            Logger.e(TAG, "文件夹模糊半径Hook失败", e)
+            Logger.e(TAG, "文件夹模糊半径 Hook 失败", e)
         }
     }
 
@@ -229,7 +229,7 @@ object FolderBlurHook : FeatureHook {
             )
             Logger.i(TAG, "文件夹展开模糊强度: $strength")
         } catch (e: Throwable) {
-            Logger.e(TAG, "文件夹展开模糊强度Hook失败", e)
+            Logger.e(TAG, "文件夹展开模糊强度 Hook 失败", e)
         }
     }
 }

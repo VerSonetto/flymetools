@@ -25,7 +25,7 @@ object ForceCircleBatteryHook : FeatureHook {
 
     private const val FEATURE_FORCE = "force_camera_circle_battery"
     private const val FEATURE_REPLACE_STATUS_BAR = "circle_battery_status_bar_icon"
-    private const val HOOK_NAME = "ForceCircleBattery"
+    private const val TAG = "ForceCircleBattery"
 
     private const val CAMERA_STATE_CONTROLLER = "com.flyme.systemui.camera.CameraStateController"
     private const val FLYME_BATTERY_METER_VIEW = "com.flyme.statusbar.battery.FlymeBatteryMeterView"
@@ -84,7 +84,7 @@ object ForceCircleBatteryHook : FeatureHook {
         val paint = try {
             Paint(Paint.ANTI_ALIAS_FLAG)
         } catch (t: Throwable) {
-            Logger.w(HOOK_NAME, "Paint(ANTI_ALIAS) failed, retry bare: ${t.message}")
+            Logger.w(TAG, "Paint(ANTI_ALIAS) 失败，已回退裸构造")
             Paint()
         }
         try {
@@ -99,7 +99,7 @@ object ForceCircleBatteryHook : FeatureHook {
         try {
             paint.typeface = typeface ?: Typeface.DEFAULT
         } catch (t: Throwable) {
-            Logger.w(HOOK_NAME, "setTypeface failed: ${t.message}")
+            Logger.w(TAG, "setTypeface 失败（可忽略）")
         }
     }
 
@@ -145,9 +145,9 @@ object ForceCircleBatteryHook : FeatureHook {
                     applyCircleBatteryMode(param.thisObject)
                 }
             })
-            Logger.i(HOOK_NAME, "CameraStateController Hook 完成, replace=$replaceStatusBarIcon")
+            Logger.i(TAG, "CameraStateController Hook 完成, replace=$replaceStatusBarIcon")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "CameraStateController constructor Hook 失败", e)
+            Logger.e(TAG, "CameraStateController 构造 Hook 失败", e)
         }
     }
 
@@ -165,7 +165,7 @@ object ForceCircleBatteryHook : FeatureHook {
             hookKeepStatusBarCircleVisible(clazz)
         }
 
-        Logger.i(HOOK_NAME, "FlymeBatteryMeterView Hook 完成, replace=$replaceStatusBarIcon")
+        Logger.i(TAG, "FlymeBatteryMeterView Hook 完成, replace=$replaceStatusBarIcon")
     }
 
     private fun hookBooleanNoArg(
@@ -179,7 +179,7 @@ object ForceCircleBatteryHook : FeatureHook {
                 method.returnType == Boolean::class.javaPrimitiveType &&
                 method.parameterTypes.isEmpty()
         } ?: run {
-            Logger.w(HOOK_NAME, "未找到 $methodName()")
+            Logger.w(TAG, "未找到 $methodName()")
             return
         }
         method.isAccessible = true
@@ -201,7 +201,7 @@ object ForceCircleBatteryHook : FeatureHook {
                 method.returnType == Boolean::class.javaPrimitiveType &&
                 method.parameterTypes.contentEquals(arrayOf(Boolean::class.javaPrimitiveType))
         } ?: run {
-            Logger.w(HOOK_NAME, "未找到 $methodName(Boolean)")
+            Logger.w(TAG, "未找到 $methodName(Boolean)")
             return
         }
         method.isAccessible = true
@@ -214,7 +214,7 @@ object ForceCircleBatteryHook : FeatureHook {
 
     private fun hookBlockShowCircleWindow(clazz: Class<*>) {
         val method = findNoArgVoidMethod(clazz, "showCircleBatteryIfNecessary") ?: run {
-            Logger.w(HOOK_NAME, "未找到 showCircleBatteryIfNecessary()")
+            Logger.w(TAG, "未找到 showCircleBatteryIfNecessary()")
             return
         }
         XposedBridge.hookMethod(method, object : XC_MethodHook() {
@@ -227,7 +227,7 @@ object ForceCircleBatteryHook : FeatureHook {
 
     private fun hookAlignCircleBatteryWindow(clazz: Class<*>) {
         val method = findNoArgMethod(clazz, "initBatteryWindowLp") ?: run {
-            Logger.w(HOOK_NAME, "未找到 initBatteryWindowLp()")
+            Logger.w(TAG, "未找到 initBatteryWindowLp()")
             return
         }
         XposedBridge.hookMethod(method, object : XC_MethodHook() {
@@ -245,7 +245,7 @@ object ForceCircleBatteryHook : FeatureHook {
                 method.returnType == Void.TYPE &&
                 method.parameterTypes.contentEquals(arrayOf(Boolean::class.javaPrimitiveType))
         } ?: run {
-            Logger.w(HOOK_NAME, "未找到 updateBatteryViewVisibility(Boolean)")
+            Logger.w(TAG, "未找到 updateBatteryViewVisibility(Boolean)")
             return
         }
         method.isAccessible = true
@@ -274,12 +274,12 @@ object ForceCircleBatteryHook : FeatureHook {
                             view.requestLayout()
                             view.invalidate()
                         }
-                        Logger.once(HOOK_NAME, "已标记 $scene 电池图标为环形绘制目标")
+                        Logger.once(TAG, "circle_mark_$scene", "已标记 $scene 电池图标为环形绘制目标")
                     }
                 }
             )
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "setBatteryPercentView Hook 失败", e)
+            Logger.e(TAG, "setBatteryPercentView Hook 失败", e)
         }
     }
 
@@ -300,7 +300,7 @@ object ForceCircleBatteryHook : FeatureHook {
                 }
             )
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "onDraw Hook 失败", e)
+            Logger.e(TAG, "onDraw Hook 失败", e)
         }
     }
 
@@ -326,7 +326,7 @@ object ForceCircleBatteryHook : FeatureHook {
                 }
             )
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "onMeasure Hook 失败", e)
+            Logger.e(TAG, "onMeasure Hook 失败", e)
         }
     }
 
@@ -337,7 +337,7 @@ object ForceCircleBatteryHook : FeatureHook {
                 method.returnType == Void.TYPE &&
                 method.parameterTypes.contentEquals(arrayOf(Boolean::class.javaPrimitiveType))
         } ?: run {
-            Logger.w(HOOK_NAME, "未找到 apply(Boolean)")
+            Logger.w(TAG, "未找到 apply(Boolean)")
             return
         }
         method.isAccessible = true
@@ -366,7 +366,7 @@ object ForceCircleBatteryHook : FeatureHook {
             try {
                 XposedHelpers.callMethod(controller, "updateCircleBatteryWindowVisibility")
             } catch (e: Throwable) {
-                Logger.w(HOOK_NAME, "刷新环形电量窗口失败: ${e.message}")
+                Logger.w(TAG, "刷新环形电量窗口失败")
             }
         }
     }
@@ -388,9 +388,9 @@ object ForceCircleBatteryHook : FeatureHook {
             batteryLp.gravity = blackLp.gravity
             batteryLp.x = blackLp.x
             batteryLp.y = blackLp.y
-            Logger.once(HOOK_NAME, "已复用前摄黑圈坐标对齐环形电量")
+            Logger.once(TAG, "align_black_circle", "已复用前摄黑圈坐标对齐环形电量")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "环形电量坐标对齐失败", e)
+            Logger.e(TAG, "环形电量坐标对齐失败", e)
         }
     }
 
@@ -604,7 +604,7 @@ object ForceCircleBatteryHook : FeatureHook {
         return try {
             XposedHelpers.findClass(className, classLoader)
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "未找到类 $className", e)
+            Logger.w(TAG, "未找到类 $className")
             null
         }
     }

@@ -272,7 +272,7 @@ object IosStackedRecentsHook : FeatureHook {
                 })
             }
         } catch (e: Throwable) {
-            Logger.w(TAG, "占位缩略图绘制 Hook 挂载失败: ${e.message}")
+            Logger.e(TAG, "占位缩略图绘制 Hook 挂载失败", e)
         }
     }
 
@@ -319,12 +319,12 @@ object IosStackedRecentsHook : FeatureHook {
                         recents.setTag(TAG_FULLSCREEN_PROGRESS, progress)
                         requestStackRefresh(recents, taskCl)
                     } catch (e: Throwable) {
-                        Logger.w(TAG, "读取连续手势进度失败: ${e.message}")
+                        Logger.once(TAG, "gesture_progress", "读取连续手势进度失败")
                     }
                 }
             })
         } catch (e: Throwable) {
-            Logger.w(TAG, "AbsSwipeUpHandler 连续进度 Hook 挂载失败: ${e.message}")
+            Logger.e(TAG, "AbsSwipeUpHandler 连续进度 Hook 挂载失败", e)
         }
     }
 
@@ -638,7 +638,7 @@ object IosStackedRecentsHook : FeatureHook {
         try {
             XposedHelpers.callMethod(task, "updateAppLockStatus")
         } catch (e: Throwable) {
-            Logger.once(TAG, "同步原生任务锁状态失败: ${e.message}")
+            Logger.once(TAG, "sync_task_lock", "同步原生任务锁状态失败")
         }
     }
 
@@ -871,7 +871,10 @@ object IosStackedRecentsHook : FeatureHook {
         val activityLockId = resources.getIdentifier("activity_lock", "id", packageName)
         if (headerDebugCount < 5) {
             headerDebugCount++
-            Logger.i("HeaderDebug", "pkg=$packageName taskHead=$taskHeadId icon=$iconId appName=$appNameId taskClass=${task.javaClass.name} headerFound=${task.findViewById<View>(taskHeadId) != null}")
+            Logger.d(TAG) {
+                "pkg=$packageName taskHead=$taskHeadId icon=$iconId appName=$appNameId taskClass=${task.javaClass.name} " +
+                    "headerFound=${task.findViewById<View>(taskHeadId) != null}"
+            }
         }
         if (taskHeadId == 0 || iconId == 0) {
             task.setTag(TAG_HEADER_STATE, HEADER_NOT_FOUND)
@@ -986,7 +989,7 @@ object IosStackedRecentsHook : FeatureHook {
             }
             XposedHelpers.callMethod(recents, "redrawLiveTile")
         } catch (e: Throwable) {
-            Logger.w(TAG, "Live Tile 坐标同步失败: ${e.message}")
+            Logger.once(TAG, "live_tile_sync", "Live Tile 坐标同步失败")
         }
     }
 
@@ -1000,7 +1003,7 @@ object IosStackedRecentsHook : FeatureHook {
                 FloatProperty::class.java.isAssignableFrom(it.type)
         }?.get(null) as? FloatProperty<Any>
     } catch (e: Throwable) {
-        Logger.w(TAG, "$fieldName 未找到: ${e.message}")
+        Logger.w(TAG, "未找到 $fieldName")
         null
     }
 

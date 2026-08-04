@@ -17,7 +17,7 @@ import com.karen.flymetool.hook.base.XposedPrefs
 object TickerClickHook : FeatureHook {
 
     private const val MARQUEE_TICKER = "com.flyme.statusbar.ticker.MarqueeTicker"
-    private const val HOOK_NAME = "TickerClick"
+    private const val TAG = "TickerClick"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "ticker_click")) return
@@ -41,9 +41,9 @@ object TickerClickHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked MarqueeTicker.addEntry")
+            Logger.i(TAG, "已挂载 MarqueeTicker.addEntry")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook MarqueeTicker.addEntry failed", e)
+            Logger.e(TAG, "挂载 MarqueeTicker.addEntry 失败", e)
             tryAlternativeHook(lpparam)
         }
     }
@@ -63,9 +63,9 @@ object TickerClickHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked MarqueeTicker constructor")
+            Logger.i(TAG, "已挂载 MarqueeTicker 构造器（回退方案）")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Alternative hook also failed", e)
+            Logger.e(TAG, "回退方案挂载也失败", e)
         }
     }
 
@@ -75,7 +75,7 @@ object TickerClickHook : FeatureHook {
             val iconSwitcher = XposedHelpers.getObjectField(ticker, "mIconSwitcher") as? ImageSwitcher
 
             if (textSwitcher == null || iconSwitcher == null) {
-                Logger.e(HOOK_NAME, "Switcher views not found")
+                Logger.w(TAG, "未找到 Switcher 视图")
                 return
             }
 
@@ -89,9 +89,9 @@ object TickerClickHook : FeatureHook {
             textSwitcher.isClickable = true
             iconSwitcher.isClickable = true
 
-            Logger.d(HOOK_NAME, "Click listener setup completed")
+            Logger.d(TAG) { "点击监听设置完成" }
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Setup click listener failed", e)
+            Logger.e(TAG, "设置点击监听失败", e)
         }
     }
 
@@ -99,14 +99,14 @@ object TickerClickHook : FeatureHook {
         try {
             val segments = XposedHelpers.getObjectField(ticker, "mSegments") as? ArrayList<*>
             if (segments.isNullOrEmpty()) {
-                Logger.d(HOOK_NAME, "No segments available")
+                Logger.d(TAG) { "无可用 segments" }
                 return
             }
 
             val firstSegment = segments[0] ?: return
             val notification = XposedHelpers.getObjectField(firstSegment, "notification") as? StatusBarNotification
             if (notification == null) {
-                Logger.d(HOOK_NAME, "No notification in segment")
+                Logger.d(TAG) { "segment 中无通知" }
                 return
             }
 
@@ -115,7 +115,7 @@ object TickerClickHook : FeatureHook {
 
             val context = XposedHelpers.getObjectField(ticker, "mContext") as? android.content.Context
             if (context == null) {
-                Logger.e(HOOK_NAME, "Context is null")
+                Logger.e(TAG, "Context 为空")
                 return
             }
 
@@ -123,7 +123,7 @@ object TickerClickHook : FeatureHook {
                 try {
                     launchPendingIntentProperly(contentIntent, context, pkgName, lpparam)
                 } catch (e: Throwable) {
-                    Logger.d(HOOK_NAME, "Proper launch failed: ${e.message}, trying fallback")
+                    Logger.d(TAG) { "正常启动失败（${e.javaClass.simpleName}），尝试回退" }
                     launchPendingIntentFallback(contentIntent, context, pkgName)
                 }
             } else {
@@ -132,7 +132,7 @@ object TickerClickHook : FeatureHook {
 
             haltTicker(ticker)
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Handle ticker click failed", e)
+            Logger.e(TAG, "处理 ticker 点击失败", e)
         }
     }
 
@@ -148,7 +148,7 @@ object TickerClickHook : FeatureHook {
                 val am = XposedHelpers.callStaticMethod(activityManagerNative, "getDefault")
                 XposedHelpers.callMethod(am, "resumeAppSwitches")
             } catch (e: Throwable) {
-                Logger.d(HOOK_NAME, "resumeAppSwitches failed: ${e.message}")
+                Logger.d(TAG) { "resumeAppSwitches 失败（可忽略）" }
             }
 
             val options = ActivityOptions.makeBasic().apply {
@@ -164,7 +164,7 @@ object TickerClickHook : FeatureHook {
             }
 
             contentIntent.send(context, 0, fillInIntent, null, null, null, options)
-            Logger.d(HOOK_NAME, "Launched contentIntent for $pkgName")
+            Logger.i(TAG, "已通过 contentIntent 启动: $pkgName")
         } catch (e: Throwable) {
             throw e
         }
@@ -188,15 +188,15 @@ object TickerClickHook : FeatureHook {
                 0,
                 0
             )
-            Logger.d(HOOK_NAME, "Launched via IntentSender for $pkgName")
+            Logger.i(TAG, "已通过 IntentSender 启动: $pkgName")
         } catch (e: Throwable) {
-            Logger.d(HOOK_NAME, "IntentSender failed: ${e.message}, trying direct send")
+            Logger.d(TAG) { "IntentSender 失败，尝试直接 send()" }
 
             try {
                 contentIntent.send()
-                Logger.d(HOOK_NAME, "Launched via simple send() for $pkgName")
+                Logger.i(TAG, "已通过 send() 启动: $pkgName")
             } catch (e2: Throwable) {
-                Logger.d(HOOK_NAME, "Simple send failed: ${e2.message}, launching by package")
+                Logger.d(TAG) { "send() 失败，按包名启动" }
                 launchAppByPackageName(context, pkgName)
             }
         }
@@ -209,12 +209,12 @@ object TickerClickHook : FeatureHook {
             if (launchIntent != null) {
                 launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 context.startActivity(launchIntent)
-                Logger.d(HOOK_NAME, "Launched app: $pkgName")
+                Logger.i(TAG, "已按包名启动: $pkgName")
             } else {
-                Logger.w(HOOK_NAME, "No launch intent for: $pkgName")
+                Logger.w(TAG, "无启动 Intent: $pkgName")
             }
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Launch app failed", e)
+            Logger.e(TAG, "按包名启动失败", e)
         }
     }
 
@@ -222,7 +222,7 @@ object TickerClickHook : FeatureHook {
         try {
             XposedHelpers.callMethod(ticker, "halt")
         } catch (e: Throwable) {
-            Logger.d(HOOK_NAME, "Halt ticker failed: ${e.message}")
+            Logger.d(TAG) { "halt ticker 失败（可忽略）" }
         }
     }
 }

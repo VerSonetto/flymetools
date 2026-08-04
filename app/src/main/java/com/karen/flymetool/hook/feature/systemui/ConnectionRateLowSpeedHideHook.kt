@@ -10,7 +10,7 @@ import com.karen.flymetool.hook.base.XposedPrefs
 object ConnectionRateLowSpeedHideHook : FeatureHook {
 
     private const val CONNECTION_RATE_VIEW = "com.flyme.statusbar.connectionRateView.ConnectionRateView"
-    private const val HOOK_NAME = "LowSpeedHide"
+    private const val TAG = "ConnectionRateLowSpeedHide"
 
     private var thresholdKbPerS: Int = 10
 
@@ -25,7 +25,7 @@ object ConnectionRateLowSpeedHideHook : FeatureHook {
     private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, threshold: Int) {
         thresholdKbPerS = threshold
         hookOnConnectionRateChange(lpparam)
-        Logger.i(HOOK_NAME, "Loaded, threshold=${thresholdKbPerS}KB/s")
+        Logger.i(TAG, "已加载，阈值=${thresholdKbPerS}KB/s")
     }
 
     private fun hookOnConnectionRateChange(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -47,15 +47,15 @@ object ConnectionRateLowSpeedHideHook : FeatureHook {
                         val shouldHide = rate < thresholdKbPerS
                         if (shouldHide) {
                             param.args[0] = false
-                            Logger.d(HOOK_NAME, "Hiding: rate=${rate.toInt()}KB/s < threshold=${thresholdKbPerS}KB/s")
+                            Logger.d(TAG) { "隐藏低速率: rate=${rate.toInt()}KB/s < 阈值=${thresholdKbPerS}KB/s" }
                         }
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked ConnectionRateView.onConnectionRateChange")
+            Logger.i(TAG, "已挂载 ConnectionRateView.onConnectionRateChange")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook failed", e)
+            Logger.e(TAG, "挂载失败", e)
         }
     }
 }

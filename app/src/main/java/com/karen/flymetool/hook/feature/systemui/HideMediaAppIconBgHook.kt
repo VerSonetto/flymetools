@@ -10,7 +10,7 @@ import com.karen.flymetool.hook.base.XposedPrefs
 
 object HideMediaAppIconBgHook : FeatureHook {
 
-    private const val HOOK_NAME = "HideMediaAppIconBg"
+    private const val TAG = "HideMediaAppIconBg"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_media_app_icon_bg")) return
@@ -40,17 +40,18 @@ object HideMediaAppIconBgHook : FeatureHook {
 
                             if (iconView != null && albumArtView != null) {
                                 iconView.background = null
-                                Logger.once(HOOK_NAME, "Cleared media icon background")
+                                Logger.once(TAG, "cleared_icon_bg", "已清除媒体图标背景")
                             }
-                        } catch (e: Exception) {
+                        } catch (_: Exception) {
+                            // 布局差异等可恢复问题，静默忽略
                         }
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked View.onFinishInflate")
+            Logger.i(TAG, "已挂载 View.onFinishInflate")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook View.onFinishInflate failed", e)
+            Logger.e(TAG, "挂载 View.onFinishInflate 失败", e)
         }
     }
 }

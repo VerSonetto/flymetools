@@ -42,12 +42,12 @@ object ForceFullPackageHook : FeatureHook {
                         obj.put("sysVer", maskId)
                         obj.put("version", maskId)
                         param.result = obj.toString()
-                        Logger.i(TAG, "spoofed sysVer: $sysVer -> $maskId")
+                        Logger.i(TAG, "已伪造 sysVer: $sysVer -> $maskId")
                     }
                 }
             )
         } catch (e: Throwable) {
-            Logger.e(TAG, "hookGenerateNewSysParam failed", e)
+            Logger.e(TAG, "hookGenerateNewSysParam 失败", e)
         }
     }
 
@@ -88,7 +88,7 @@ object ForceFullPackageHook : FeatureHook {
                                     XposedHelpers.callMethod(newObj, "getString", "latestVersion") as? String
                                 } catch (_: Throwable) { null }
                                 if (targetMaskId != null) {
-                                    Logger.i(TAG, "captured target mask id: $targetMaskId")
+                                    Logger.i(TAG, "已捕获目标 mask id: $targetMaskId")
                                 }
                             }
                             return
@@ -119,21 +119,21 @@ object ForceFullPackageHook : FeatureHook {
                             XposedHelpers.callMethod(fakeNew, "put", "needUpdate", true as Any)
                             XposedHelpers.callMethod(fakeNew, "put", "packageType", 0 as Any)
                             XposedHelpers.callMethod(value, "put", "new", fakeNew)
-                            Logger.i(TAG, "created fake new from cur")
+                            Logger.i(TAG, "已基于当前创建伪造 new")
                         } else {
                             val pkgType = try {
                                 XposedHelpers.callMethod(newObj, "getIntValue", "packageType") as? Int ?: 0
                             } catch (_: Throwable) { 0 }
                             if (pkgType == 1) {
                                 XposedHelpers.callMethod(newObj, "put", "packageType", 0 as Any)
-                                Logger.i(TAG, "forced packageType 1 -> 0")
+                                Logger.i(TAG, "已强制 packageType 1 -> 0")
                             }
                         }
                     }
                 }
             )
         } catch (e: Throwable) {
-            Logger.e(TAG, "hookDeliverResponse failed", e)
+            Logger.e(TAG, "hookDeliverResponse 失败", e)
         }
     }
 }

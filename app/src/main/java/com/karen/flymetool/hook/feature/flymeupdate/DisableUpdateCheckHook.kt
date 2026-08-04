@@ -51,7 +51,7 @@ object DisableUpdateCheckHook : FeatureHook {
 
                         if (!isUpdateCheckUrl(url)) return
 
-                        Logger.i(TAG, "Hijacking update check response: $url")
+                        Logger.i(TAG, "劫持更新检查响应: $url")
 
                         val response = param.args[0] ?: return
 
@@ -59,18 +59,18 @@ object DisableUpdateCheckHook : FeatureHook {
                             val code = XposedHelpers.callMethod(response, "getCode") as? Int
                             if (code == 200) {
                                 XposedHelpers.callMethod(response, "setValue", null as Any?)
-                                Logger.i(TAG, "Cleared response value -> no update")
+                                Logger.i(TAG, "已清空响应值 -> 无更新")
                             }
                         } catch (e: Throwable) {
-                            Logger.e(TAG, "Failed to hijack response value", e)
+                            Logger.e(TAG, "劫持响应值失败", e)
                         }
                     }
                 }
             )
 
-            Logger.i(TAG, "BasicRequest.deliverResponse hook installed")
+            Logger.i(TAG, "已挂载 BasicRequest.deliverResponse")
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to hook BasicRequest.deliverResponse", e)
+            Logger.e(TAG, "挂载 BasicRequest.deliverResponse 失败", e)
         }
     }
 
@@ -92,15 +92,15 @@ object DisableUpdateCheckHook : FeatureHook {
                         val key = param.args[0] as? String ?: return
                         if (key == FIRMWARE_CACHE_KEY) {
                             param.result = ""
-                            Logger.d(TAG, "Cleared firmware upgrade cache")
+                            Logger.d(TAG) { "已清除固件升级缓存" }
                         }
                     }
                 }
             )
 
-            Logger.i(TAG, "Firmware cache hook installed")
+            Logger.i(TAG, "已挂载固件缓存")
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to hook firmware cache", e)
+            Logger.e(TAG, "挂载固件缓存失败", e)
         }
     }
 }

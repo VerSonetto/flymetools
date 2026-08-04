@@ -35,9 +35,9 @@ object ForceLiveNotificationHook : FeatureHook {
             hookLiveNotificationController(lpparam)
             hookTickerController(lpparam, targetApps)
             revertLiveCardStyling(lpparam, targetApps)
-            Logger.i(TAG, "Force live notification hooked for: $targetApps")
+            Logger.i(TAG, "已强制灵动通知: $targetApps")
         } catch (e: Throwable) {
-            Logger.e(TAG, "Hook failed", e)
+            Logger.e(TAG, "挂载失败", e)
         }
     }
 
@@ -131,9 +131,9 @@ object ForceLiveNotificationHook : FeatureHook {
                     if (pkg in targetApps) param.result = false
                 }
             })
-            Logger.i(TAG, "Ticker hook registered for NotificationTickController")
+            Logger.i(TAG, "已挂载 NotificationTickController 的 Ticker Hook")
         } catch (e: Throwable) {
-            Logger.e(TAG, "Ticker hook failed", e)
+            Logger.e(TAG, "Ticker Hook 挂载失败", e)
         }
     }
 

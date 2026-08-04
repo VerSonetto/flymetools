@@ -52,7 +52,7 @@ object CaptureUpdateLinkHook : FeatureHook {
 
                         if (!CHECK_URL_PATTERNS.any { url.contains(it, ignoreCase = true) }) return
 
-                        Logger.i(TAG, "Detected update check response: $url")
+                        Logger.i(TAG, "检测到更新检查响应: $url")
 
                         val response = param.args[0] ?: return
 
@@ -75,7 +75,7 @@ object CaptureUpdateLinkHook : FeatureHook {
                             }
 
                             if (updateUrl.isNullOrEmpty()) {
-                                Logger.d(TAG, "No update URL found in response")
+                                Logger.d(TAG) { "响应中未找到更新 URL" }
                                 return
                             }
 
@@ -91,20 +91,20 @@ object CaptureUpdateLinkHook : FeatureHook {
                                 0
                             }
 
-                            Logger.i(TAG, "Captured update link: $updateUrl")
-                            Logger.i(TAG, "Version: $latestVersion, Size: $fileSize, verType: $verType, packageType: $packageType")
+                            Logger.i(TAG, "已捕获更新链接: $updateUrl")
+                            Logger.i(TAG, "版本: $latestVersion, 大小: $fileSize, verType: $verType, packageType: $packageType")
 
                             saveUpdateInfo(updateUrl, latestVersion, fileSize, systemVersion, verType, packageType)
                         } catch (e: Throwable) {
-                            Logger.e(TAG, "Failed to extract update info", e)
+                            Logger.e(TAG, "提取更新信息失败", e)
                         }
                     }
                 }
             )
 
-            Logger.i(TAG, "BasicRequest.deliverResponse hook installed")
+            Logger.i(TAG, "已挂载 BasicRequest.deliverResponse")
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to hook BasicRequest.deliverResponse", e)
+            Logger.e(TAG, "挂载 BasicRequest.deliverResponse 失败", e)
         }
     }
 
@@ -137,12 +137,12 @@ object CaptureUpdateLinkHook : FeatureHook {
             val result = context.contentResolver.insert(uri, values)
 
             if (result != null) {
-                Logger.i(TAG, "Update info saved via ContentProvider")
+                Logger.i(TAG, "已通过 ContentProvider 保存更新信息")
             } else {
-                Logger.e(TAG, "ContentProvider insert returned null")
+                Logger.e(TAG, "ContentProvider insert 返回 null")
             }
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to save update info via ContentProvider", e)
+            Logger.e(TAG, "通过 ContentProvider 保存更新信息失败", e)
         }
     }
 }

@@ -17,7 +17,7 @@ object ShowDataSimOnlyHook : FeatureHook {
     private const val MOBILE_ICON_INTERACTOR = "com.android.systemui.statusbar.pipeline.mobile.domain.interactor.MobileIconInteractor"
     private const val AIRPLANE_MODE_INTERACTOR = "com.android.systemui.statusbar.pipeline.airplane.domain.interactor.AirplaneModeInteractor"
     private const val CONNECTIVITY_CONSTANTS = "com.android.systemui.statusbar.pipeline.shared.ConnectivityConstants"
-    private const val HOOK_NAME = "ShowDataSimOnly"
+    private const val TAG = "ShowDataSimOnly"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "show_data_sim_only")) return
@@ -64,15 +64,15 @@ object ShowDataSimOnlyHook : FeatureHook {
                                 java.lang.Boolean.FALSE
                             )
                             XposedHelpers.setObjectField(param.thisObject, "isVisible", falseFlow)
-                            Logger.i(HOOK_NAME, "Pipeline: blocked subId=$subId, active=$activeSubId")
+                            Logger.d(TAG) { "Pipeline: 拦截 subId=$subId, active=$activeSubId" }
                         }
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked Flyme 12 Pipeline: CellularIconViewModel")
+            Logger.i(TAG, "已挂载 Flyme 12 Pipeline: CellularIconViewModel")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Pipeline hook failed for Flyme 12", e)
+            Logger.e(TAG, "Pipeline Hook 失败（Flyme 12）", e)
         }
     }
 
@@ -97,9 +97,9 @@ object ShowDataSimOnlyHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked $tag: MobileSignalController.notifyListeners")
+            Logger.i(TAG, "已挂载 $tag: MobileSignalController.notifyListeners")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook $tag failed", e)
+            Logger.e(TAG, "挂载 $tag 失败", e)
         }
     }
 }

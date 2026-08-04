@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 object EdgeBackHoldPreviousAppHook : FeatureHook {
 
-    private const val HOOK_NAME = "EdgeBackHoldPrev"
+    private const val TAG = "EdgeBackHoldPreviousApp"
     private const val FEATURE_KEY = "edge_back_hold_previous_app"
     private const val DEFAULT_HOLD_MS = 1000
     private const val DEFAULT_THRESHOLD_DP = 32
@@ -81,10 +81,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         val ctx = resolveContext()
         preparePreviewIcon(ctx)
         showPreview = previewIcon != null && previewTaskId > 0
-        Logger.i(
-            HOOK_NAME,
-            "hold ready show=$showPreview task=$previewTaskId pkg=$previewPkg icon=${previewIcon != null}"
-        )
+        Logger.d(TAG) { "长按就绪 show=$showPreview task=$previewTaskId pkg=$previewPkg icon=${previewIcon != null}" }
         // 手指可能不再 move，持续 invalidate 才能看到图标
         pulseInvalidate()
     }
@@ -152,7 +149,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
             mainHandler.removeCallbacks(holdReadyRunnable)
             mainHandler.postDelayed(holdReadyRunnable, holdMs)
         } catch (t: Throwable) {
-            Logger.e(HOOK_NAME, "postHoldReady failed", t)
+            Logger.e(TAG, "延迟执行长按就绪失败", t)
         }
     }
 
@@ -184,7 +181,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         hookAospThreshold(lpparam)
         hookCallbackFromHandler(lpparam)
 
-        Logger.i(HOOK_NAME, "Loaded hold=${holdMs}ms threshold=${thresholdDp}dp + icon preview")
+        Logger.i(TAG, "已加载 hold=${holdMs}ms threshold=${thresholdDp}dp + 图标预览")
     }
 
     private fun hookFlymeEdgeBackView(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -304,14 +301,14 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                         } catch (_: Throwable) {
                         }
                         vibrateConfirm()
-                        Logger.i(HOOK_NAME, "EdgeBackView hold ${held}ms → previous app")
+                        Logger.i(TAG, "EdgeBackView 长按 ${held}ms → 切换到上一个应用")
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked EdgeBackView + icon preview")
+            Logger.i(TAG, "已挂载 EdgeBackView + 图标预览")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook EdgeBackView failed", e)
+            Logger.e(TAG, "挂载 EdgeBackView 失败", e)
         }
     }
 
@@ -387,7 +384,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
             d.draw(canvas)
             canvas.restoreToCount(save)
         } catch (t: Throwable) {
-            Logger.e(HOOK_NAME, "drawPreviewIcon failed", t)
+            Logger.e(TAG, "绘制预览图标失败", t)
         }
     }
 
@@ -395,12 +392,12 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
     private fun preparePreviewIcon(hint: Context?) {
         try {
             val ctx = hint ?: resolveContext() ?: run {
-                Logger.i(HOOK_NAME, "preparePreview: no context")
+                Logger.d(TAG) { "preparePreview: 无 context" }
                 return
             }
             appContext = ctx.applicationContext ?: ctx
             val tasks = getRecentTasks(8)
-            Logger.i(HOOK_NAME, "preparePreview: tasks=${tasks.size}")
+            Logger.d(TAG) { "preparePreview: tasks=${tasks.size}" }
             if (tasks.isEmpty()) return
             val currentId = getRunningTaskId()
             var target: Any? = null
@@ -417,13 +414,13 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                 previewTaskId = getTaskId(target)
             }
             if (target == null || previewTaskId <= 0) {
-                Logger.i(HOOK_NAME, "preparePreview: no target current=$currentId")
+                Logger.d(TAG) { "preparePreview: 无目标任务 current=$currentId" }
                 return
             }
             val pkg = resolveTaskPackage(target)
             previewPkg = pkg
             if (pkg.isNullOrEmpty()) {
-                Logger.i(HOOK_NAME, "preparePreview: no package for task=$previewTaskId")
+                Logger.d(TAG) { "preparePreview: 任务 $previewTaskId 无包名" }
                 return
             }
             previewIcon = try {
@@ -431,14 +428,14 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                 val ai = pm.getApplicationInfo(pkg, 0)
                 pm.getApplicationIcon(ai).mutate()
             } catch (t: Throwable) {
-                Logger.e(HOOK_NAME, "getApplicationIcon($pkg) failed", t)
+                Logger.e(TAG, "获取应用图标失败", t, "pkg" to pkg)
                 null
             }
             if (previewIcon == null) {
-                Logger.i(HOOK_NAME, "preparePreview: icon null pkg=$pkg")
+                Logger.d(TAG) { "preparePreview: 图标为空 pkg=$pkg" }
             }
         } catch (t: Throwable) {
-            Logger.e(HOOK_NAME, "preparePreviewIcon failed", t)
+            Logger.e(TAG, "preparePreviewIcon 失败", t)
         }
     }
 
@@ -492,9 +489,9 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                 )
             } catch (_: Throwable) {
             }
-            Logger.i(HOOK_NAME, "Hooked EdgePanelParams thresholds")
+            Logger.i(TAG, "已挂载 EdgePanelParams 阈值")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook EdgePanelParams failed", e)
+            Logger.e(TAG, "挂载 EdgePanelParams 失败", e)
         }
     }
 
@@ -520,13 +517,13 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                                 if (!ok) return
                                 p.result = null
                                 vibrateConfirm()
-                                Logger.i(HOOK_NAME, "callback hold ${held}ms → previous app")
+                                Logger.i(TAG, "callback 长按 ${held}ms → 切换到上一个应用")
                             }
                         })
-                        Logger.i(HOOK_NAME, "Hooked callback ${cb.javaClass.name}")
+                        Logger.i(TAG, "已挂载 callback ${cb.javaClass.name}")
                     } catch (t: Throwable) {
                         callbackHooked.set(false)
-                        Logger.e(HOOK_NAME, "hook callback failed", t)
+                        Logger.e(TAG, "挂载 callback 失败", t)
                     }
                 }
             }
@@ -537,7 +534,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                 }
             }
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "hookCallbackFromHandler failed", e)
+            Logger.e(TAG, "hookCallbackFromHandler 失败", e)
         }
     }
 
@@ -577,7 +574,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
             if (previousId <= 0) return false
             startFromRecents(previousId)
         } catch (t: Throwable) {
-            Logger.e(HOOK_NAME, "switchToPreviousApp failed", t)
+            Logger.e(TAG, "switchToPreviousApp 失败", t)
             false
         }
     }
@@ -663,7 +660,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
             )
             true
         } catch (t: Throwable) {
-            Logger.e(HOOK_NAME, "startActivityFromRecents failed", t)
+            Logger.e(TAG, "startActivityFromRecents 失败", t)
             try {
                 val service = XposedHelpers.callStaticMethod(
                     ActivityManager::class.java,
@@ -672,7 +669,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                 XposedHelpers.callMethod(service, "moveTaskToFront", taskId, 0)
                 true
             } catch (t2: Throwable) {
-                Logger.e(HOOK_NAME, "moveTaskToFront failed", t2)
+                Logger.e(TAG, "moveTaskToFront 失败", t2)
                 false
             }
         }

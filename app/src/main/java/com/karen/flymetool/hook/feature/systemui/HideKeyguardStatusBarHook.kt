@@ -11,7 +11,7 @@ import com.karen.flymetool.hook.base.XposedPrefs
 object HideKeyguardStatusBarHook : FeatureHook {
 
     private const val VIEW_CLASS = "com.android.systemui.statusbar.phone.KeyguardStatusBarView"
-    private const val HOOK_NAME = "HideKeyguardStatusBar"
+    private const val TAG = "HideKeyguardStatusBar"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_keyguard_status_bar")) return
@@ -31,9 +31,9 @@ object HideKeyguardStatusBarHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked KeyguardStatusBarView.setVisibility")
+            Logger.i(TAG, "已挂载 KeyguardStatusBarView.setVisibility")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook failed", e)
+            Logger.e(TAG, "挂载失败", e)
         }
     }
 }

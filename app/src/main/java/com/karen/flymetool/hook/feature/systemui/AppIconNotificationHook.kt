@@ -27,16 +27,16 @@ object AppIconNotificationHook : FeatureHook {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "app_icon_notification")) return
         if (lpparam.packageName != "com.android.systemui") return
 
-        Logger.i(TAG, "Hooking StatusBarIconView and Ticker")
+        Logger.i(TAG, "开始挂载 StatusBarIconView 与 Ticker")
 
         try {
             hookFlymeNotificationIconUtils(lpparam)
             hookStatusBarIconView(lpparam)
             hookMarqueeTicker(lpparam)
 
-            Logger.i(TAG, "All hooks applied successfully")
+            Logger.i(TAG, "全部 Hook 挂载完成")
         } catch (e: Throwable) {
-            Logger.e(TAG, "Hook failed", e)
+            Logger.e(TAG, "Hook 挂载失败", e)
         }
     }
 
@@ -76,7 +76,7 @@ object AppIconNotificationHook : FeatureHook {
                             XposedHelpers.setBooleanField(thisObject, "mShowsConversation", true)
                         }
                     } catch (e: Exception) {
-                        Logger.e(TAG, "Failed to get app icon for $pkgName", e)
+                        Logger.once(TAG, "app_icon_$pkgName", "获取应用图标失败 pkg=$pkgName")
                     }
                 }
             }
@@ -151,9 +151,9 @@ object AppIconNotificationHook : FeatureHook {
                 hookTickerIconColorFilter(lpparam)
             }
 
-            Logger.i(TAG, "Hooked MarqueeTicker.addEntry and onDarkChanged")
+            Logger.i(TAG, "已挂载 MarqueeTicker.addEntry 和 onDarkChanged")
         } catch (e: Throwable) {
-            Logger.w(TAG, "MarqueeTicker hook failed: ${e.message}")
+            Logger.e(TAG, "挂载 MarqueeTicker 失败", e)
         }
     }
 
@@ -164,7 +164,7 @@ object AppIconNotificationHook : FeatureHook {
         try {
             return XposedHelpers.findClass("com.flyme.statusbar.ticker.MarqueeTicker", lpparam.classLoader)
         } catch (_: Throwable) {}
-        Logger.w(TAG, "MarqueeTicker class not found")
+        Logger.w(TAG, "未找到 MarqueeTicker 类")
         return null
     }
 
@@ -209,9 +209,14 @@ object AppIconNotificationHook : FeatureHook {
                 }
             )
 
-            Logger.i(TAG, "Hooked FlymeNotificationIconUtils.resetNotificationSmallIconIfNeed")
+            Logger.i(TAG, "已挂载 FlymeNotificationIconUtils.resetNotificationSmallIconIfNeed")
         } catch (e: Throwable) {
-            Logger.w(TAG, "FlymeNotificationIconUtils not found or hook failed: ${e.message}")
+            if (e is ClassNotFoundException || e is NoClassDefFoundError) {
+                // 该版本无此类：预期降级
+                Logger.w(TAG, "FlymeNotificationIconUtils 不存在（该版本无此类）")
+            } else {
+                Logger.e(TAG, "挂载 FlymeNotificationIconUtils 失败", e)
+            }
         }
     }
 
@@ -234,7 +239,7 @@ object AppIconNotificationHook : FeatureHook {
         return try {
             context.packageManager.getApplicationIcon(packageName)
         } catch (e: Exception) {
-            Logger.w(TAG, "Failed to get app icon for $packageName: ${e.message}")
+            Logger.once(TAG, "no_icon_$packageName", "获取应用图标失败 pkg=$packageName")
             null
         }
     }

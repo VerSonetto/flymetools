@@ -715,7 +715,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                 }
             }
         } catch (throwable: Throwable) {
-            Logger.once(TAG, "运行时降级: ${throwable.javaClass.simpleName}: ${throwable.message}")
+            Logger.once(TAG, "runtime_degrade", "运行时降级: ${throwable.javaClass.simpleName}: ${throwable.message}")
         } finally {
             state.applying = false
         }

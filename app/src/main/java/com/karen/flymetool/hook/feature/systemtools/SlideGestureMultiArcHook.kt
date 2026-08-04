@@ -66,7 +66,7 @@ object SlideGestureMultiArcHook : FeatureHook {
         hookLauncherItems(lpparam)
         hookArcLayout(lpparam)
 
-        Logger.i(TAG, "Loaded, arcCount=${readArcCount()}")
+        Logger.i(TAG, "已加载，圆弧数=${readArcCount()}")
     }
 
     private fun hookLauncherItems(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -96,7 +96,7 @@ object SlideGestureMultiArcHook : FeatureHook {
                         val expanded = buildExpandedLaunchItems(param.thisObject, source, original, arcCount)
                         if (expanded.size > original.size) {
                             param.result = expanded
-                            Logger.d(TAG, "expanded launch items ${original.size} -> ${expanded.size}")
+                            Logger.d(TAG) { "扩展快捷项 ${original.size} -> ${expanded.size}" }
                         }
                     } catch (t: Throwable) {
                         Logger.e(TAG, "扩展快捷项失败", t)
@@ -104,7 +104,7 @@ object SlideGestureMultiArcHook : FeatureHook {
                 }
             })
 
-            Logger.i(TAG, "Hooked launch item builder")
+            Logger.i(TAG, "已挂载快捷项构建")
         } catch (t: Throwable) {
             Logger.e(TAG, "Hook 快捷项构建失败", t)
         }
@@ -194,7 +194,7 @@ object SlideGestureMultiArcHook : FeatureHook {
                     }
                 }
             )
-            Logger.i(TAG, "Hooked GestureAppLauncher.onLayout")
+            Logger.i(TAG, "已挂载 GestureAppLauncher.onLayout")
         } catch (t: Throwable) {
             Logger.e(TAG, "Hook 圆弧布局失败", t)
         }

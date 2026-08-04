@@ -10,7 +10,7 @@ import com.karen.flymetool.util.FlymeVersionUtils
 
 object NotificationIconLimitHook : FeatureHook {
 
-    private const val HOOK_NAME = "NotificationIconLimit"
+    private const val TAG = "NotificationIconLimit"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "notification_icon_limit")) return
@@ -57,9 +57,9 @@ object NotificationIconLimitHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "通知图标数量限制(Flyme12): $maxIcons")
+            Logger.i(TAG, "通知图标数量限制(Flyme12): $maxIcons")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook failed (Flyme12)", e)
+            Logger.e(TAG, "挂载失败（Flyme12）", e)
         }
     }
 
@@ -77,14 +77,14 @@ object NotificationIconLimitHook : FeatureHook {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val thisObject = param.thisObject
                         XposedHelpers.setObjectField(thisObject, "mMaxStaticIcons", maxIcons)
-                        Logger.once(HOOK_NAME, "mMaxStaticIcons = $maxIcons")
+                        Logger.once(TAG, "max_static_icons", "mMaxStaticIcons = $maxIcons")
                     }
                 }
             )
 
-            Logger.i(HOOK_NAME, "通知图标数量限制: $maxIcons")
+            Logger.i(TAG, "通知图标数量限制: $maxIcons")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook failed", e)
+            Logger.e(TAG, "挂载失败", e)
         }
     }
 }

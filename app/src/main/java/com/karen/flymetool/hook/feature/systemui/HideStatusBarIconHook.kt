@@ -18,7 +18,7 @@ import com.karen.flymetool.hook.base.XposedPrefs
  */
 object HideStatusBarIconHook : FeatureHook {
 
-    private const val HOOK_NAME = "HideStatusBarIcon"
+    private const val TAG = "HideStatusBarIcon"
 
     /** 用户可选：日常可见 / 条件触发。不含 TTY、以太网等冷门项。 */
     private val SLOT_LABELS = linkedMapOf(
@@ -90,7 +90,7 @@ object HideStatusBarIconHook : FeatureHook {
         hideMobile = "mobile" in hiddenKeys
         blockedSlots = hiddenKeys.toSet()
 
-        Logger.i(HOOK_NAME, "keys=$hiddenKeys hideWifi=$hideWifi hideMobile=$hideMobile")
+        Logger.i(TAG, "已加载 keys=$hiddenKeys hideWifi=$hideWifi hideMobile=$hideMobile")
 
         resolveSlotsFromPolicy(lpparam, hiddenKeys)
         hookController(lpparam)
@@ -133,7 +133,7 @@ object HideStatusBarIconHook : FeatureHook {
                         resolved.add("phone_signal")
                     }
                     blockedSlots = resolved
-                    Logger.i(HOOK_NAME, "resolved slots=$resolved")
+                    Logger.d(TAG) { "已解析 slots=$resolved" }
                 }
             })
         }
@@ -171,7 +171,7 @@ object HideStatusBarIconHook : FeatureHook {
 
     private fun hookController(lpparam: XC_LoadPackage.LoadPackageParam) {
         val implClass = findControllerClass(lpparam) ?: run {
-            Logger.e(HOOK_NAME, "StatusBarIconControllerImpl not found")
+            Logger.w(TAG, "未找到 StatusBarIconControllerImpl")
             return
         }
 
@@ -189,7 +189,7 @@ object HideStatusBarIconHook : FeatureHook {
                 }
             )
         } catch (e: Throwable) {
-            Logger.w(HOOK_NAME, "setIcon hook failed: ${e.message}")
+            Logger.e(TAG, "setIcon Hook 挂载失败", e)
         }
 
         // 新 pipeline 注册移动图标时直接跳过
@@ -206,7 +206,7 @@ object HideStatusBarIconHook : FeatureHook {
                     }
                 )
             } catch (e: Throwable) {
-                Logger.w(HOOK_NAME, "setNewMobileIconSubIds: ${e.message}")
+                Logger.w(TAG, "setNewMobileIconSubIds 失败（可忽略）")
             }
         }
 
@@ -239,7 +239,7 @@ object HideStatusBarIconHook : FeatureHook {
             }
         }
 
-        Logger.i(HOOK_NAME, "controller=${implClass.name}")
+        Logger.i(TAG, "controller=${implClass.name}")
     }
 
     /** 新 pipeline View 自己管可见性，强制 GONE */
@@ -298,7 +298,7 @@ object HideStatusBarIconHook : FeatureHook {
                 )
             } catch (_: Throwable) {
             }
-            Logger.i(HOOK_NAME, "pipeline view hooked: $name")
+            Logger.i(TAG, "已挂载 pipeline view: $name")
         }
     }
 
@@ -315,7 +315,7 @@ object HideStatusBarIconHook : FeatureHook {
                 String::class.java, Boolean::class.javaPrimitiveType, hook
             )
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "setIconVisibility(2) failed", e)
+            Logger.e(TAG, "setIconVisibility 挂载失败", e)
         }
         try {
             XposedHelpers.findAndHookMethod(
@@ -371,7 +371,7 @@ object HideStatusBarIconHook : FeatureHook {
                 }
                 .firstOrNull()
         } catch (e: Exception) {
-            Logger.e(HOOK_NAME, "dex scan failed", e)
+            Logger.e(TAG, "dex 扫描失败", e)
             null
         }
     }

@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 object EdgeBackVibrateHook : FeatureHook {
 
-    private const val HOOK_NAME = "EdgeBackVibrate"
+    private const val TAG = "EdgeBackVibrate"
     private const val FEATURE_KEY = "edge_back_vibrate_intensity"
     private const val HANDLER = "com.android.systemui.navigationbar.gestural.EdgeBackGestureHandler"
     private const val EDGE_BACK_EFFECT_ID = 31025
@@ -43,7 +43,7 @@ object EdgeBackVibrateHook : FeatureHook {
 
         hookForceEnableFlag(lpparam)
         hookVibrationEffectGet()
-        Logger.i(HOOK_NAME, "Loaded, intensity=$intensity")
+        Logger.i(TAG, "已加载，强度=$intensity")
     }
 
     private fun hookForceEnableFlag(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -92,19 +92,19 @@ object EdgeBackVibrateHook : FeatureHook {
                                         }
                                     }
                                 })
-                                Logger.i(HOOK_NAME, "Hooked ${cb.javaClass.name}.triggerBack flag")
+                                Logger.i(TAG, "已挂载 ${cb.javaClass.name}.triggerBack flag")
                             } catch (t: Throwable) {
                                 triggerHooked.set(false)
-                                Logger.e(HOOK_NAME, "hook triggerBack flag failed", t)
+                                Logger.e(TAG, "挂载 triggerBack flag 失败", t)
                             }
                         }
                     })
                 } catch (_: Throwable) {
                 }
             }
-            Logger.i(HOOK_NAME, "Hooked updateIsEnabledMZ force flag")
+            Logger.i(TAG, "已挂载 updateIsEnabledMZ 强制 flag")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook force flag failed", e)
+            Logger.e(TAG, "挂载强制 flag 失败", e)
         }
     }
 
@@ -129,14 +129,14 @@ object EdgeBackVibrateHook : FeatureHook {
                                     VibrationEffect.createOneShot(VIBRATE_DURATION_MS, amp)
                             }
                         } catch (t: Throwable) {
-                            Logger.e(HOOK_NAME, "replace effect failed", t)
+                            Logger.e(TAG, "替换振动效果失败", t)
                         }
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "Hooked VibrationEffect.get(31025)")
+            Logger.i(TAG, "已挂载 VibrationEffect.get(31025)")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook VibrationEffect.get failed", e)
+            Logger.e(TAG, "挂载 VibrationEffect.get 失败", e)
         }
     }
 }

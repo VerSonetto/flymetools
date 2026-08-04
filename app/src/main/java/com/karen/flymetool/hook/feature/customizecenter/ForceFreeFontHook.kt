@@ -52,7 +52,7 @@ object ForceFreeFontHook : FeatureHook {
 
                         if (argStr.contains(TARGET_PATH) && !argStr.contains("trial_url")) {
                             param.args[0] = argStr.replace(TARGET_PATH, REPLACEMENT_PATH)
-                            Logger.d(TAG, "String.concat 参数已替换")
+                            Logger.d(TAG) { "String.concat 参数已替换" }
                         }
                     }
 
@@ -60,7 +60,7 @@ object ForceFreeFontHook : FeatureHook {
                         val result = param.result as? String ?: return
                         if (result.contains(TARGET_PATH) && !result.contains("trial_url")) {
                             param.result = result.replace(TARGET_PATH, REPLACEMENT_PATH)
-                            Logger.d(TAG, "String.concat 结果已替换")
+                            Logger.d(TAG) { "String.concat 结果已替换" }
                         }
                     }
                 }
@@ -81,7 +81,7 @@ object ForceFreeFontHook : FeatureHook {
                         val result = param.result as? String ?: return
                         if (result.contains(TARGET_PATH) && !result.contains("trial_url")) {
                             param.result = result.replace(TARGET_PATH, REPLACEMENT_PATH)
-                            Logger.d(TAG, "StringBuilder.toString 结果已替换")
+                            Logger.d(TAG) { "StringBuilder.toString 结果已替换" }
                         }
                     }
                 }
@@ -100,7 +100,7 @@ object ForceFreeFontHook : FeatureHook {
                         val result = param.result as? String ?: return
                         if (result.contains(TARGET_PATH) && !result.contains("trial_url")) {
                             param.result = result.replace(TARGET_PATH, REPLACEMENT_PATH)
-                            Logger.d(TAG, "StringBuffer.toString 结果已替换")
+                            Logger.d(TAG) { "StringBuffer.toString 结果已替换" }
                         }
                     }
                 }
@@ -131,11 +131,11 @@ object ForceFreeFontHook : FeatureHook {
                                         override fun afterHookedMethod(param: MethodHookParam) {
                                             if (param.result == false) {
                                                 param.result = true
-                                                Logger.d(TAG, "许可检查通过 in ${clazz.simpleName}")
+                                                Logger.d(TAG) { "许可检查通过 in ${clazz.simpleName}" }
                                             }
                                         }
                                     })
-                                    Logger.i(TAG, "Hooked license check in ${clazz.name}")
+                                    Logger.i(TAG, "已挂载许可检查 in ${clazz.name}")
                                 }
                             }
                         }
@@ -157,7 +157,7 @@ object ForceFreeFontHook : FeatureHook {
                         if (param.args[0] == Manifest.permission.READ_PHONE_STATE) {
                             if (param.result as Int != PackageManager.PERMISSION_GRANTED) {
                                 param.result = PackageManager.PERMISSION_GRANTED
-                                Logger.d(TAG, "READ_PHONE_STATE 权限已授予")
+                                Logger.d(TAG) { "READ_PHONE_STATE 权限已授予" }
                             }
                         }
                     }

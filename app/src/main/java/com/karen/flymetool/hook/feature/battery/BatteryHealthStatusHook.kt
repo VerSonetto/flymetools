@@ -20,7 +20,7 @@ object BatteryHealthStatusHook : FeatureHook {
     private const val TAG = "BatteryHealthStatus"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        Logger.i(TAG, "handle called")
+        Logger.i(TAG, "handle 被调用")
 
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "health_monitor")) return
 
@@ -44,12 +44,12 @@ object BatteryHealthStatusHook : FeatureHook {
 
                         val sohPrefs = context.getSharedPreferences("StarCoreManager", 0)
                         val soh = sohPrefs.getInt("soh", -1)
-                        Logger.i(TAG, "SOH read: $soh")
+                        Logger.i(TAG, "读取 SOH: $soh")
 
                         val currentText = tvStatus.text.toString()
                         if (soh > 0 && !currentText.contains("%")) {
                             tvStatus.text = "$currentText ($soh%)"
-                            Logger.i(TAG, "Updated status: ${tvStatus.text}")
+                            Logger.i(TAG, "已更新状态: ${tvStatus.text}")
                         }
 
                         val cycleCount = getCycleCount(context)
@@ -58,9 +58,9 @@ object BatteryHealthStatusHook : FeatureHook {
                 }
             )
 
-            Logger.i(TAG, "hook installed")
+            Logger.i(TAG, "Hook 已安装")
         } catch (e: Throwable) {
-            Logger.e(TAG, "hook failed", e)
+            Logger.e(TAG, "Hook 失败", e)
         }
     }
 
@@ -118,13 +118,13 @@ object BatteryHealthStatusHook : FeatureHook {
         card.addView(titleTv)
         card.addView(valueTv)
         root.addView(card, tipsIndex + 1)
-        Logger.i(TAG, "cycle card added: $cycleCount")
+        Logger.i(TAG, "已添加循环次数卡片: $cycleCount")
     }
 
     private fun findTextView(view: View, name: String): TextView? {
         val id = view.resources.getIdentifier(name, "id", view.context.packageName)
         if (id == 0) {
-            Logger.w(TAG, "resource $name not found")
+            Logger.w(TAG, "未找到资源 $name")
             return null
         }
         return view.findViewById(id)
@@ -136,7 +136,7 @@ object BatteryHealthStatusHook : FeatureHook {
             val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             intent?.getIntExtra("android.os.extra.CYCLE_COUNT", -1) ?: -1
         } catch (e: Throwable) {
-            Logger.e(TAG, "read cycle count failed", e)
+            Logger.e(TAG, "读取循环次数失败", e)
             -1
         }
     }

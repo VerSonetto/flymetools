@@ -17,7 +17,7 @@ object HideKeyguardFingerprintIconHook : FeatureHook {
     private const val AUTH_CONTROLLER = "com.android.systemui.biometrics.AuthController"
     private const val UDFPS_CONTROLLER = "com.android.systemui.biometrics.UdfpsController"
     private const val DEVICE_ENTRY_ICON = "com.android.systemui.keyguard.ui.view.DeviceEntryIconView"
-    private const val HOOK_NAME = "HideKeyguardFpIcon"
+    private const val TAG = "HideKeyguardFpIcon"
     private const val FEATURE_KEY = "hide_keyguard_fingerprint_icon"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
@@ -29,7 +29,7 @@ object HideKeyguardFingerprintIconHook : FeatureHook {
         forceDismissOnShowBlocked(lpparam)
         hideDeviceEntryFingerprint(lpparam)
 
-        Logger.i(HOOK_NAME, "Loaded")
+        Logger.i(TAG, "已加载")
     }
 
     /** 拦截 showFingerprintIcon，禁止把图标再亮出来 */
@@ -45,9 +45,9 @@ object HideKeyguardFingerprintIconHook : FeatureHook {
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "Blocked $className.showFingerprintIcon")
+            Logger.i(TAG, "已拦截 $className.showFingerprintIcon")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook $className.showFingerprintIcon failed", e)
+            Logger.e(TAG, "挂载 $className.showFingerprintIcon 失败", e)
         }
     }
 
@@ -82,9 +82,9 @@ object HideKeyguardFingerprintIconHook : FeatureHook {
                     }
                 }
             )
-            Logger.i(HOOK_NAME, "UdfpsController dismiss + shouldDismiss hooked")
+            Logger.i(TAG, "已挂载 UdfpsController dismiss + shouldDismiss")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "forceDismiss setup failed", e)
+            Logger.e(TAG, "forceDismiss 设置失败", e)
         }
     }
 
@@ -144,9 +144,9 @@ object HideKeyguardFingerprintIconHook : FeatureHook {
                 }
             )
 
-            Logger.i(HOOK_NAME, "Hooked DeviceEntryIconView fingerprint hide")
+            Logger.i(TAG, "已挂载 DeviceEntryIconView 指纹隐藏")
         } catch (e: Throwable) {
-            Logger.e(HOOK_NAME, "Hook DeviceEntryIconView failed", e)
+            Logger.e(TAG, "挂载 DeviceEntryIconView 失败", e)
         }
     }
 }

@@ -44,13 +44,13 @@ object CustomChargeLimitHook : FeatureHook {
                             applyCustomValue(activity)
                             startWatchingPrefs(activity)
                         } catch (e: Throwable) {
-                            Logger.e(TAG, "setup failed", e)
+                            Logger.e(TAG, "设置失败", e)
                         }
                     }
                 }
             )
         } catch (e: Throwable) {
-            Logger.e(TAG, "hook failed", e)
+            Logger.e(TAG, "挂载失败", e)
         }
     }
 

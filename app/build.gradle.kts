@@ -90,6 +90,13 @@ android {
         versionCode = dateCode
         versionName = versionProps.getProperty("versionName") ?: "1.0"
 
+        // 注入版本号供 Logger 输出，定位日志来自哪个 APK
+        buildConfigField(
+            "String",
+            "VERSION_NAME",
+            "\"${versionProps.getProperty("versionName") ?: "1.0"}\""
+        )
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {

@@ -12,6 +12,9 @@ object PrefsHelper {
     private const val CURRENT_INTRO_VERSION = 1
     private const val DONATE_DIALOG_SHOWN_KEY = "donate_dialog_shown"
 
+    /** 全局调试日志开关（不带 package 前缀，Hook 侧启动读取） */
+    private const val DEBUG_LOG_KEY = "__debug__"
+
     private fun getPrefs(context: Context): SharedPreferences {
         // Android N+ 上 MODE_WORLD_READABLE 会抛 SecurityException。
         // 仍优先尝试，以便旧环境 / 部分框架下生成更易被 Xposed 读取的文件。
@@ -159,6 +162,16 @@ object PrefsHelper {
     fun setFeatureString(context: Context, packageName: String, featureKey: String, value: String) {
         editPrefs(context) {
             putString("$packageName:$featureKey:value", value)
+        }
+    }
+
+    fun isDebugLogEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(DEBUG_LOG_KEY, false)
+    }
+
+    fun setDebugLogEnabled(context: Context, enabled: Boolean) {
+        editPrefs(context) {
+            putBoolean(DEBUG_LOG_KEY, enabled)
         }
     }
 

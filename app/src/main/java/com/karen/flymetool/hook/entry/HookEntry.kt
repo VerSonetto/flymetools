@@ -34,7 +34,7 @@ fun safeInitHooks(
             val hook = factory()
             hook.handle(lpparam, targetPackage)
         } catch (e: Throwable) {
-            Logger.e(targetPackage, "Hook $name failed", e)
+            Logger.e("HookEntry", "Hook $name 执行失败", e, "pkg" to targetPackage)
         }
     }
 }

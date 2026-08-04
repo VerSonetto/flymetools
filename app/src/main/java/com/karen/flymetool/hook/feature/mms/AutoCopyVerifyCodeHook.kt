@@ -42,18 +42,18 @@ object AutoCopyVerifyCodeHook : FeatureHook {
                         override fun afterHookedMethod(param: MethodHookParam) {
                             try {
                                 appContext = param.thisObject as? Context
-                                Logger.i(TAG, "Captured MmsApp context")
+                                Logger.i(TAG, "已捕获 MmsApp context")
                             } catch (e: Throwable) {
-                                Logger.e(TAG, "Failed to capture context", e)
+                                Logger.e(TAG, "捕获 context 失败", e)
                             }
                         }
                     })
-                    Logger.i(TAG, "Hooked MmsApp.onCreate")
+                    Logger.i(TAG, "已挂载 MmsApp.onCreate")
                     return
                 }
             }
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to hook MmsApp onCreate", e)
+            Logger.e(TAG, "挂载 MmsApp onCreate 失败", e)
         }
     }
 
@@ -72,20 +72,20 @@ object AutoCopyVerifyCodeHook : FeatureHook {
                                 handleParseResult(parseResult)
 
                             } catch (e: Throwable) {
-                                Logger.e(TAG, "Error in parse hook", e)
+                                Logger.e(TAG, "parse Hook 异常", e)
                             }
                         }
                     })
 
-                    Logger.i(TAG, "Hooked DexUtil.parse")
+                    Logger.i(TAG, "已挂载 DexUtil.parse")
                     return
                 }
             }
 
-            Logger.w(TAG, "parse method not found in DexUtil")
+            Logger.w(TAG, "DexUtil 中未找到 parse 方法")
 
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to hook DexUtil.parse", e)
+            Logger.e(TAG, "挂载 DexUtil.parse 失败", e)
         }
     }
 
@@ -94,28 +94,28 @@ object AutoCopyVerifyCodeHook : FeatureHook {
             val mType = XposedHelpers.getIntField(parseResult, "mType")
 
             if (mType != VERIFY_CODE_TYPE) {
-                Logger.d(TAG, "Not verify code SMS, mType=$mType")
+                Logger.d(TAG) { "非验证码短信, mType=$mType" }
                 return
             }
 
             val mContent = XposedHelpers.getObjectField(parseResult, "mContent") as? String
             if (mContent.isNullOrBlank()) {
-                Logger.d(TAG, "Verify code content is empty")
+                Logger.d(TAG) { "验证码内容为空" }
                 return
             }
 
-            Logger.i(TAG, "Detected verify code SMS, content: $mContent")
+            Logger.i(TAG, "检测到验证码短信, content: $mContent")
             copyToClipboard(mContent)
 
         } catch (e: Throwable) {
-            Logger.e(TAG, "Error handling ParseResult", e)
+            Logger.e(TAG, "处理 ParseResult 异常", e)
         }
     }
 
     private fun copyToClipboard(text: String) {
         try {
             val context = appContext ?: run {
-                Logger.e(TAG, "Context is null")
+                Logger.e(TAG, "Context 为空")
                 return
             }
 
@@ -123,10 +123,10 @@ object AutoCopyVerifyCodeHook : FeatureHook {
             val clip = ClipData.newPlainText(null, text)
             clipboard.setPrimaryClip(clip)
 
-            Logger.i(TAG, "Verify code copied to clipboard: $text")
+            Logger.i(TAG, "验证码已复制到剪贴板: $text")
 
         } catch (e: Throwable) {
-            Logger.e(TAG, "Failed to copy to clipboard", e)
+            Logger.e(TAG, "复制到剪贴板失败", e)
         }
     }
 }
