@@ -1,9 +1,12 @@
 package com.karen.flymetool.ui.screen
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.exclude
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
@@ -69,14 +72,27 @@ private fun MainContent(
     onAppClick: (ScopedApp) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    when (selectedTab) {
-        MainTab.HOME -> HomeScreen(
-            onAppClick = onAppClick,
-            modifier = modifier
-        )
-        MainTab.ABOUT -> AboutScreen(
-            modifier = modifier
-        )
+    AnimatedContent(
+        targetState = selectedTab,
+        modifier = modifier.fillMaxSize(),
+        transitionSpec = {
+            ScreenTransitions.tabContentTransform(
+                forward = targetState.ordinal > initialState.ordinal
+            ).using(SizeTransform(clip = false))
+        },
+        label = "main_tab"
+    ) { tab ->
+        Box(modifier = Modifier.fillMaxSize()) {
+            when (tab) {
+                MainTab.HOME -> HomeScreen(
+                    onAppClick = onAppClick,
+                    modifier = Modifier.fillMaxSize()
+                )
+                MainTab.ABOUT -> AboutScreen(
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
     }
 }
 

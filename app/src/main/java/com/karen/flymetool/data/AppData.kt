@@ -49,17 +49,45 @@ object AppData {
             ?: emptyList()
     }
 
+    /**
+     * 按 BuiltInFeatures 首次出现顺序划分分组；无 group 的功能进入 ungrouped。
+     */
+    fun getFeatureSections(packageName: String): FeatureSections {
+        val features = getFeatures(packageName)
+        val groups = linkedSetOf<String>()
+        val byGroup = linkedMapOf<String, MutableList<HookFeature>>()
+        val ungrouped = mutableListOf<HookFeature>()
+        for (feature in features) {
+            val group = feature.group
+            if (group == null) {
+                ungrouped += feature
+            } else {
+                groups += group
+                byGroup.getOrPut(group) { mutableListOf() }.add(feature)
+            }
+        }
+        return FeatureSections(
+            groups = groups.toList(),
+            byGroup = byGroup.mapValues { it.value.toList() },
+            ungrouped = ungrouped
+        )
+    }
+
     fun getFeatureGroups(packageName: String): List<String> {
-        return getFeatures(packageName)
-            .mapNotNull { it.group }
-            .distinct()
+        return getFeatureSections(packageName).groups
     }
 
     fun getFeaturesByGroup(packageName: String, group: String): List<HookFeature> {
-        return getFeatures(packageName).filter { it.group == group }
+        return getFeatureSections(packageName).byGroup[group].orEmpty()
     }
 
     fun getUngroupedFeatures(packageName: String): List<HookFeature> {
-        return getFeatures(packageName).filter { it.group == null }
+        return getFeatureSections(packageName).ungrouped
     }
 }
+
+data class FeatureSections(
+    val groups: List<String>,
+    val byGroup: Map<String, List<HookFeature>>,
+    val ungrouped: List<HookFeature>
+)
