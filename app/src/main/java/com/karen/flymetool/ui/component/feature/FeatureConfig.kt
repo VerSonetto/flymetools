@@ -17,6 +17,7 @@ fun FeatureConfig(
         "connection_rate_low_speed_hide" -> ConnectionRateConfig(packageName, featureKey)
         "pulldown_area_ratio" -> PulldownAreaRatioConfig(packageName, featureKey)
         "control_center_blur_intensity" -> ControlCenterBlurConfig(packageName, featureKey)
+        "control_center_radius" -> ControlCenterRadiusConfig(packageName, featureKey)
         "notification_icon_limit" -> NotificationIconLimitConfig(packageName, featureKey)
         "task_card_radius" -> TaskCardRadiusConfig(packageName, featureKey)
         "task_blur_intensity" -> BlurIntensityConfig(packageName, featureKey)

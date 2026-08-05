@@ -38,6 +38,9 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         HookFeature("control_center_blur_intensity", "控制中心背景模糊度",
             description = "自定义控制中心展开时的背景模糊程度", group = "控制中心",
             minVersion = "Flyme 12"),
+        HookFeature("control_center_radius", "控制中心组件圆角",
+            description = "自定义控制中心磁贴、连接区与亮度/音量滑条的圆角大小",
+            group = "控制中心", minVersion = "Flyme 12"),
         // 锁屏
         HookFeature("hide_keyguard_flashlight", "隐藏锁屏手电筒",
             description = "隐藏锁屏界面左下角的手电筒快捷方式", group = "锁屏"),
