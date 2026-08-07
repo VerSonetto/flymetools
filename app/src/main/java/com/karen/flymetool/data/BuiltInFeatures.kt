@@ -63,10 +63,10 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         HookFeature("notification_card_radius", "通知卡片圆角",
             description = "自定义通知中心通知卡片的圆角大小", group = "通知样式"),
         HookFeature("notification_card_blur", "通知卡片模糊",
-            description = "自定义通知卡片模糊强度与遮罩浓度；可选曲线联动（强度曲线与罩色联动）",
+            description = "自定义通知与媒体播放器卡片的模糊强度与遮罩浓度；可选曲线联动",
             group = "通知样式", minVersion = "Flyme 12"),
         HookFeature("notification_card_no_mask", "去除通知卡片遮罩",
-            description = "将通知厚罩换成系统插件同款薄玻璃色（0x1A），保留毛玻璃模糊",
+            description = "通知与媒体播放器卡片改用系统插件薄玻璃色（0x1A），保留毛玻璃模糊",
             group = "通知样式", minVersion = "Flyme 12"),
 
         HookFeature("media_card_radius", "媒体播放器卡片圆角",

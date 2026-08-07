@@ -77,7 +77,8 @@ fun NotificationCardBlurConfig(
         )
         FeatureSwitch(
             title = "曲线联动",
-            description = "开启后强度按曲线映射，罩色随强度联动并带日夜轻微偏色。" +
+            description = "作用于通知卡片与媒体播放器卡片。" +
+                "开启后强度按曲线映射，罩色随强度联动并带日夜轻微偏色；" +
                 "关闭则半径与遮罩都按滑块线性取值。",
             checked = beautify,
             onCheckedChange = { enabled ->

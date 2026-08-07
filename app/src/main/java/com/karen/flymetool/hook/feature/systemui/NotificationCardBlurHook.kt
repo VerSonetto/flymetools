@@ -15,19 +15,22 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
- * 通知卡片模糊强度 / 遮罩不透明度（Flyme 12）。
+ * 通知 / 媒体卡片模糊强度与遮罩浓度（Flyme 12）。
  *
- * 反编译依据：
- * - Live：NotificationBackgroundView.setBlurBgForLive →
- *   MzBlurUtils.setBackgroundBlurDrawable(view, blurRadius=180, …) 完整 10 参实现
- * - 短重载最终也会调到该 10 参方法；**只 hook 这一处**，避免半径被叠乘两次
- * - 颜色：setBlurBackground(isStatic, color, clipR) / HUN 直传 color
+ * 反编译：
+ * - 通知 Live：NotificationBackgroundView.setBlurBgForLive →
+ *   MzBlurUtils.setBackgroundBlurDrawable(..., radius=180, color=日/夜)
+ * - 通知色入口：setBlurBackground(isStatic, color, clipR)
+ * - HUN：LandscapeHeadsUpNotificationView 直调 MzBlurUtils
+ * - 媒体 Live：MediaCarouseTransitionLayout.setBlurBgForLive →
+ *   同样 MzBlurUtils(..., 180, color=日/夜 0xB2…)
+ * - 媒体 Static：setAllForegroundColor + addBlurDrawableTo(this, color, r)
  *
- * 子开关「曲线联动」beautify（package:feature:beautify，默认关）：
- * - 关：线性半径（滑块×GAIN）+ 纯 alpha 遮罩，完全跟手
- * - 开：强度曲线、模糊↔罩色联动、日/夜轻微偏色
+ * 子开关「曲线联动」beautify（默认关）：
+ * - 关：线性半径 + 纯 alpha 罩色
+ * - 开：强度曲线、罩色联动、日/夜轻微偏色
  *
- * 性能：prefs TTL 缓存、单点 hook、半径上限、堆叠 softCap。
+ * 与「去除遮罩」并存时：罩色由 MaskHook / 媒体同源逻辑接管，本 hook 不改 color。
  */
 object NotificationCardBlurHook : FeatureHook {
 
@@ -39,7 +42,6 @@ object NotificationCardBlurHook : FeatureHook {
 
     private const val DEFAULT_INTENSITY = 50
     private const val DEFAULT_OPACITY = 70
-    /** 美化默认关：额外子开关，opt-in */
     private const val DEFAULT_BEAUTIFY = 0
 
     private const val INTENSITY_GAIN = 2f
@@ -56,20 +58,25 @@ object NotificationCardBlurHook : FeatureHook {
         "com.android.systemui.statusbar.notification.row.NotificationBackgroundView"
     private const val LANDSCAPE_HUN_VIEW =
         "com.flyme.notification.view.LandscapeHeadsUpNotificationView"
+    /** 媒体播放器卡片（通知中心 / 锁屏媒体） */
+    private const val MEDIA_CAROUSEL_VIEW =
+        "com.flyme.systemui.media.controls.ui.view.MediaCarouseTransitionLayout"
     private const val MZ_BLUR_UTILS = "com.flyme.systemui.utils.MzBlurUtils"
+    private const val WALLPAPER_BLUR_MANAGER =
+        "com.flyme.systemui.wallpaper.WallpaperBlurDrawableManager"
 
     private var prefsPackage: String = "com.android.systemui"
     private var loadParam: XC_LoadPackage.LoadPackageParam? = null
 
     private var backgroundViewClass: Class<*>? = null
     private var landscapeHunClass: Class<*>? = null
+    private var mediaCarouselClass: Class<*>? = null
 
     private var prefsCachedAt = 0L
     private var cachedIntensity = DEFAULT_INTENSITY
     private var cachedOpacityBias = DEFAULT_OPACITY
     private var cachedNoMask = false
     private var cachedBeautify = false
-    /** intensity → 半径倍率（是否含曲线由 beautify 决定） */
     private var cachedRadiusMul = 1f
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
@@ -79,27 +86,29 @@ object NotificationCardBlurHook : FeatureHook {
 
         prefsPackage = packageName
         loadParam = lpparam
-        try {
-            backgroundViewClass = XposedHelpers.findClass(BACKGROUND_VIEW, lpparam.classLoader)
-        } catch (_: Throwable) {
-            backgroundViewClass = null
-        }
-        try {
-            landscapeHunClass = XposedHelpers.findClass(LANDSCAPE_HUN_VIEW, lpparam.classLoader)
-        } catch (_: Throwable) {
-            landscapeHunClass = null
-        }
+        backgroundViewClass = findClassOrNull(BACKGROUND_VIEW)
+        landscapeHunClass = findClassOrNull(LANDSCAPE_HUN_VIEW)
+        mediaCarouselClass = findClassOrNull(MEDIA_CAROUSEL_VIEW)
         refreshPrefs(force = true)
 
         hookSetBlurBackground()
         hookMzBlurUtilsImpl()
+        hookMediaStaticForegroundColor()
 
         Logger.i(
             TAG,
-            "已启用：通知卡片模糊 beautify=$cachedBeautify " +
+            "已启用：通知/媒体模糊 beautify=$cachedBeautify " +
                 "intensity=$cachedIntensity opacity=$cachedOpacityBias " +
-                "cap=$MAX_LIVE_RADIUS/stack=$MAX_LIVE_RADIUS_STACKED"
+                "media=${mediaCarouselClass != null}"
         )
+    }
+
+    private fun findClassOrNull(name: String): Class<*>? {
+        return try {
+            XposedHelpers.findClass(name, loadParam!!.classLoader)
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private fun hookSetBlurBackground() {
@@ -121,22 +130,22 @@ object NotificationCardBlurHook : FeatureHook {
                             param.args[1] = adjusted
                             Logger.once(
                                 TAG,
-                                "color_b${cachedBeautify}_${cachedIntensity}_$cachedOpacityBias",
-                                "罩色 ${Integer.toHexString(original)}→${Integer.toHexString(adjusted)}"
+                                "notif_color_${cachedIntensity}_$cachedOpacityBias",
+                                "通知罩色 ${Integer.toHexString(original)}→${Integer.toHexString(adjusted)}"
                             )
                         }
                     }
                 }
             )
-            Logger.i(TAG, "已挂载 setBlurBackground")
+            Logger.i(TAG, "已挂载 NotificationBackgroundView.setBlurBackground")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 setBlurBackground 失败", e)
         }
     }
 
     /**
-     * 只 hook 真正干活的 10 参实现：
-     * (View, int, float, float, int, boolean, int, int, Function0, Consumer)
+     * 10 参实现：通知背景 / HUN / 媒体卡片 共用。
+     * 媒体与 HUN 的 color 都走 args[4]，不经 setBlurBackground。
      */
     private fun hookMzBlurUtilsImpl() {
         try {
@@ -161,7 +170,7 @@ object NotificationCardBlurHook : FeatureHook {
             XposedBridge.hookMethod(impl, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val view = param.args[0] as? View ?: return
-                    if (!isNotificationCardBlurView(view)) return
+                    if (!isTargetBlurView(view)) return
 
                     refreshPrefs(force = false)
 
@@ -172,12 +181,13 @@ object NotificationCardBlurHook : FeatureHook {
                             param.args[1] = scaled
                             Logger.once(
                                 TAG,
-                                "radius_b${cachedBeautify}_$cachedIntensity",
-                                "radius $originalRadius→$scaled (mul=$cachedRadiusMul)"
+                                "radius_${view.javaClass.simpleName}_$cachedIntensity",
+                                "radius $originalRadius→$scaled view=${view.javaClass.simpleName}"
                             )
                         }
                     }
 
+                    // 直传 color：HUN、媒体；通知背景色已在 setBlurBackground 处理
                     if (!cachedNoMask && isDirectColorBlurView(view)) {
                         val color = param.args[4] as? Int ?: return
                         val adjusted = applyMaskColor(color)
@@ -187,22 +197,101 @@ object NotificationCardBlurHook : FeatureHook {
                     }
                 }
             })
-            Logger.i(TAG, "已挂载 MzBlurUtils 10 参实现")
+            Logger.i(TAG, "已挂载 MzBlurUtils 10 参（通知+HUN+媒体）")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 MzBlurUtils 失败", e)
         }
     }
 
-    private fun isNotificationCardBlurView(view: View): Boolean {
-        val bg = backgroundViewClass
-        if (bg != null && bg.isInstance(view)) return true
-        val hun = landscapeHunClass
-        return hun != null && hun.isInstance(view)
+    /**
+     * 媒体 Static：WallpaperBlurDrawableManager.setAllForegroundColor(View, int)
+     * 与 addBlurDrawableTo(View, int color, float r) 的 color 参数。
+     */
+    private fun hookMediaStaticForegroundColor() {
+        if (mediaCarouselClass == null) return
+        try {
+            val mgr = XposedHelpers.findClass(WALLPAPER_BLUR_MANAGER, loadParam!!.classLoader)
+
+            XposedHelpers.findAndHookMethod(
+                mgr,
+                "setAllForegroundColor",
+                View::class.java,
+                Int::class.javaPrimitiveType,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val view = param.args[0] as? View ?: return
+                        if (!isMediaCarousel(view)) return
+                        refreshPrefs(force = false)
+                        if (cachedNoMask) {
+                            // 与去除遮罩一致：官方薄玻璃
+                            param.args[1] = thinGlassFor(param.args[1] as? Int ?: return)
+                            return
+                        }
+                        val original = param.args[1] as? Int ?: return
+                        val adjusted = applyMaskColor(original)
+                        if (adjusted != original) {
+                            param.args[1] = adjusted
+                            Logger.once(
+                                TAG,
+                                "media_static_fg_$cachedOpacityBias",
+                                "媒体 Static 罩色 ${Integer.toHexString(original)}→${Integer.toHexString(adjusted)}"
+                            )
+                        }
+                    }
+                }
+            )
+
+            // addBlurDrawableTo(View, int color, float radius) 与 5 参圆角版
+            for (m in mgr.declaredMethods) {
+                if (m.isSynthetic || m.name != "addBlurDrawableTo") continue
+                val pts = m.parameterTypes
+                if (pts.isEmpty() || !View::class.java.isAssignableFrom(pts[0])) continue
+                if (pts.size < 2 || pts[1] != Int::class.javaPrimitiveType) continue
+                XposedBridge.hookMethod(m, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val view = param.args[0] as? View ?: return
+                        if (!isMediaCarousel(view)) return
+                        refreshPrefs(force = false)
+                        if (cachedNoMask) {
+                            param.args[1] = thinGlassFor(param.args[1] as? Int ?: return)
+                            return
+                        }
+                        val original = param.args[1] as? Int ?: return
+                        val adjusted = applyMaskColor(original)
+                        if (adjusted != original) param.args[1] = adjusted
+                    }
+                })
+            }
+            Logger.i(TAG, "已挂载媒体 Static 壁纸模糊罩色")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "挂载媒体 Static 罩色失败", e)
+        }
     }
 
+    private fun isTargetBlurView(view: View): Boolean {
+        return isNotificationBackground(view) ||
+            isLandscapeHun(view) ||
+            isMediaCarousel(view)
+    }
+
+    /** color 不经 setBlurBackground、直接进 MzBlurUtils / Static manager */
     private fun isDirectColorBlurView(view: View): Boolean {
-        val hun = landscapeHunClass
-        return hun != null && hun.isInstance(view)
+        return isLandscapeHun(view) || isMediaCarousel(view)
+    }
+
+    private fun isNotificationBackground(view: View): Boolean {
+        val cl = backgroundViewClass ?: return false
+        return cl.isInstance(view)
+    }
+
+    private fun isLandscapeHun(view: View): Boolean {
+        val cl = landscapeHunClass ?: return false
+        return cl.isInstance(view)
+    }
+
+    private fun isMediaCarousel(view: View): Boolean {
+        val cl = mediaCarouselClass ?: return false
+        return cl.isInstance(view)
     }
 
     private fun refreshPrefs(force: Boolean) {
@@ -244,8 +333,8 @@ object NotificationCardBlurHook : FeatureHook {
     }
 
     /**
-     * 堆叠进入/离开折叠滑动时调用：直接改已挂上的 BackgroundBlurDrawable 半径。
-     * 仅在 softCap 边沿触发，不进每帧热路径。
+     * 堆叠 softCap 边沿：压/恢复已创建 BackgroundBlurDrawable 半径。
+     * rows 可为通知 row；媒体若在列表中也会尝试 row 自身 background。
      */
     fun onStackSoftCapChanged(rows: List<View>, softCap: Boolean) {
         refreshPrefs(force = false)
@@ -259,9 +348,7 @@ object NotificationCardBlurHook : FeatureHook {
             if (applyRadiusToRowBackgrounds(row, target)) n++
         }
         if (n > 0) {
-            Logger.d(TAG) {
-                "stackSoftCap=$softCap → radius=$target on $n rows"
-            }
+            Logger.d(TAG) { "stackSoftCap=$softCap → radius=$target on $n rows" }
         }
     }
 
@@ -290,32 +377,21 @@ object NotificationCardBlurHook : FeatureHook {
     }
 
     private fun effectiveOpacityPercent(): Int {
-        if (!cachedBeautify) {
-            return cachedOpacityBias
-        }
+        if (!cachedBeautify) return cachedOpacityBias
         val couple = (50f - cachedIntensity) / 50f * COUPLE_SPAN
         return (cachedOpacityBias + couple).roundToInt().coerceIn(0, 100)
     }
 
-    /** 关美化：只改 alpha；开美化：alpha 联动 + 日/夜 tint */
     private fun applyMaskColor(color: Int): Int {
         if (color == Color.TRANSPARENT) return color
-
         val alpha = (255 * effectiveOpacityPercent() / 100f).roundToInt().coerceIn(0, 255)
         if (!cachedBeautify) {
-            return Color.argb(
-                alpha,
-                Color.red(color),
-                Color.green(color),
-                Color.blue(color)
-            )
+            return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
         }
-
         var r = Color.red(color)
         var g = Color.green(color)
         var b = Color.blue(color)
         val luminance = (r * 299 + g * 587 + b * 114) / 1000
-
         if (luminance >= 160) {
             r = mixChannel(r, 236, DAY_TINT_MIX)
             g = mixChannel(g, 241, DAY_TINT_MIX)
@@ -325,8 +401,15 @@ object NotificationCardBlurHook : FeatureHook {
             g = mixChannel(g, 36, NIGHT_TINT_MIX)
             b = mixChannel(b, 40, NIGHT_TINT_MIX)
         }
-
         return Color.argb(alpha, r, g, b)
+    }
+
+    /** 与 NotificationCardMaskHook / PluginBlurView 一致的薄玻璃（媒体 Static 在 no_mask 时用） */
+    private fun thinGlassFor(original: Int): Int {
+        if (original == Color.TRANSPARENT) return 0x1AFFFFFF
+        val luminance =
+            (Color.red(original) * 299 + Color.green(original) * 587 + Color.blue(original) * 114) / 1000
+        return if (luminance < 80) 0x1A1A1A1A else 0x1AFFFFFF
     }
 
     private fun mixChannel(from: Int, to: Int, t: Float): Int {
