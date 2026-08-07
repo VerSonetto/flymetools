@@ -27,7 +27,9 @@ object SystemUIEntry : HookEntry {
         "AODNotificationHook" to { com.karen.flymetool.hook.feature.systemui.AODNotificationHook },
         "HideChargingAnimationHook" to { com.karen.flymetool.hook.feature.systemui.HideChargingAnimationHook },
         "NotificationCardRadiusHook" to { com.karen.flymetool.hook.feature.systemui.NotificationCardRadiusHook },
+        "NotificationCardBlurHook" to { com.karen.flymetool.hook.feature.systemui.NotificationCardBlurHook },
         "NotificationCardMaskHook" to { com.karen.flymetool.hook.feature.systemui.NotificationCardMaskHook },
+
         "TickerClickHook" to { com.karen.flymetool.hook.feature.systemui.TickerClickHook },
         "NotificationManageHook" to { com.karen.flymetool.hook.feature.systemui.NotificationManageHook },
         "HideMediaAppIconBgHook" to { com.karen.flymetool.hook.feature.systemui.HideMediaAppIconBgHook },

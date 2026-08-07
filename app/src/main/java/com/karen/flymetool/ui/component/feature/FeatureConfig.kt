@@ -13,7 +13,9 @@ fun FeatureConfig(
         "statusbar_clock_period" -> StatusBarClockPeriodConfig(packageName, featureKey)
         "statusbar_clock_custom_format" -> StatusBarClockCustomFormatConfig(packageName, featureKey)
         "notification_card_radius" -> NotificationCardRadiusConfig(packageName, featureKey)
+        "notification_card_blur" -> NotificationCardBlurConfig(packageName, featureKey)
         "media_card_radius" -> MediaCardRadiusConfig(packageName, featureKey)
+
         "connection_rate_low_speed_hide" -> ConnectionRateConfig(packageName, featureKey)
         "pulldown_area_ratio" -> PulldownAreaRatioConfig(packageName, featureKey)
         "control_center_blur_intensity" -> ControlCenterBlurConfig(packageName, featureKey)
