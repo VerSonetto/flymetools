@@ -3,7 +3,6 @@ package com.karen.flymetool.hook.feature.launcher
 import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
-import java.lang.reflect.Method
 
 /**
  * Quickstep / Flyme 最近任务主轴契约（反编译对照，禁止再引入 logical↔physical 翻转）。
@@ -14,6 +13,12 @@ import java.lang.reflect.Method
  * | Portrait  | 0        | X    | scrollX       | TRANSLATE_X      | Y    | 正常 RTL                  |
  * | Landscape | 1        | Y    | scrollY       | TRANSLATE_Y      | X    | LTR 机强制 `!isRtl`=true  |
  * | Seascape  | 3        | Y    | scrollY       | TRANSLATE_Y      | X    | 正常 RTL                  |
+ *
+ * 主轴原语按反编译对照直接读 View 字段，不再走 handler 反射：
+ * `getPrimaryScroll(view)`=`getScrollX/Y`、`getChildStart(view)`=`getLeft/Top`、
+ * `getPrimarySize(view)`=`getWidth/Height`（三个 handler 实现均为纯字段透传，
+ * 与 applyStack 原有的 handler 缺失回退路径同值，仅免掉每帧 Method.invoke）。
+ * handler 仅保留在 `axisFor` 中用于解析 rotation。
  *
  * ## TaskView 位移通道
  * - 竖屏堆叠 offset：`getHorizontalOffsetTranslationProperty()` → 只进 `applyTranslationX`
@@ -34,10 +39,6 @@ import java.lang.reflect.Method
 internal data class RecentsAxis(
     val rotation: Int,
     val landscape: Boolean,
-    private val handler: Any? = null,
-    private val getPrimaryScroll: Method? = null,
-    private val getPrimarySize: Method? = null,
-    private val getChildStart: Method? = null,
 ) {
     /**
      * Seascape(rotation=3) 下 pageScroll 升序对应屏幕偏左，而 iOS 堆叠要求：
@@ -48,8 +49,8 @@ internal data class RecentsAxis(
      */
     val invertStackDepth: Boolean
         get() = rotation == 3
+
     fun primaryScroll(recents: ViewGroup): Float {
-        invokeHandlerNumber(getPrimaryScroll, recents)?.let { return it }
         return if (landscape) recents.scrollY.toFloat() else recents.scrollX.toFloat()
     }
 
@@ -58,12 +59,10 @@ internal data class RecentsAxis(
     }
 
     fun childPrimaryStart(view: View): Float {
-        invokeHandlerNumber(getChildStart, view)?.let { return it }
         return if (landscape) view.top.toFloat() else view.left.toFloat()
     }
 
     fun childPrimarySize(view: View): Float {
-        invokeHandlerNumber(getPrimarySize, view)?.let { return it }
         return if (landscape) view.height.toFloat() else view.width.toFloat()
     }
 
@@ -94,15 +93,6 @@ internal data class RecentsAxis(
 
     fun boundsPrimaryEnd(rect: Rect): Int {
         return if (landscape) rect.bottom else rect.right
-    }
-
-    private fun invokeHandlerNumber(method: Method?, arg: Any): Float? {
-        if (method == null || handler == null) return null
-        return try {
-            (method.invoke(handler, arg) as? Number)?.toFloat()
-        } catch (_: Throwable) {
-            null
-        }
     }
 
     companion object {
