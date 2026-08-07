@@ -14,6 +14,8 @@ import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 import java.lang.ref.WeakReference
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.function.Consumer
 import kotlin.math.abs
 import kotlin.math.max
@@ -53,6 +55,13 @@ object IosNotificationStackHook : FeatureHook {
     private var lastPe: Float = 1f
     private var lastESeg: Float = 0f
     private var lastScrollRange: Float = 0f
+    /**
+     * 堆叠视觉折叠中（含滑动过渡）。供 [NotificationCardBlurHook] 降低 Live 模糊半径，
+     * 减轻多卡错位时的跨窗口模糊 GPU 负担。
+     */
+    @Volatile
+    var stackBlurSoftCapActive: Boolean = false
+        private set
     /** Flyme 控制中心展开进度（CenterController.mExpandedFraction），AOSP QS fraction 在 legacy 下恒 0 */
     @Volatile
     private var controlCenterFrac: Float = 0f
@@ -82,7 +91,11 @@ object IosNotificationStackHook : FeatureHook {
     private var cachedBottomPad = DEFAULT_BOTTOM_PAD
     private var cachedSinkAll = true
     private var prefsCachedAt = 0L
+    private var lastStackSoftCap = false
 
+    /** 已做过深度清阴影的 row（Weak），滑动热路径只做廉价 elevation/假阴影检查 */
+    private val shadowDeepCleared =
+        Collections.newSetFromMap(WeakHashMap<View, Boolean>())
 
     private data class Item(
         val view: View,
@@ -319,6 +332,17 @@ object IosNotificationStackHook : FeatureHook {
 
     private fun isStackCollapsed(): Boolean = lastPe < COLLAPSED_CLICK_PE
 
+    private fun setStackSoftCap(active: Boolean, rows: List<View>) {
+        stackBlurSoftCapActive = active
+        if (active == lastStackSoftCap) return
+        lastStackSoftCap = active
+        if (rows.isEmpty()) return
+        try {
+            NotificationCardBlurHook.onStackSoftCapChanged(rows, active)
+        } catch (_: Throwable) {
+        }
+    }
+
     private fun isInStackHitRegion(x: Float, y: Float, host: ViewGroup): Boolean {
         if (stackHitBottom <= stackHitTop + 1f) return false
         val padX = px8
@@ -404,6 +428,7 @@ object IosNotificationStackHook : FeatureHook {
         lastHostRef = WeakReference(host)
         if (hasPinnedHeadsUp(host, rowCl)) {
             lastPe = 1f
+            setStackSoftCap(false, emptyList())
             return
         }
 
@@ -415,11 +440,13 @@ object IosNotificationStackHook : FeatureHook {
         val items = collect(host, rowCl, ambient, trackedHun)
         if (items.isEmpty()) {
             lastPe = 1f
+            setStackSoftCap(false, emptyList())
             return
         }
 
         if (qsFrac > 0.02f) {
             lastPe = 1f
+            setStackSoftCap(false, emptyList())
             // 只压宿主层透明度，不改各 row 的 ViewState.hidden/alpha，避免返回后「卡住要滑一下」
             applyControlCenterHostDim(qsFrac, forceUpdate = false)
             // 系统本帧已算出 native 列表态；不要再叠堆叠 scale，否则轮廓会透到模糊底
@@ -480,10 +507,14 @@ object IosNotificationStackHook : FeatureHook {
 
         if (scrollRange <= 2f || (scrollRange > 2f && scrollY >= scrollRange - 4f)) {
             lastPe = 1f
+            setStackSoftCap(false, items.map { it.view })
             restoreSystemList(items, ambient, trackedHun)
             hideShelf(ambient)
             return
         }
+
+        // 折叠/过渡滑动中：多卡 Live blur 错位重，提示模糊 hook 用更低半径上限
+        setStackSoftCap(pe < COLLAPSED_CLICK_PE, items.map { it.view })
 
         val sinkAll = cachedSinkAll
         val ease = pe * (2f - pe)
@@ -987,15 +1018,28 @@ object IosNotificationStackHook : FeatureHook {
     }
 
     /**
-     * 堆叠模式下每帧对卡片清除一切「投影/阴影/外廓」来源：
-     * - FakeShadowView 假阴影（系统会给错位卡片 setFakeShadowIntensity 画矩形阴影）
-     * - elevation（Flyme 会给 live notification 设 elevation）
-     * - outline 阴影（ActivatableNotificationView.updateOutlineAlpha 恒为 1，
-     *   即 setZ 之后 translationZ>0 必然画投影，轮廓在控制中心模糊下被放大）
-     * - 背景视图 / 分组折叠容器的同源阴影
+     * 堆叠模式下清阴影。深度清理（反射取字段/outline）每张卡只做一次；
+     * 滑动热路径仅保持 elevation=0 与假阴影 GONE，避免每帧多段反射拖垮滚动。
      */
     private fun clearShadowHard(row: View) {
-        // 1) 假阴影容器及内部 shadow View 直接隐藏
+        try {
+            if (row.elevation != 0f) row.elevation = 0f
+        } catch (_: Throwable) {
+        }
+
+        if (row in shadowDeepCleared) {
+            // 系统可能每帧重新打开假阴影：只做廉价 visibility 检查
+            try {
+                val fs = XposedHelpers.getObjectField(row, "mFakeShadow") as? View
+                if (fs != null && fs.visibility != View.GONE) {
+                    fs.visibility = View.GONE
+                }
+            } catch (_: Throwable) {
+            }
+            return
+        }
+
+        // —— 首次深度清理 ——
         try {
             val fs = XposedHelpers.getObjectField(row, "mFakeShadow") as? View
             if (fs != null) {
@@ -1014,14 +1058,7 @@ object IosNotificationStackHook : FeatureHook {
             XposedHelpers.callMethod(row, "setFakeShadowIntensity", 0f, 0f, 0, 0)
         } catch (_: Throwable) {
         }
-        // 2) elevation
-        try {
-            if (row.elevation != 0f) row.elevation = 0f
-        } catch (_: Throwable) {
-        }
-        // 3) outline 阴影（含投影色与 alpha）
         killOutlineShadow(row)
-        // 4) 背景视图
         for (bgField in arrayOf("mBackgroundFlyme", "mBackgroundNormal")) {
             try {
                 val bg = XposedHelpers.getObjectField(row, bgField) as? View
@@ -1029,7 +1066,6 @@ object IosNotificationStackHook : FeatureHook {
             } catch (_: Throwable) {
             }
         }
-        // 5) 分组折叠容器
         try {
             val gc = XposedHelpers.callMethod(row, "getGroupCollapseContainer") as? View
             if (gc != null) {
@@ -1042,6 +1078,7 @@ object IosNotificationStackHook : FeatureHook {
             }
         } catch (_: Throwable) {
         }
+        shadowDeepCleared.add(row)
     }
 
     private fun killOutlineShadow(v: View) {
