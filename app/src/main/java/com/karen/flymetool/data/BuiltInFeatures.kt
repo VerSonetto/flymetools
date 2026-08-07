@@ -84,6 +84,9 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         // 手势导航
         HookFeature("hide_gesture_bar", "隐藏底部手势条",
             description = "隐藏底部导航栏的手势指示条", group = "手势导航"),
+        HookFeature("mback_double_click", "底部手势条双击",
+            description = "双击底部手势条执行所选动作",
+            group = "手势导航"),
         HookFeature("edge_back_vibrate_intensity", "侧滑返回震动强度",
             description = "自定义侧滑返回触发时的震动强度，0 为关闭", group = "手势导航"),
         HookFeature("edge_back_hold_previous_app", "侧滑长按回上个应用",

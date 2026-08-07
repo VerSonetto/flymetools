@@ -35,6 +35,7 @@ object SystemUIEntry : HookEntry {
         "HideMediaAppIconBgHook" to { com.karen.flymetool.hook.feature.systemui.HideMediaAppIconBgHook },
         "MediaCardRadiusHook" to { com.karen.flymetool.hook.feature.systemui.MediaCardRadiusHook },
         "HideGestureBarHook" to { com.karen.flymetool.hook.feature.systemui.HideGestureBarHook },
+        "MBackDoubleClickHook" to { com.karen.flymetool.hook.feature.systemui.MBackDoubleClickHook },
         "CustomCarrierNameHook" to { com.karen.flymetool.hook.feature.systemui.CustomCarrierNameHook },
         "ForceLiveNotificationHook" to { com.karen.flymetool.hook.feature.systemui.ForceLiveNotificationHook },
         "IosNotificationStackHook" to { com.karen.flymetool.hook.feature.systemui.IosNotificationStackHook },
