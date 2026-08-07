@@ -68,6 +68,9 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         HookFeature("notification_card_no_mask", "去除通知卡片遮罩",
             description = "通知与媒体播放器卡片改用系统插件薄玻璃色（0x1A），保留毛玻璃模糊",
             group = "通知样式", minVersion = "Flyme 12"),
+        HookFeature("status_bar_double_click_lock", "双击状态栏锁屏",
+            description = "双击状态栏任意位置息屏锁屏",
+            group = "通知样式"),
 
         HookFeature("media_card_radius", "媒体播放器卡片圆角",
             description = "自定义通知中心媒体播放器卡片的圆角大小", group = "通知样式"),
