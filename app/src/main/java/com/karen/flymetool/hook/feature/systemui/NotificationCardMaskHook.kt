@@ -26,6 +26,8 @@ object NotificationCardMaskHook : FeatureHook {
 
     private const val BACKGROUND_VIEW =
         "com.android.systemui.statusbar.notification.row.NotificationBackgroundView"
+    private const val ACTIVATABLE_VIEW =
+        "com.android.systemui.statusbar.notification.row.ActivatableNotificationView"
     private const val LANDSCAPE_HUN_VIEW =
         "com.flyme.notification.view.LandscapeHeadsUpNotificationView"
     private const val MEDIA_CAROUSEL_VIEW =
@@ -40,6 +42,7 @@ object NotificationCardMaskHook : FeatureHook {
     private var mediaCarouselClass: Class<*>? = null
     private var landscapeHunClass: Class<*>? = null
     private var backgroundViewClass: Class<*>? = null
+    private var activatableViewClass: Class<*>? = null
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (lpparam.packageName != "com.android.systemui") return
@@ -49,6 +52,7 @@ object NotificationCardMaskHook : FeatureHook {
         backgroundViewClass = findClassOrNull(BACKGROUND_VIEW, lpparam)
         mediaCarouselClass = findClassOrNull(MEDIA_CAROUSEL_VIEW, lpparam)
         landscapeHunClass = findClassOrNull(LANDSCAPE_HUN_VIEW, lpparam)
+        activatableViewClass = findClassOrNull(ACTIVATABLE_VIEW, lpparam)
 
         hookNotificationSetBlurBackground(lpparam)
         hookMzBlurUtilsLive(lpparam)
@@ -80,6 +84,9 @@ object NotificationCardMaskHook : FeatureHook {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         // 主题切换后 mTotalAlpha 常为 -100 → Live 写 alpha=0
                         ensureTotalAlphaReady(param.thisObject)
+
+                        // 实况通知自带背景色（如支付保护绿色）是通知的品牌色，保留，不换薄玻璃
+                        if (hasLiveNotificationColor(param.thisObject)) return
 
                         val original = param.args[1] as? Int ?: return
                         val glass = officialThinGlass(original)
@@ -126,10 +133,13 @@ object NotificationCardMaskHook : FeatureHook {
 
                     ensureTotalAlphaReady(view)
 
-                    val originalColor = param.args[4] as? Int ?: return
-                    val glass = officialThinGlass(originalColor)
-                    if (glass != originalColor) {
-                        param.args[4] = glass
+                    // 实况通知自带背景色（如支付保护绿色）是通知的品牌色，保留，不换薄玻璃
+                    if (!hasLiveNotificationColor(view)) {
+                        val originalColor = param.args[4] as? Int ?: return
+                        val glass = officialThinGlass(originalColor)
+                        if (glass != originalColor) {
+                            param.args[4] = glass
+                        }
                     }
 
                     // 仅修正「未初始化」写成的 0；控制中心 hide 用 1，不要动
@@ -247,6 +257,28 @@ object NotificationCardMaskHook : FeatureHook {
             Logger.once(TAG, "total_alpha_init", "mTotalAlpha -100→$next")
         } catch (_: Throwable) {
         }
+    }
+
+    /**
+     * 实况通知自带背景色（如支付保护绿色）：宿主 ActivatableNotificationView
+     * （backgroundFlyme 的直接父级）的 public 字段 mLiveNotificationBgColor != -1。
+     * 这类颜色是通知的品牌色，不应被「去除遮罩」替换成薄玻璃。
+     */
+    private fun hasLiveNotificationColor(host: Any): Boolean {
+        val cl = activatableViewClass ?: return false
+        var v: Any? = host
+        var guard = 0
+        while (v != null && guard++ < 24) {
+            if (cl.isInstance(v)) {
+                return try {
+                    XposedHelpers.getIntField(v, "mLiveNotificationBgColor") != -1
+                } catch (_: Throwable) {
+                    false
+                }
+            }
+            v = (v as? View)?.parent
+        }
+        return false
     }
 
     private fun isTargetView(view: View): Boolean {
