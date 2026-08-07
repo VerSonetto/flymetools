@@ -31,6 +31,7 @@ object MBackDoubleClickHook : FeatureHook {
     private const val FEATURE_KEY = "mback_double_click"
     private const val ACTION_FLASHLIGHT = "flashlight"
     private const val ACTION_SCREENSHOT = "screenshot"
+    private const val ACTION_SLEEP = "sleep"
     private const val DEFAULT_ACTION = ACTION_FLASHLIGHT
 
     private const val VIEW_CLASS = "com.flyme.systemui.navigationbar.MBackButtonView"
@@ -375,9 +376,22 @@ object MBackDoubleClickHook : FeatureHook {
         when (action) {
             ACTION_FLASHLIGHT -> toggleFlashlight(context)
             ACTION_SCREENSHOT -> takeScreenshot(context)
+            ACTION_SLEEP -> goToSleep(context)
             else -> {
                 Logger.w(TAG, "未知动作 $action，回退手电筒")
                 toggleFlashlight(context)
+            }
+        }
+    }
+
+    private fun goToSleep(context: Context) {
+        mainHandler.post {
+            try {
+                val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                XposedHelpers.callMethod(pm, "goToSleep", SystemClock.uptimeMillis())
+                Logger.i(TAG, "已息屏 (PowerManager.goToSleep)")
+            } catch (e: Throwable) {
+                Logger.e(TAG, "息屏失败", e)
             }
         }
     }
