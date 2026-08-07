@@ -70,7 +70,10 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
             group = "通知样式", minVersion = "Flyme 12"),
         HookFeature("status_bar_double_click_lock", "双击状态栏锁屏",
             description = "双击状态栏任意位置息屏锁屏",
-            group = "通知样式"),
+            group = "状态栏"),
+        HookFeature("status_bar_brightness_swipe", "滑动状态栏调节亮度",
+            description = "在状态栏左右滑动调整屏幕亮度",
+            group = "状态栏"),
 
         HookFeature("media_card_radius", "媒体播放器卡片圆角",
             description = "自定义通知中心媒体播放器卡片的圆角大小", group = "通知样式"),
