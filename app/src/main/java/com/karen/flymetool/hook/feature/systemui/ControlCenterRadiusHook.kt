@@ -40,6 +40,9 @@ object ControlCenterRadiusHook : FeatureHook {
     private const val QS_TILE_VIEW_IMPL =
         "com.android.systemui.qs.tileimpl.QSTileViewImpl"
 
+    /** 目标资源 ID，-1 未解析。SystemUI 资源表进程内固定，首次解析后缓存全局有效 */
+    private var targetDimenResId = -1
+
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (lpparam.packageName != "com.android.systemui") return
         if (!FlymeVersionUtils.isFlyme12()) return
@@ -100,11 +103,11 @@ object ControlCenterRadiusHook : FeatureHook {
     }
 
     private fun isTargetDimen(resources: Resources, resId: Int): Boolean {
-        return try {
-            resources.getResourceEntryName(resId) == TARGET_DIMEN
-        } catch (_: Exception) {
-            false
+        if (resId == 0) return false
+        if (targetDimenResId == -1) {
+            targetDimenResId = resources.getIdentifier(TARGET_DIMEN, null, "com.android.systemui")
         }
+        return resId == targetDimenResId
     }
 
     /**

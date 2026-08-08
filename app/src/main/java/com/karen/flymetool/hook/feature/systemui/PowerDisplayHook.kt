@@ -32,6 +32,9 @@ object PowerDisplayHook : FeatureHook {
     private var lastVoltage = 0
     private var refreshInterval: Long = 1000
 
+    /** 息屏（含 AOD）时状态栏不可见，停止轮询，亮屏再恢复 */
+    private var screenOn = true
+
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "power_display")) return
         if (lpparam.packageName != "com.android.systemui") return
@@ -125,13 +128,7 @@ object PowerDisplayHook : FeatureHook {
         if (isRunning) return
         isRunning = true
 
-        context.registerReceiver(object : BroadcastReceiver() {
-            override fun onReceive(context: Context, intent: Intent) {
-                lastVoltage = intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0)
-            }
-        }, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-
-        handler.post(object : Runnable {
+        val updateRunnable = object : Runnable {
             @SuppressLint("DefaultLocale")
             override fun run() {
                 val current = readCurrent(context)
@@ -139,9 +136,37 @@ object PowerDisplayHook : FeatureHook {
                     val power = (lastVoltage / 1000.0) * (abs(current) / 1_000_000.0)
                     powerTextView?.text = String.format("%.2fW", power)
                 }
-                if (isRunning) handler.postDelayed(this, refreshInterval)
+                // 息屏停止循环，避免空闲时持续 binder 轮询与状态栏重绘
+                if (isRunning && screenOn) handler.postDelayed(this, refreshInterval)
             }
+        }
+
+        context.registerReceiver(object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    Intent.ACTION_SCREEN_ON -> {
+                        screenOn = true
+                        if (isRunning) {
+                            handler.removeCallbacks(updateRunnable)
+                            handler.post(updateRunnable)
+                        }
+                    }
+                    Intent.ACTION_SCREEN_OFF -> {
+                        screenOn = false
+                        handler.removeCallbacks(updateRunnable)
+                    }
+                    Intent.ACTION_BATTERY_CHANGED -> {
+                        lastVoltage = intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0)
+                    }
+                }
+            }
+        }, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_BATTERY_CHANGED)
         })
+
+        handler.post(updateRunnable)
     }
 
     private fun readCurrent(context: Context): Int {

@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
+import android.util.LruCache
 import android.widget.ImageView
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
@@ -22,6 +23,9 @@ object AppIconNotificationHook : FeatureHook {
 
     private val appIconPackages = mutableSetOf<String>()
     private var tickerSwitcher: android.widget.ImageSwitcher? = null
+
+    /** 应用图标缓存：getApplicationIcon 是 binder + 位图解码，按包缓存避免每次图标更新重取 */
+    private val appIconCache = LruCache<String, Drawable>(64)
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "app_icon_notification")) return
@@ -236,8 +240,11 @@ object AppIconNotificationHook : FeatureHook {
     }
 
     private fun getAppIcon(context: android.content.Context, packageName: String): Drawable? {
+        appIconCache.get(packageName)?.let { return it }
         return try {
-            context.packageManager.getApplicationIcon(packageName)
+            val icon = context.packageManager.getApplicationIcon(packageName)
+            appIconCache.put(packageName, icon)
+            icon
         } catch (e: Exception) {
             Logger.once(TAG, "no_icon_$packageName", "获取应用图标失败 pkg=$packageName")
             null

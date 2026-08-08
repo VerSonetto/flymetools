@@ -1,6 +1,7 @@
 package com.karen.flymetool.hook.feature.systemtools
 
 import android.content.res.Resources
+import android.os.SystemClock
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
@@ -35,6 +36,9 @@ object SlideGestureMultiArcHook : FeatureHook {
     private const val FEATURE_KEY = "slide_gesture_multi_arc"
     private const val TARGET_PACKAGE = "com.flyme.systemuitools"
 
+    /** onLayout 每次回调都读 prefs 是 2 次文件 stat，TTL 节流避免手势布局期间反复触达 */
+    private const val PREFS_TTL_MS = 800L
+
     private const val APP_LAUNCHER_WINDOW =
         "com.flyme.systemuitools.windowmode.views.AppLauncherWindow"
     private const val GESTURE_APP_LAUNCHER =
@@ -49,6 +53,8 @@ object SlideGestureMultiArcHook : FeatureHook {
     private var loadParam: XC_LoadPackage.LoadPackageParam? = null
     private var launchItemConstructor: Constructor<*>? = null
     private var layoutParamFields: ArcLayoutFields? = null
+    private var cachedArcCount = 1
+    private var arcCountCachedAt = 0L
 
     private data class ArcLayoutFields(
         val angle: Field,
@@ -386,8 +392,12 @@ object SlideGestureMultiArcHook : FeatureHook {
     }
 
     private fun readArcCount(): Int {
+        val now = SystemClock.uptimeMillis()
+        if (now - arcCountCachedAt < PREFS_TTL_MS) return cachedArcCount
+        arcCountCachedAt = now
         val lp = loadParam ?: return 1
-        return XposedPrefs.getFeatureValue(lp, prefsPackage, FEATURE_KEY, 1).coerceIn(1, 4)
+        cachedArcCount = XposedPrefs.getFeatureValue(lp, prefsPackage, FEATURE_KEY, 1).coerceIn(1, 4)
+        return cachedArcCount
     }
 
     private fun dp(value: Float): Float {

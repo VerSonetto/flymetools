@@ -53,8 +53,12 @@ class XposedInit : IXposedHookLoadPackage {
     private fun initLoggerOnce(lpparam: XC_LoadPackage.LoadPackageParam) {
         if (loggerInitialized) return
         loggerInitialized = true
-        Logger.init(BuildConfig.VERSION_NAME, XposedPrefs.isDebugEnabled(lpparam))
-        Logger.startCommandListener()
+        val debugEnabled = XposedPrefs.isDebugEnabled(lpparam)
+        Logger.init(BuildConfig.VERSION_NAME, debugEnabled)
+        // logcat 热切换监听会 spawn 子进程，仅在调试开启时启动；关闭态通过模块开关开启后重启目标进程
+        if (debugEnabled) {
+            Logger.startCommandListener()
+        }
         Logger.i(
             TAG,
             "FlymeTool v${Logger.moduleVersion} 已加载 " +

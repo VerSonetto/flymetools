@@ -12,6 +12,12 @@ import com.karen.flymetool.hook.base.XposedPrefs
 object NotificationCardRadiusHook : FeatureHook {
 
     private const val TAG = "NotificationCardRadius"
+    private const val CORNER_DIMEN = "notification_corner_radius"
+    private const val BACKGROUND_DIMEN = "notification_background_radius"
+
+    /** 目标资源 ID，-1 未解析。SystemUI 资源表进程内固定，首次解析后缓存全局有效 */
+    private var cornerResId = -1
+    private var backgroundResId = -1
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "notification_card_radius")) return
@@ -24,6 +30,15 @@ object NotificationCardRadiusHook : FeatureHook {
     private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int) {
         hookResourcesDimension(lpparam, radiusDp)
         hookRoundableState(lpparam, radiusDp)
+    }
+
+    private fun isTargetDimen(resources: Resources, resId: Int): Boolean {
+        if (resId == 0) return false
+        if (cornerResId == -1) {
+            cornerResId = resources.getIdentifier(CORNER_DIMEN, null, "com.android.systemui")
+            backgroundResId = resources.getIdentifier(BACKGROUND_DIMEN, null, "com.android.systemui")
+        }
+        return resId == cornerResId || resId == backgroundResId
     }
 
     private fun hookResourcesDimension(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int) {
@@ -40,17 +55,9 @@ object NotificationCardRadiusHook : FeatureHook {
                 Int::class.java,
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        val resId = param.args[0] as Int
-                        val resName = try {
-                            (param.thisObject as Resources).getResourceEntryName(resId)
-                        } catch (_: Exception) {
-                            null
-                        }
-
-                        if (resName == "notification_corner_radius" ||
-                            resName == "notification_background_radius") {
+                        if (isTargetDimen(param.thisObject as Resources, param.args[0] as Int)) {
                             param.result = radiusPx
-                            Logger.once(TAG, "dim_$resName", "已挂载 $resName = ${radiusPx}px")
+                            Logger.once(TAG, "dim", "已挂载通知卡圆角 = ${radiusPx}px")
                         }
                     }
                 }
@@ -62,15 +69,7 @@ object NotificationCardRadiusHook : FeatureHook {
                 Int::class.java,
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        val resId = param.args[0] as Int
-                        val resName = try {
-                            (param.thisObject as Resources).getResourceEntryName(resId)
-                        } catch (_: Exception) {
-                            null
-                        }
-
-                        if (resName == "notification_corner_radius" ||
-                            resName == "notification_background_radius") {
+                        if (isTargetDimen(param.thisObject as Resources, param.args[0] as Int)) {
                             param.result = radiusPx.toFloat()
                         }
                     }
