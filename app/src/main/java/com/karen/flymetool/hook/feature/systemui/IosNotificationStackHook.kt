@@ -26,7 +26,7 @@ import kotlin.math.min
  *
  * 折叠 p≈0：整组沉底，首卡全尺寸顶在 THRESH，下层 L*PEEK 错位 + 缩放下沉。
  * 展开 p→1：与原生列表 Y 插值；仅 overflow 继续堆叠。
- * 折叠态点击卡片：展开列表（不跳转）；有 pinned HUN 时整段不碰。
+ * 折叠态点击卡片：展开列表（不跳转）；顶层卡与横屏走系统默认（跳转）；有 pinned HUN 时整段不碰。
  *
  * 性能：prefs/dp 缓存、Item 带 viewState、阴影只抑制一次、字段变更才写。
  */
@@ -76,6 +76,8 @@ object IosNotificationStackHook : FeatureHook {
     private var touchDownY: Float = 0f
     private var touchTracking: Boolean = false
     private var touchMoved: Boolean = false
+    /** 折叠态堆叠顶层卡（全尺寸那张，items[firstOverflow]），点击它走默认跳转不展开 */
+    private var stackTopRowRef: WeakReference<View>? = null
 
     // —— 缓存 ——
     private var density = 0f
@@ -170,6 +172,9 @@ object IosNotificationStackHook : FeatureHook {
                         val view = param.args[0] as? View ?: return
                         if (!rowCl.isInstance(view)) return
                         if (!isStackCollapsed()) return
+                        // 横屏 / 顶层卡：不展开，放行系统默认（跳转）
+                        if (isLandscapeClick(view)) return
+                        if (isTopStackCard(view)) return
                         if (tryExpandStackFromClick()) {
                             param.result = null
                             Logger.d(TAG) { "折叠点击(row) → 展开列表" }
@@ -195,6 +200,11 @@ object IosNotificationStackHook : FeatureHook {
                         val host = param.thisObject as? ViewGroup ?: return
                         val ev = param.args[0] as? MotionEvent ?: return
                         if (!isStackCollapsed()) {
+                            touchTracking = false
+                            return
+                        }
+                        // 横屏不展开：不追踪，事件交还系统
+                        if (isLandscapeClick(host)) {
                             touchTracking = false
                             return
                         }
@@ -331,6 +341,18 @@ object IosNotificationStackHook : FeatureHook {
     }
 
     private fun isStackCollapsed(): Boolean = lastPe < COLLAPSED_CLICK_PE
+
+    private fun isTopStackCard(view: View): Boolean = stackTopRowRef?.get() === view
+
+    /**
+     * 点击场景的横屏判断：只用 resources。
+     * 不能用 [isLandscape] 的宽高兜底 —— 竖屏下卡片宽 > 高同样成立，会误判横屏。
+     */
+    private fun isLandscapeClick(view: View): Boolean = try {
+        view.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    } catch (_: Throwable) {
+        false
+    }
 
     private fun setStackSoftCap(active: Boolean, rows: List<View>) {
         stackBlurSoftCapActive = active
@@ -550,6 +572,9 @@ object IosNotificationStackHook : FeatureHook {
             val lastFull = items[firstOverflow - 1]
             max(stackTopForMedia, lastFull.nativeY + lastFull.systemH + px6)
         }
+
+        // 顶层卡 = 堆叠起点那张（sinkAll 时即 items[0]），点击它走默认跳转不展开
+        stackTopRowRef = items.getOrNull(firstOverflow)?.let { WeakReference(it.view) }
 
         // 媒体始终贴「通知堆叠顶」上方；横屏用 stackTopForMedia，随 pe 跟滚不压通知
         if (media != null) {
