@@ -41,6 +41,8 @@ import kotlin.math.hypot
 object StatusBarDoubleClickHook : FeatureHook {
 
     private const val TAG = "StatusBarGesture"
+    /** 亮度滑动功能独立日志标识：过滤时与双击锁屏分开（adb logcat -s FlymeTool 内按 tag 区分） */
+    private const val BRIGHTNESS_TAG = "StatusBarBrightness"
     private const val FEATURE_DBL_KEY = "status_bar_double_click_lock"
     private const val FEATURE_BRIGHTNESS_KEY = "status_bar_brightness_swipe"
 
@@ -196,7 +198,7 @@ object StatusBarDoubleClickHook : FeatureHook {
                                 directionDecided = true
                                 directionHorizontal = abs(dx) > abs(dy)
                                 if (directionHorizontal) {
-                                    Logger.d(TAG) { "进入亮度滑动" }
+                                    Logger.d(BRIGHTNESS_TAG) { "进入亮度滑动" }
                                     // 终止系统侧可能的下拉手势
                                     abortFirstGesture(view, event.rawX, event.rawY)
                                     phase = Phase.BRIGHTNESS_ACTIVE
@@ -393,22 +395,22 @@ object StatusBarDoubleClickHook : FeatureHook {
         // 实际当前亮度：Flyme 亮度条（BrightnessController）同源，最可靠。
         // BrightnessInfo.brightness 是公开字段（无 getter），反射读字段而非方法。
         val fromInfo = if (display == null) {
-            Logger.w(TAG, "当前亮度读取失败: display 为 null")
+            Logger.w(BRIGHTNESS_TAG, "当前亮度读取失败: display 为 null")
             null
         } else try {
             val info = XposedHelpers.callMethod(display, "getBrightnessInfo")
             if (info == null) {
-                Logger.w(TAG, "当前亮度读取失败: getBrightnessInfo 返回 null")
+                Logger.w(BRIGHTNESS_TAG, "当前亮度读取失败: getBrightnessInfo 返回 null")
                 null
             } else {
                 XposedHelpers.getFloatField(info, "brightness")
             }
         } catch (e: Throwable) {
-            Logger.w(TAG, "当前亮度读取失败: ${e.javaClass.simpleName}: ${e.message}")
+            Logger.w(BRIGHTNESS_TAG, "当前亮度读取失败: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
         if (fromInfo != null && fromInfo in 0f..1f) {
-            Logger.i(TAG, "当前亮度 info=$fromInfo")
+            Logger.i(BRIGHTNESS_TAG, "当前亮度 info=$fromInfo")
             return fromInfo
         }
         // 兜底：手动设定亮度（0-255）；Flyme 上自动亮度时可能为 0，仅作后备
@@ -418,14 +420,14 @@ object StatusBarDoubleClickHook : FeatureHook {
                 android.provider.Settings.System.SCREEN_BRIGHTNESS
             ).toFloat() / 255f
         } catch (e: Throwable) {
-            Logger.w(TAG, "Settings.SCREEN_BRIGHTNESS 读取失败: ${e.javaClass.simpleName}: ${e.message}")
+            Logger.w(BRIGHTNESS_TAG, "Settings.SCREEN_BRIGHTNESS 读取失败: ${e.javaClass.simpleName}: ${e.message}")
             -1f
         }
         if (fromSettings in 0f..1f) {
-            Logger.i(TAG, "当前亮度 settings=$fromSettings")
+            Logger.i(BRIGHTNESS_TAG, "当前亮度 settings=$fromSettings")
             return fromSettings
         }
-        Logger.w(TAG, "当前亮度读取失败，用 0.5 兜底")
+        Logger.w(BRIGHTNESS_TAG, "当前亮度读取失败，用 0.5 兜底")
         return 0.5f
     }
 
@@ -440,7 +442,7 @@ object StatusBarDoubleClickHook : FeatureHook {
             val dm = view.context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
             // @SystemApi 隐藏方法，走反射
             XposedHelpers.callMethod(dm, "setTemporaryBrightness", displayId, value)
-            Logger.d(TAG) { "调亮度 w=$width downX=$downX rawX=${event.rawX} ratio=$ratio value=$value" }
+            Logger.d(BRIGHTNESS_TAG) { "调亮度 w=$width downX=$downX rawX=${event.rawX} ratio=$ratio value=$value" }
         } catch (e: Throwable) {
             Logger.e(TAG, "实时调亮度失败", e)
         }
@@ -451,7 +453,7 @@ object StatusBarDoubleClickHook : FeatureHook {
         try {
             val dm = view.context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
             XposedHelpers.callMethod(dm, "setBrightness", displayId, currentBrightness)
-            Logger.i(TAG, "亮度已设置 ${(currentBrightness * 255).toInt()}/255")
+            Logger.i(BRIGHTNESS_TAG, "亮度已设置 ${(currentBrightness * 255).toInt()}/255")
         } catch (e: Throwable) {
             Logger.e(TAG, "持久化亮度失败", e)
         }
