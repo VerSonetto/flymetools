@@ -381,14 +381,30 @@ object StatusBarDoubleClickHook : FeatureHook {
     }
 
     private fun readBrightness(view: View): Float {
-        // 实际当前亮度：Flyme 亮度条（BrightnessController）同源，最可靠
-        val fromInfo = try {
-            val display = view.display
-            if (display == null) null else {
-                val info = XposedHelpers.callMethod(display, "getBrightnessInfo")
-                (XposedHelpers.callMethod(info, "getBrightness") as? Number)?.toFloat()
-            }
+        // 与 Flyme BrightnessController.getBrightnessInfo() 同源（反编译对照）：
+        // context/DisplayManager 的默认显示才有真实亮度信息；view.display 在状态栏
+        // 渲染于虚拟显示/截屏显示时 getBrightnessInfo() 返回 null → 读取失败。
+        val display = try {
+            val dm = view.context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+            dm.getDisplay(Display.DEFAULT_DISPLAY) ?: view.context.getDisplay() ?: view.display
         } catch (_: Throwable) {
+            view.display
+        }
+        // 实际当前亮度：Flyme 亮度条（BrightnessController）同源，最可靠。
+        // BrightnessInfo.brightness 是公开字段（无 getter），反射读字段而非方法。
+        val fromInfo = if (display == null) {
+            Logger.w(TAG, "当前亮度读取失败: display 为 null")
+            null
+        } else try {
+            val info = XposedHelpers.callMethod(display, "getBrightnessInfo")
+            if (info == null) {
+                Logger.w(TAG, "当前亮度读取失败: getBrightnessInfo 返回 null")
+                null
+            } else {
+                XposedHelpers.getFloatField(info, "brightness")
+            }
+        } catch (e: Throwable) {
+            Logger.w(TAG, "当前亮度读取失败: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
         if (fromInfo != null && fromInfo in 0f..1f) {
@@ -401,7 +417,8 @@ object StatusBarDoubleClickHook : FeatureHook {
                 view.context.contentResolver,
                 android.provider.Settings.System.SCREEN_BRIGHTNESS
             ).toFloat() / 255f
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            Logger.w(TAG, "Settings.SCREEN_BRIGHTNESS 读取失败: ${e.javaClass.simpleName}: ${e.message}")
             -1f
         }
         if (fromSettings in 0f..1f) {
