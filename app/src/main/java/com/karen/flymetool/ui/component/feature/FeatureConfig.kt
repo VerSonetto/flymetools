@@ -28,6 +28,7 @@ fun FeatureConfig(
         "hide_status_bar_icon" -> HideStatusBarIconConfig(packageName, featureKey)
         "custom_browser" -> CustomBrowserConfig(packageName, featureKey)
         "capture_update_link" -> CaptureUpdateLinkConfig(packageName, featureKey)
+        "aod_lyric" -> AODLyricConfig(packageName, featureKey)
         "aod_notification" -> AODNotificationConfig(packageName, featureKey)
         "folder_icon_blur" -> FolderIconBlurConfig(packageName, featureKey)
         "folder_open_blur" -> FolderOpenBlurConfig(packageName, featureKey)

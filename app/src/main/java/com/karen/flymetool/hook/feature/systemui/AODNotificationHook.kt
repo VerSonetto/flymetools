@@ -30,6 +30,9 @@ object AODNotificationHook : FeatureHook {
     private const val NOTIFICATION_ENTRY = "com.android.systemui.statusbar.notification.collection.NotificationEntry"
     private const val TAG = "AODNotification"
     private const val DEFAULT_MAX_LINES = 3
+    /** 与历史硬编码 textSize=11f 一致；extra key，避免覆盖最大行数 */
+    private const val TEXT_SIZE_SUFFIX = "text_size"
+    private const val DEFAULT_TEXT_SIZE_SP = 11
 
     private val handler: Handler by lazy { Handler(Looper.getMainLooper()) }
     private var containerLayout: LinearLayout? = null
@@ -249,6 +252,9 @@ object AODNotificationHook : FeatureHook {
         packageName: String
     ): LinearLayout {
         val maxLines = XposedPrefs.getFeatureValue(lpparam, packageName, "aod_notification", DEFAULT_MAX_LINES)
+        val textSizeSp = XposedPrefs.getFeatureExtraValue(
+            lpparam, packageName, "aod_notification", TEXT_SIZE_SUFFIX, DEFAULT_TEXT_SIZE_SP
+        ).coerceIn(8, 28).toFloat()
 
         return LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -277,7 +283,7 @@ object AODNotificationHook : FeatureHook {
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 )
-                textSize = 11f
+                textSize = textSizeSp
                 setTextColor(Color.WHITE)
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 setShadowLayer(4f, 0f, 0f, Color.BLACK)

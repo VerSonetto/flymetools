@@ -32,6 +32,8 @@ object AODLyricHook : FeatureHook {
     private const val VIEW_TAG = "flymetool_aod_lyric"
     /** 与 AdvertTickerView 歌词判定一致：notification.flags & 0x1000000 */
     private const val FLYME_LYRIC_FLAG = 0x1000000
+    /** 与历史硬编码 textSize=12f 一致 */
+    private const val DEFAULT_TEXT_SIZE_SP = 12
 
     private val handler: Handler by lazy { Handler(Looper.getMainLooper()) }
     /** 可能同时存在经典 AOD / 跟随锁屏多棵树，统一刷新 */
@@ -40,10 +42,14 @@ object AODLyricHook : FeatureHook {
     /** 跟随锁屏时钟与锁屏共用：仅 doze/AOD 时显示歌词 */
     @Volatile
     private var isDozing: Boolean = false
+    private var featurePackageName: String = ""
+    private var loadParam: XC_LoadPackage.LoadPackageParam? = null
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "aod_lyric")) return
         if (lpparam.packageName != "com.android.systemui") return
+        featurePackageName = packageName
+        loadParam = lpparam
 
         // 经典 AOD：时钟在 date_time_layout（含 aod_time），插到其下方（仅 AOD 树，无锁屏问题）
         hookInsertBelowNamedChild(lpparam, AOD_BASIC_VIEW, "date_time_layout", aodOnly = false)
@@ -297,13 +303,21 @@ object AODLyricHook : FeatureHook {
         }
     }
 
+    private fun resolveTextSizeSp(): Float {
+        val lp = loadParam ?: return DEFAULT_TEXT_SIZE_SP.toFloat()
+        val pkg = featurePackageName.ifEmpty { return DEFAULT_TEXT_SIZE_SP.toFloat() }
+        return XposedPrefs.getFeatureValue(lp, pkg, "aod_lyric", DEFAULT_TEXT_SIZE_SP)
+            .coerceIn(8, 28)
+            .toFloat()
+    }
+
     private fun createLyricTextView(context: Context, aodOnly: Boolean): TextView {
         return TextView(context).apply {
             tag = VIEW_TAG
             // 用 contentDescription 标记是否仅 AOD 显示，避免额外 map
             contentDescription = if (aodOnly) "aod_only" else "always"
             gravity = Gravity.CENTER
-            textSize = 12f
+            textSize = resolveTextSizeSp()
             setTextColor(Color.WHITE)
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setShadowLayer(4f, 0f, 0f, Color.BLACK)
