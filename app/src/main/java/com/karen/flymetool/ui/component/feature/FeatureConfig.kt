@@ -2,6 +2,45 @@ package com.karen.flymetool.ui.component.feature
 
 import androidx.compose.runtime.Composable
 
+/**
+ * 是否有行内配置面板。须与 [FeatureConfig] 的 when 分支保持同步。
+ */
+fun hasFeatureConfig(featureKey: String): Boolean = when (featureKey) {
+    "statusbar_weekday",
+    "statusbar_clock_period",
+    "statusbar_clock_custom_format",
+    "notification_card_radius",
+    "notification_card_blur",
+    "media_card_radius",
+    "connection_rate_low_speed_hide",
+    "pulldown_area_ratio",
+    "control_center_blur_intensity",
+    "control_center_radius",
+    "notification_icon_limit",
+    "task_card_radius",
+    "task_blur_intensity",
+    "memory_display",
+    "power_display",
+    "hide_status_bar_icon",
+    "custom_browser",
+    "capture_update_link",
+    "aod_lyric",
+    "aod_notification",
+    "folder_icon_blur",
+    "folder_open_blur",
+    "custom_carrier_name",
+    "custom_charge_limit",
+    "force_live_notification",
+    "force_camera_circle_battery",
+    "circle_battery_status_bar_icon",
+    "ios_notification_stack",
+    "edge_back_vibrate_intensity",
+    "edge_back_hold_previous_app",
+    "mback_double_click",
+    "slide_gesture_multi_arc" -> true
+    else -> false
+}
+
 @Composable
 fun FeatureConfig(
     featureKey: String,

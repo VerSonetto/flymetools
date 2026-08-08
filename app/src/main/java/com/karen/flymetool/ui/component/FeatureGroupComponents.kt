@@ -21,6 +21,10 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import com.karen.flymetool.data.HookFeature
 import com.karen.flymetool.data.PrefsHelper
 import com.karen.flymetool.ui.component.feature.FeatureConfig
+import com.karen.flymetool.ui.component.feature.hasFeatureConfig
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Text
@@ -78,7 +83,7 @@ fun FeatureGroupCard(
 }
 
 /**
- * 统一功能行：开关 + 开启后行内配置。
+ * 统一功能行：开关 + 可选配置（有配置时默认折叠，点标题区展开）。
  * 调用方应先用 [isFeatureVisible] 过滤，避免隐藏项残留分割线。
  */
 @Composable
@@ -91,6 +96,9 @@ fun FeatureListRow(
     modifier: Modifier = Modifier,
     showDivider: Boolean = false
 ) {
+    val hasConfig = hasFeatureConfig(feature.key)
+    var expanded by remember(feature.key) { mutableStateOf(false) }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -109,12 +117,22 @@ fun FeatureListRow(
                         featureStates[otherKey]?.value = false
                         PrefsHelper.setFeatureEnabled(context, packageName, otherKey, false)
                     }
+                } else if (hasConfig) {
+                    // 关闭功能时收起配置，避免关着还挂着大块面板
+                    expanded = false
                 }
+            },
+            expandable = hasConfig,
+            expanded = expanded,
+            onHeaderClick = if (hasConfig) {
+                { expanded = !expanded }
+            } else {
+                null
             }
         )
 
         AnimatedVisibility(
-            visible = featureStates[feature.key]?.value == true,
+            visible = hasConfig && expanded,
             enter = expandVertically(tween(180)) + fadeIn(tween(120)),
             exit = shrinkVertically(tween(150)) + fadeOut(tween(100))
         ) {
