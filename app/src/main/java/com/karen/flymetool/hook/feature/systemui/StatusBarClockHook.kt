@@ -79,8 +79,9 @@ object StatusBarClockHook : FeatureHook {
 
         val weekdayEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, KEY_WEEKDAY)
         val periodEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, KEY_PERIOD)
-        val customFormat = XposedPrefs.getFeatureString(lpparam, packageName, KEY_CUSTOM_FORMAT, "")
-        if (!weekdayEnabled && !periodEnabled && customFormat.isBlank()) return
+        // 自定义格式有独立开关：开关关闭时即使残留字符串也不生效（曾漏读此开关导致关不掉）
+        val customFormatEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, KEY_CUSTOM_FORMAT)
+        if (!weekdayEnabled && !periodEnabled && !customFormatEnabled) return
 
         val config = ClockConfig(
             weekdayEnabled = weekdayEnabled,
@@ -90,7 +91,9 @@ object StatusBarClockHook : FeatureHook {
             periodScheme = XposedPrefs.getFeatureValue(lpparam, packageName, KEY_PERIOD, 1),
             periodPosition = XposedPrefs.getFeatureValue(lpparam, packageName, KEY_PERIOD_POSITION, 0),
             customSegments = if (periodEnabled) readCustomSegments(lpparam, packageName) else emptyList(),
-            customFormat = customFormat.trim()
+            customFormat = if (customFormatEnabled) {
+                XposedPrefs.getFeatureString(lpparam, packageName, KEY_CUSTOM_FORMAT, "").trim()
+            } else ""
         )
 
         mountCompose(lpparam, config)
