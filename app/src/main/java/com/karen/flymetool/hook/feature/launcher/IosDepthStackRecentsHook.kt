@@ -46,6 +46,8 @@ object IosDepthStackRecentsHook : FeatureHook {
     private const val LEFT_SCALE_DECAY = 0.50f
     private const val DEPTH_Z_STEP_DP = 1f
     private const val EPSILON = 0.0005f
+    // 清空模式复位超时：原生清空动画 300ms + 错峰 30ms*卡数，无 dismiss setter 超过该时长即退出。
+    private const val DISMISS_MULTI_TIMEOUT_MS = 450L
     // 头部模糊：仅可见区域内最左侧卡片，低强度、轻微降透明度。
     private const val HEADER_BLUR_RADIUS_DP = 4.2f
     private const val HEADER_BLUR_ALPHA = 0.9f
@@ -136,6 +138,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         hookPlaceholderDrawing(classLoader)
         hookScreenshotSwitch(taskClass)
         hookDismissChannel(taskClass, hooks)
+        hookDismissAll(recentsClass)
         hookReset(recentsClass, hooks)
 
         Logger.i(
@@ -388,16 +391,31 @@ object IosDepthStackRecentsHook : FeatureHook {
                 override fun afterHookedMethod(param: MethodHookParam) {
                     val task = param.thisObject as? View ?: return
                     val recents = task.parent as? ViewGroup ?: return
-                    val axis = axisFor(recents, hooks)
+                    val state = stateFor(recents)
+                    // 动画期间复用 applyStack 缓存的 axis，避免每帧每卡反射 getPagedOrientationHandler。
+                    val axis = if (state.cachedAxis != null && state.rotation >= 0) {
+                        state.cachedAxis!!
+                    } else {
+                        axisFor(recents, hooks)
+                    }
                     val isSecondaryAxis = if (axis.landscape) !isYAxis else isYAxis
                     if (!isSecondaryAxis) return
-                    val state = stateFor(recents)
                     val value = (param.args[0] as? Number)?.toFloat() ?: 0f
                     // 次轴维度：横屏次轴=X→宽，竖屏次轴=Y→高。
                     val secondaryDim = axis.childSecondarySize(task).takeIf { it > 0f } ?: return
                     if (abs(value) > EPSILON) {
-                        state.dismissingTask = task
-                        state.dismissProgress = (abs(value) / secondaryDim).coerceIn(0f, 1f)
+                        // 兜底：若 preDismissAllTasks 入口未命中，错峰动画下多卡并发仍会击穿单槽
+                        // dismissingTask（顶 z/补位/渐淡互相打架）。检测到第二张不同卡并发移动
+                        // 即整体放弃单卡接管：堆叠几何保持，飞出交还原生。
+                        if (state.dismissingTask != null && state.dismissingTask !== task) {
+                            state.multiDismissActive = true
+                            state.dismissingTask = null
+                            state.dismissProgress = 0f
+                        } else if (!state.multiDismissActive) {
+                            state.dismissingTask = task
+                            state.dismissProgress = (abs(value) / secondaryDim).coerceIn(0f, 1f)
+                        }
+                        state.lastDismissMoveTime = SystemClock.uptimeMillis()
                     } else if (state.dismissingTask === task) {
                         state.dismissingTask = null
                         state.dismissProgress = 0f
@@ -406,6 +424,28 @@ object IosDepthStackRecentsHook : FeatureHook {
                 }
             })
         }
+    }
+
+    /**
+     * 清空最近任务入口：清空按钮 → dismissAllTasks() → 第一行 preDismissAllTasks()（反编译对照，
+     * protected 空钩子，CTS/非 CTS 两条分支都经过）。直接置清空模式，不依赖并发检测——
+     * 初始态（未右滑）currentPage=0 时动画范围只有 [0,1]，running task 跳过动画后可能只剩
+     * 一张卡移动，永远不满足并发条件，单槽接管仍会把移动卡顶到最高 z。
+     */
+    private fun hookDismissAll(recentsClass: Class<*>) {
+        findMethod(recentsClass, "preDismissAllTasks", Void.TYPE)?.let { method ->
+            XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val recents = param.thisObject as? ViewGroup ?: return
+                    val state = stateFor(recents)
+                    state.multiDismissActive = true
+                    state.dismissingTask = null
+                    state.dismissProgress = 0f
+                    state.lastDismissMoveTime = SystemClock.uptimeMillis()
+                    Logger.i(TAG, "清空最近任务：进入清空模式，飞出交还原生")
+                }
+            })
+        } ?: Logger.w(TAG, "未找到 preDismissAllTasks()，清空模式降级为并发检测")
     }
 
     /**
@@ -536,7 +576,14 @@ object IosDepthStackRecentsHook : FeatureHook {
                 state.dismissingTask = null
                 state.dismissProgress = 0f
             }
-            val dismissing = state.dismissingTask
+            // 清空模式复位：原生动画结束（无 dismiss setter 超时）后恢复单卡接管能力。
+            if (state.multiDismissActive &&
+                SystemClock.uptimeMillis() - state.lastDismissMoveTime > DISMISS_MULTI_TIMEOUT_MS
+            ) {
+                state.multiDismissActive = false
+            }
+            // multiDismiss 期间屏蔽单卡接管：无顶 z/补位/渐淡，卡片保持堆叠几何由原生统一飞出。
+            val dismissing = if (state.multiDismissActive) null else state.dismissingTask
             val dismissProgress = if (dismissing != null) state.dismissProgress else 0f
             val dismissedOrdinal = if (dismissing != null) pages.indexOfFirst { it.view === dismissing } else -1
             fun effectiveOrdinalFor(ordinal: Int, isDismissing: Boolean): Float {
@@ -637,9 +684,9 @@ object IosDepthStackRecentsHook : FeatureHook {
                     )
                 }
                 // Z 序：默认 ordinal 越大越高；Seascape 下 ordinal 与屏幕左右相反，需镜像使右侧更高。
-                // 被删卡压到最上以自然飞出。
+                // 被删卡保持自身堆叠层级（effectiveOrdinal=fullOrdinal）飞出，不顶到最上——
+                // 顶 z 会在上滑删除瞬间让卡片短暂违背堆叠层级，清空动画已交还原生，单卡也不该例外。
                 val depthOrder = when {
-                    isDismissing -> (pages.size + 1).toFloat()
                     axis.invertStackDepth -> (pages.lastIndex - effectiveOrdinal)
                     else -> effectiveOrdinal
                 }
@@ -663,7 +710,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                 state.contentAlpha >= 0.98f &&
                 (!state.fullscreenProgressKnown || state.fullscreenProgress <= 0.02f) &&
                 state.adjacentPageScale <= 0.02f
-            if (settledOverview && exitFade >= 1f - EPSILON && dismissing == null) {
+            if (settledOverview && exitFade >= 1f - EPSILON && dismissing == null && !state.multiDismissActive) {
                 pages.forEach { it.view.getGlobalVisibleRect(state.taskStates.getValue(it.view).bounds) }
                 val frontOrdinalDelta = if (axis.invertStackDepth) -1 else 1
                 pages.forEachIndexed { ordinal, page ->
@@ -1124,6 +1171,11 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     private fun resetAllTransforms(recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks) {
+        // 清空模式随 reset 一并复位，避免下次进 overview 误屏蔽单卡删除。
+        state.multiDismissActive = false
+        state.lastDismissMoveTime = 0L
+        state.dismissingTask = null
+        state.dismissProgress = 0f
         val it = state.taskStates.entries.iterator()
         while (it.hasNext()) {
             val (task, ts) = it.next()
@@ -1477,6 +1529,10 @@ object IosDepthStackRecentsHook : FeatureHook {
         // dismiss 接管：正在删除的卡与删除进度(0→1，按被删卡次轴位移/卡高)。
         var dismissingTask: View? = null
         var dismissProgress = 0f
+        // 清空模式：多卡并发 dismiss（createAllTasksDismissAnimationMz 错峰飞出）时置位，
+        // 屏蔽单卡接管（顶 z/补位/渐淡），堆叠几何保持；超时或 reset 后复位。
+        var multiDismissActive = false
+        var lastDismissMoveTime = 0L
         var traceFrame = 0
     }
 
