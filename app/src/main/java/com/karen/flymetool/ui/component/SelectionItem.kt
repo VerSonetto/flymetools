@@ -70,6 +70,7 @@ fun SelectionGroup(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun <T> SingleSelectionRow(
     options: List<SelectionOption<T>>,
@@ -77,16 +78,17 @@ fun <T> SingleSelectionRow(
     onSelected: (T) -> Unit,
     modifier: Modifier = Modifier
 ) where T : Any {
-    Row(
+    // 流式标签：格子宽度随内容自适应，宽度不足自动换行，任何字号下文字都不会被截断
+    FlowRow(
         modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         options.forEach { option ->
             SelectionItem(
                 label = option.label,
                 isSelected = option.value == selectedValue,
-                onClick = { onSelected(option.value) },
-                modifier = Modifier.weight(1f)
+                onClick = { onSelected(option.value) }
             )
         }
     }
@@ -189,8 +191,6 @@ fun SelectionItem(
             color = if (isSelected) MiuixTheme.colorScheme.primary
             else MiuixTheme.colorScheme.onBackgroundVariant,
             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
         )
     }
 }

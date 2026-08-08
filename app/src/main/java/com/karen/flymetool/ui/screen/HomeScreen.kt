@@ -40,9 +40,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.DpSize
 import com.karen.flymetool.R
@@ -69,11 +72,17 @@ import top.yukonga.miuix.kmp.theme.LocalDismissState
 import top.yukonga.miuix.kmp.window.WindowDialog
 import androidx.compose.ui.state.ToggleableState
 
+/**
+ * 长内容弹窗内容区的高度上限：窗口高度的 1/2，超出部分滚动，
+ * 保证底部操作按钮始终在可视区域内（高 DPI/大字号下内容更多也不顶满屏）。
+ */
+private val DialogContentMaxHeight: Dp
+    @Composable get() = LocalConfiguration.current.screenHeightDp.dp * 0.5f
+
 @Composable
 fun HomeScreen(
     onAppClick: (ScopedApp) -> Unit,
-    modifier: Modifier = Modifier
-) {
+    modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val apps = remember(context) { AppData.getScopedApps(context) }
     var showRestartDialog by remember { mutableStateOf(false) }
@@ -291,6 +300,7 @@ private fun RestartScopeDialog(
             Column(
                 modifier = Modifier
                     .weight(1f, fill = false)
+                    .heightIn(max = DialogContentMaxHeight)
                     .verticalScroll(rememberScrollState())
             ) {
                 apps.forEach { app ->
@@ -366,16 +376,35 @@ private fun IntroDialog(
     WindowDialog(
         show = true,
         title = "FlymeTool",
-        summary = "本模块最初基于 Flyme 10 开发，因此大部分功能理论上会更适配 Flyme 10。但也不能完全保证，因为随着系统更新以及被 Hook 应用本身的变化，即使同属 Flyme 10，不同版本之间也可能存在不兼容的情况。\n\n后来我升级到了 Flyme 12，所以后续新增的功能基本都是在 Flyme 12 上进行测试的。\n\n这个模块一开始只是做给自己玩的，后来顺手公开出来了。由于目前测试者基本只有我一个人，不可能覆盖所有机型、版本和使用场景，因此出现问题其实是正常情况，后续修复也可能比较随缘。\n\n另外，本模块几乎完全由 AI 辅助开发；如果介意，请勿使用，也请勿因此攻击或指责。",
         onDismissRequest = onDismiss
     ) {
         val dismiss = LocalDismissState.current
-        TextButton(
-            text = "我知道了",
-            onClick = { dismiss?.invoke() },
-            colors = ButtonDefaults.textButtonColorsPrimary(),
-            modifier = Modifier.fillMaxWidth()
-        )
+
+        Column {
+            Column(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .heightIn(max = DialogContentMaxHeight)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = "本模块最初基于 Flyme 10 开发，因此大部分功能理论上会更适配 Flyme 10。但也不能完全保证，因为随着系统更新以及被 Hook 应用本身的变化，即使同属 Flyme 10，不同版本之间也可能存在不兼容的情况。\n\n后来我升级到了 Flyme 12，所以后续新增的功能基本都是在 Flyme 12 上进行测试的。\n\n这个模块一开始只是做给自己玩的，后来顺手公开出来了。由于目前测试者基本只有我一个人，不可能覆盖所有机型、版本和使用场景，因此出现问题其实是正常情况，后续修复也可能比较随缘。\n\n另外，本模块几乎完全由 AI 辅助开发；如果介意，请勿使用，也请勿因此攻击或指责。",
+                    style = MiuixTheme.textStyles.body1,
+                    color = MiuixTheme.colorScheme.onSurfaceSecondary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            TextButton(
+                text = "我知道了",
+                onClick = { dismiss?.invoke() },
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
 }
 
@@ -420,42 +449,49 @@ private fun UpdateDialog(
         val dismiss = LocalDismissState.current
 
         Column {
-            if (info.releaseNotes.isNotBlank()) {
-                Text(
-                    text = info.releaseNotes,
-                    style = MiuixTheme.textStyles.body1,
-                    color = MiuixTheme.colorScheme.onBackgroundVariant,
-                )
+            Column(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .heightIn(max = DialogContentMaxHeight)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                if (info.releaseNotes.isNotBlank()) {
+                    Text(
+                        text = info.releaseNotes,
+                        style = MiuixTheme.textStyles.body1,
+                        color = MiuixTheme.colorScheme.onBackgroundVariant,
+                    )
+                }
+                if (info.apkSize > 0) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "大小: ${info.apkSize / 1024 / 1024} MB",
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.onBackgroundVariant,
+                    )
+                }
             }
-            if (info.apkSize > 0) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "大小: ${info.apkSize / 1024 / 1024} MB",
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = MiuixTheme.colorScheme.onBackgroundVariant,
-                )
-            }
-            if (downloading) {
-                Spacer(modifier = Modifier.height(16.dp))
-                LinearProgressIndicator(
-                    progress = progress / 100f,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "下载中 $progress%",
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = MiuixTheme.colorScheme.onBackgroundVariant,
-                )
-            }
-            if (error != null) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "下载失败: $error",
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = MiuixTheme.colorScheme.error,
-                )
-            }
+
+        if (downloading) {
+            Spacer(modifier = Modifier.height(16.dp))
+            LinearProgressIndicator(
+                progress = progress / 100f,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "下载中 $progress%",
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onBackgroundVariant,
+            )
+        }
+        if (error != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "下载失败: $error",
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.error,
+            )
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -480,6 +516,7 @@ private fun UpdateDialog(
                 )
             }
         }
+    }
     }
 }
 
