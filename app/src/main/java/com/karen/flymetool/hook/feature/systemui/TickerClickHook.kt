@@ -16,7 +16,9 @@ import com.karen.flymetool.hook.base.XposedPrefs
 
 object TickerClickHook : FeatureHook {
 
-    private const val MARQUEE_TICKER = "com.flyme.statusbar.ticker.MarqueeTicker"
+    /** Flyme 12 起 ticker 移入 systemui 子包；旧版在 statusbar.ticker（与 AppIconNotificationHook 同源兼容） */
+    private const val MARQUEE_TICKER = "com.flyme.systemui.statusbar.ticker.MarqueeTicker"
+    private const val MARQUEE_TICKER_LEGACY = "com.flyme.statusbar.ticker.MarqueeTicker"
     private const val TAG = "TickerClick"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
@@ -26,10 +28,26 @@ object TickerClickHook : FeatureHook {
         hookMarqueeTicker(lpparam)
     }
 
-    private fun hookMarqueeTicker(lpparam: XC_LoadPackage.LoadPackageParam) {
-        try {
-            val clazz = XposedHelpers.findClass(MARQUEE_TICKER, lpparam.classLoader)
+    private fun findMarqueeTickerClass(lpparam: XC_LoadPackage.LoadPackageParam): Class<*>? {
+        return try {
+            XposedHelpers.findClass(MARQUEE_TICKER, lpparam.classLoader)
+        } catch (_: Throwable) {
+            try {
+                XposedHelpers.findClass(MARQUEE_TICKER_LEGACY, lpparam.classLoader)
+            } catch (_: Throwable) {
+                null
+            }
+        }
+    }
 
+    private fun hookMarqueeTicker(lpparam: XC_LoadPackage.LoadPackageParam) {
+        val clazz = findMarqueeTickerClass(lpparam)
+        if (clazz == null) {
+            Logger.e(TAG, "未找到 MarqueeTicker 类（新旧包名均不存在）")
+            return
+        }
+
+        try {
             XposedHelpers.findAndHookMethod(
                 clazz,
                 "addEntry",
@@ -44,14 +62,12 @@ object TickerClickHook : FeatureHook {
             Logger.i(TAG, "已挂载 MarqueeTicker.addEntry")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 MarqueeTicker.addEntry 失败", e)
-            tryAlternativeHook(lpparam)
+            tryAlternativeHook(clazz, lpparam)
         }
     }
 
-    private fun tryAlternativeHook(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun tryAlternativeHook(clazz: Class<*>, lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
-            val clazz = XposedHelpers.findClass(MARQUEE_TICKER, lpparam.classLoader)
-
             XposedHelpers.findAndHookConstructor(
                 clazz,
                 android.content.Context::class.java,
