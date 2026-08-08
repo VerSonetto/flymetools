@@ -30,7 +30,9 @@ object AppData {
     fun getScopedApps(context: Context): List<ScopedApp> {
         val pm = context.packageManager
         return loadApps(context).filter { app ->
-            FlymeVersionUtils.isScopeAvailable(app.packageName)
+            FlymeVersionUtils.isScopeAvailable(app.packageName) &&
+                // 当前版本下没有任何可配置功能时不进列表（含 minVersion 滤空）
+                getFeatures(app.packageName).isNotEmpty()
         }.map { app ->
             try {
                 val info = pm.getApplicationInfo(app.packageName, 0)

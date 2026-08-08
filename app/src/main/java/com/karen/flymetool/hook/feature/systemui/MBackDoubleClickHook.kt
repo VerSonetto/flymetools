@@ -3,6 +3,7 @@ package com.karen.flymetool.hook.feature.systemui
 import android.content.Context
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -32,6 +33,7 @@ object MBackDoubleClickHook : FeatureHook {
     private const val ACTION_FLASHLIGHT = "flashlight"
     private const val ACTION_SCREENSHOT = "screenshot"
     private const val ACTION_SLEEP = "sleep"
+    private const val ACTION_MUTE = "mute"
     private const val DEFAULT_ACTION = ACTION_FLASHLIGHT
 
     private const val VIEW_CLASS = "com.flyme.systemui.navigationbar.MBackButtonView"
@@ -377,9 +379,32 @@ object MBackDoubleClickHook : FeatureHook {
             ACTION_FLASHLIGHT -> toggleFlashlight(context)
             ACTION_SCREENSHOT -> takeScreenshot(context)
             ACTION_SLEEP -> goToSleep(context)
+            ACTION_MUTE -> toggleMute(context)
             else -> {
                 Logger.w(TAG, "未知动作 $action，回退手电筒")
                 toggleFlashlight(context)
+            }
+        }
+    }
+
+    /**
+     * 切换系统铃声模式：静音 ↔ 响铃。
+     * 若当前为震动，则进入静音（与状态栏/快捷开关「静音」一致）。
+     */
+    private fun toggleMute(context: Context) {
+        mainHandler.post {
+            try {
+                val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                val current = am.ringerMode
+                if (current == AudioManager.RINGER_MODE_SILENT) {
+                    am.ringerMode = AudioManager.RINGER_MODE_NORMAL
+                    Logger.i(TAG, "已取消静音 (RINGER_MODE_NORMAL)")
+                } else {
+                    am.ringerMode = AudioManager.RINGER_MODE_SILENT
+                    Logger.i(TAG, "已静音 (RINGER_MODE_SILENT)，原模式=$current")
+                }
+            } catch (e: Throwable) {
+                Logger.e(TAG, "切换静音失败", e)
             }
         }
     }

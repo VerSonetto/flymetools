@@ -177,7 +177,6 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
     ),
     "com.flyme.systemuitools" to listOf(
         HookFeature("slide_gesture_multi_arc", "小窗快捷菜单多圆弧",
-            description = "自定义斜滑唤出的小窗快捷菜单圆弧条数，最多 4 条；更多应用入口保留在系统默认圆弧",
-            group = "小窗"),
+            description = "自定义斜滑唤出的小窗快捷菜单圆弧条数，最多 4 条；更多应用入口保留在系统默认圆弧")
     ),
 )

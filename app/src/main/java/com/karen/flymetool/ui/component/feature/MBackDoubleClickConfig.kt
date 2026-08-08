@@ -14,6 +14,7 @@ import com.karen.flymetool.ui.component.SingleSelectionRow
 private const val ACTION_FLASHLIGHT = "flashlight"
 private const val ACTION_SCREENSHOT = "screenshot"
 private const val ACTION_SLEEP = "sleep"
+private const val ACTION_MUTE = "mute"
 private const val DEFAULT_ACTION = ACTION_FLASHLIGHT
 
 @Composable
@@ -33,6 +34,7 @@ fun MBackDoubleClickConfig(
         SelectionOption(value = ACTION_FLASHLIGHT, label = "手电筒"),
         SelectionOption(value = ACTION_SCREENSHOT, label = "截图"),
         SelectionOption(value = ACTION_SLEEP, label = "息屏"),
+        SelectionOption(value = ACTION_MUTE, label = "静音"),
     )
 
     SelectionGroup(title = "双击动作") {
