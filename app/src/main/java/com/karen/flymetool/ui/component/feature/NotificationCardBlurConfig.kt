@@ -11,10 +11,10 @@ import com.karen.flymetool.data.PrefsHelper
 import com.karen.flymetool.ui.component.AppSlider
 import com.karen.flymetool.ui.component.FeatureSwitch
 
-/** 与 Hook 一致：50 ≈ 系统原强度，100 ≈ 约两倍 */
+/** 与 Hook 一致：50 ≈ 系统原强度，100 ≈ 约两倍，上限 200 */
 private const val DEFAULT_INTENSITY = 50
 
-/** 罩色默认；开启曲线联动后会再联动/偏色 */
+/** 不透明度默认；同滑块值经幂映射后比线性更不透明 */
 private const val DEFAULT_OPACITY = 70
 private const val OPACITY_SUFFIX = "opacity"
 
@@ -60,11 +60,11 @@ fun NotificationCardBlurConfig(
                     context, packageName, featureKey, intensity.toInt()
                 )
             },
-            valueRange = 0f..100f,
-            valueDisplay = "${intensity.toInt()}%"
+            valueRange = 0f..200f,
+            valueDisplay = "${intensity.toInt()}"
         )
         AppSlider(
-            label = "遮罩浓度",
+            label = "不透明度",
             value = opacity,
             onValueChange = { opacity = it },
             onValueChangeFinished = {
@@ -78,8 +78,8 @@ fun NotificationCardBlurConfig(
         FeatureSwitch(
             title = "曲线联动",
             description = "作用于通知卡片与媒体播放器卡片。" +
-                "开启后强度按曲线映射，罩色随强度联动并带日夜轻微偏色；" +
-                "关闭则半径与遮罩都按滑块线性取值。",
+                "开启后强度按曲线映射，不透明度随强度联动并带日夜轻微偏色；" +
+                "关闭则半径与不透明度都按滑块取值。",
             checked = beautify,
             onCheckedChange = { enabled ->
                 beautify = enabled

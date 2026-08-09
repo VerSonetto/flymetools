@@ -27,15 +27,15 @@ import kotlin.math.roundToInt
  * - 媒体 Static：setAllForegroundColor + addBlurDrawableTo(this, color, r)
  *
  * 子开关「曲线联动」beautify（默认关）：
- * - 关：线性半径 + 纯 alpha 罩色
+ * - 关：线性半径 + 幂映射不透明度
  * - 开：强度曲线、罩色联动、日/夜轻微偏色
  *
- * 与「去除遮罩」并存时：罩色由 MaskHook / 媒体同源逻辑接管，本 hook 不改 color。
+ * 不透明度：滑块值经 0.7 次幂映射，同参数比线性更不透明（35 → 约 48%）。
+ * 强度：0..200，>100 时半径上限随强度延伸（100 → 240，200 → 480）。
  */
 object NotificationCardBlurHook : FeatureHook {
 
     private const val FEATURE_KEY = "notification_card_blur"
-    private const val NO_MASK_KEY = "notification_card_no_mask"
     private const val OPACITY_SUFFIX = "opacity"
     private const val BEAUTIFY_SUFFIX = "beautify"
     private const val TAG = "NotificationCardBlur"
@@ -50,7 +50,13 @@ object NotificationCardBlurHook : FeatureHook {
     private const val DAY_TINT_MIX = 0.14f
     private const val NIGHT_TINT_MIX = 0.12f
 
+    /** 不透明度幂映射指数：<1 时同参数更不透明（35% → 约 48% 视觉不透明度） */
+    private const val OPACITY_EXP = 0.7f
+
+    /** 强度 100 时等效 Live 半径（现状上限） */
     private const val MAX_LIVE_RADIUS = 240
+    /** 强度 200 时等效 Live 半径上限（100→200 线性延伸） */
+    private const val MAX_LIVE_RADIUS_200 = 480
     private const val MAX_LIVE_RADIUS_STACKED = 180
     private const val PREFS_TTL_MS = 800L
 
@@ -75,7 +81,6 @@ object NotificationCardBlurHook : FeatureHook {
     private var prefsCachedAt = 0L
     private var cachedIntensity = DEFAULT_INTENSITY
     private var cachedOpacityBias = DEFAULT_OPACITY
-    private var cachedNoMask = false
     private var cachedBeautify = false
     private var cachedRadiusMul = 1f
 
@@ -123,7 +128,6 @@ object NotificationCardBlurHook : FeatureHook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         refreshPrefs(force = false)
-                        if (cachedNoMask) return
                         val original = param.args[1] as? Int ?: return
                         val adjusted = applyMaskColor(original)
                         if (adjusted != original) {
@@ -188,7 +192,7 @@ object NotificationCardBlurHook : FeatureHook {
                     }
 
                     // 直传 color：HUN、媒体；通知背景色已在 setBlurBackground 处理
-                    if (!cachedNoMask && isDirectColorBlurView(view)) {
+                    if (isDirectColorBlurView(view)) {
                         val color = param.args[4] as? Int ?: return
                         val adjusted = applyMaskColor(color)
                         if (adjusted != color) {
@@ -222,11 +226,6 @@ object NotificationCardBlurHook : FeatureHook {
                         val view = param.args[0] as? View ?: return
                         if (!isMediaCarousel(view)) return
                         refreshPrefs(force = false)
-                        if (cachedNoMask) {
-                            // 与去除遮罩一致：官方薄玻璃
-                            param.args[1] = thinGlassFor(param.args[1] as? Int ?: return)
-                            return
-                        }
                         val original = param.args[1] as? Int ?: return
                         val adjusted = applyMaskColor(original)
                         if (adjusted != original) {
@@ -252,10 +251,6 @@ object NotificationCardBlurHook : FeatureHook {
                         val view = param.args[0] as? View ?: return
                         if (!isMediaCarousel(view)) return
                         refreshPrefs(force = false)
-                        if (cachedNoMask) {
-                            param.args[1] = thinGlassFor(param.args[1] as? Int ?: return)
-                            return
-                        }
                         val original = param.args[1] as? Int ?: return
                         val adjusted = applyMaskColor(original)
                         if (adjusted != original) param.args[1] = adjusted
@@ -301,14 +296,13 @@ object NotificationCardBlurHook : FeatureHook {
         val lp = loadParam ?: return
         cachedIntensity = XposedPrefs.getFeatureValue(
             lp, prefsPackage, FEATURE_KEY, DEFAULT_INTENSITY
-        ).coerceIn(0, 100)
+        ).coerceIn(0, 200)
         cachedOpacityBias = XposedPrefs.getFeatureExtraValue(
             lp, prefsPackage, FEATURE_KEY, OPACITY_SUFFIX, DEFAULT_OPACITY
         ).coerceIn(0, 100)
         cachedBeautify = XposedPrefs.getFeatureExtraValue(
             lp, prefsPackage, FEATURE_KEY, BEAUTIFY_SUFFIX, DEFAULT_BEAUTIFY
         ) == 1
-        cachedNoMask = XposedPrefs.isFeatureEnabled(lp, prefsPackage, NO_MASK_KEY)
         cachedRadiusMul = computeRadiusMul(cachedIntensity, cachedBeautify)
     }
 
@@ -324,12 +318,22 @@ object NotificationCardBlurHook : FeatureHook {
 
     private fun scaleLiveRadius(original: Int): Int {
         if (original <= 0 || cachedRadiusMul <= 0f) return 0
-        val cap = if (IosNotificationStackHook.stackBlurSoftCapActive) {
+        return (original * cachedRadiusMul).roundToInt().coerceIn(0, liveRadiusCap())
+    }
+
+    /**
+     * 半径上限：强度 ≤100 时维持原上限（240 / 堆叠 180），
+     * >100 时随强度线性延伸至 200 → 480，让 100 的效果不变、200 明显更糊。
+     */
+    private fun liveRadiusCap(): Int {
+        val base = if (IosNotificationStackHook.stackBlurSoftCapActive) {
             MAX_LIVE_RADIUS_STACKED
         } else {
             MAX_LIVE_RADIUS
         }
-        return (original * cachedRadiusMul).roundToInt().coerceIn(0, cap)
+        val extra = (cachedIntensity - 100).coerceAtLeast(0) *
+            (MAX_LIVE_RADIUS_200 - MAX_LIVE_RADIUS) / 100
+        return base + extra
     }
 
     /**
@@ -338,11 +342,8 @@ object NotificationCardBlurHook : FeatureHook {
      */
     fun onStackSoftCapChanged(rows: List<View>, softCap: Boolean) {
         refreshPrefs(force = false)
-        val target = if (softCap) {
-            scaleLiveRadius(180).coerceAtMost(MAX_LIVE_RADIUS_STACKED)
-        } else {
-            scaleLiveRadius(180).coerceAtMost(MAX_LIVE_RADIUS)
-        }
+        // cap 内部已按 stackBlurSoftCapActive 区分（180/240 基准 + 强度>100 延伸）
+        val target = scaleLiveRadius(180)
         var n = 0
         for (row in rows) {
             if (applyRadiusToRowBackgrounds(row, target)) n++
@@ -377,9 +378,15 @@ object NotificationCardBlurHook : FeatureHook {
     }
 
     private fun effectiveOpacityPercent(): Int {
-        if (!cachedBeautify) return cachedOpacityBias
-        val couple = (50f - cachedIntensity) / 50f * COUPLE_SPAN
-        return (cachedOpacityBias + couple).roundToInt().coerceIn(0, 100)
+        val raw = if (!cachedBeautify) {
+            cachedOpacityBias
+        } else {
+            val couple = (50f - cachedIntensity) / 50f * COUPLE_SPAN
+            (cachedOpacityBias + couple).roundToInt().coerceIn(0, 100)
+        }
+        // 幂映射：同滑块值比线性更不透明（35 → 约 48%，70 → 约 78%）
+        return (100f * Math.pow((raw / 100f).toDouble(), OPACITY_EXP.toDouble()).toFloat())
+            .roundToInt().coerceIn(0, 100)
     }
 
     private fun applyMaskColor(color: Int): Int {
@@ -402,14 +409,6 @@ object NotificationCardBlurHook : FeatureHook {
             b = mixChannel(b, 40, NIGHT_TINT_MIX)
         }
         return Color.argb(alpha, r, g, b)
-    }
-
-    /** 与 NotificationCardMaskHook / PluginBlurView 一致的薄玻璃（媒体 Static 在 no_mask 时用） */
-    private fun thinGlassFor(original: Int): Int {
-        if (original == Color.TRANSPARENT) return 0x1AFFFFFF
-        val luminance =
-            (Color.red(original) * 299 + Color.green(original) * 587 + Color.blue(original) * 114) / 1000
-        return if (luminance < 80) 0x1A1A1A1A else 0x1AFFFFFF
     }
 
     private fun mixChannel(from: Int, to: Int, t: Float): Int {
