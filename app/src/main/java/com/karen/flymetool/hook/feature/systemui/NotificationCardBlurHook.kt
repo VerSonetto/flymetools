@@ -1,18 +1,16 @@
 package com.karen.flymetool.hook.feature.systemui
 
-import android.graphics.Color
 import android.os.SystemClock
 import android.view.View
 import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 import com.karen.flymetool.util.FlymeVersionUtils
+import com.karen.flymetool.util.NotificationCardBlurMath
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
-import kotlin.math.pow
-import kotlin.math.roundToInt
 
 /**
  * 通知 / 媒体卡片模糊强度与遮罩浓度（Flyme 12）。
@@ -30,8 +28,9 @@ import kotlin.math.roundToInt
  * - 关：线性半径 + 幂映射不透明度
  * - 开：强度曲线、罩色联动、日/夜轻微偏色
  *
- * 不透明度：滑块值经 0.7 次幂映射，同参数比线性更不透明（35 → 约 48%）。
- * 强度：0..200，>100 时半径上限随强度延伸（100 → 240，200 → 480）。
+ * 映射算法见 [NotificationCardBlurMath]（UI 预览共用）。
+ * 强度：0..[NotificationCardBlurMath.MAX_INTENSITY]，>100 时半径上限随强度延伸
+ * （100 → 240，上限 → [NotificationCardBlurMath.MAX_LIVE_RADIUS_AT_MAX]）。
  */
 object NotificationCardBlurHook : FeatureHook {
 
@@ -40,24 +39,10 @@ object NotificationCardBlurHook : FeatureHook {
     private const val BEAUTIFY_SUFFIX = "beautify"
     private const val TAG = "NotificationCardBlur"
 
-    private const val DEFAULT_INTENSITY = 50
-    private const val DEFAULT_OPACITY = 70
+    private const val DEFAULT_INTENSITY = NotificationCardBlurMath.DEFAULT_INTENSITY
+    private const val DEFAULT_OPACITY = NotificationCardBlurMath.DEFAULT_OPACITY
     private const val DEFAULT_BEAUTIFY = 0
 
-    private const val INTENSITY_GAIN = 2f
-    private const val RADIUS_CURVE_EXP = 0.88f
-    private const val COUPLE_SPAN = 18f
-    private const val DAY_TINT_MIX = 0.14f
-    private const val NIGHT_TINT_MIX = 0.12f
-
-    /** 不透明度幂映射指数：<1 时同参数更不透明（35% → 约 48% 视觉不透明度） */
-    private const val OPACITY_EXP = 0.7f
-
-    /** 强度 100 时等效 Live 半径（现状上限） */
-    private const val MAX_LIVE_RADIUS = 240
-    /** 强度 200 时等效 Live 半径上限（100→200 线性延伸） */
-    private const val MAX_LIVE_RADIUS_200 = 480
-    private const val MAX_LIVE_RADIUS_STACKED = 180
     private const val PREFS_TTL_MS = 800L
 
     private const val BACKGROUND_VIEW =
@@ -82,7 +67,6 @@ object NotificationCardBlurHook : FeatureHook {
     private var cachedIntensity = DEFAULT_INTENSITY
     private var cachedOpacityBias = DEFAULT_OPACITY
     private var cachedBeautify = false
-    private var cachedRadiusMul = 1f
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (lpparam.packageName != "com.android.systemui") return
@@ -296,44 +280,22 @@ object NotificationCardBlurHook : FeatureHook {
         val lp = loadParam ?: return
         cachedIntensity = XposedPrefs.getFeatureValue(
             lp, prefsPackage, FEATURE_KEY, DEFAULT_INTENSITY
-        ).coerceIn(0, 200)
+        ).coerceIn(0, NotificationCardBlurMath.MAX_INTENSITY)
         cachedOpacityBias = XposedPrefs.getFeatureExtraValue(
             lp, prefsPackage, FEATURE_KEY, OPACITY_SUFFIX, DEFAULT_OPACITY
         ).coerceIn(0, 100)
         cachedBeautify = XposedPrefs.getFeatureExtraValue(
             lp, prefsPackage, FEATURE_KEY, BEAUTIFY_SUFFIX, DEFAULT_BEAUTIFY
         ) == 1
-        cachedRadiusMul = computeRadiusMul(cachedIntensity, cachedBeautify)
-    }
-
-    private fun computeRadiusMul(intensityPercent: Int, beautify: Boolean): Float {
-        if (intensityPercent <= 0) return 0f
-        val t = intensityPercent / 100f
-        return if (beautify) {
-            t.toDouble().pow(RADIUS_CURVE_EXP.toDouble()).toFloat() * INTENSITY_GAIN
-        } else {
-            t * INTENSITY_GAIN
-        }
     }
 
     private fun scaleLiveRadius(original: Int): Int {
-        if (original <= 0 || cachedRadiusMul <= 0f) return 0
-        return (original * cachedRadiusMul).roundToInt().coerceIn(0, liveRadiusCap())
-    }
-
-    /**
-     * 半径上限：强度 ≤100 时维持原上限（240 / 堆叠 180），
-     * >100 时随强度线性延伸至 200 → 480，让 100 的效果不变、200 明显更糊。
-     */
-    private fun liveRadiusCap(): Int {
-        val base = if (IosNotificationStackHook.stackBlurSoftCapActive) {
-            MAX_LIVE_RADIUS_STACKED
-        } else {
-            MAX_LIVE_RADIUS
-        }
-        val extra = (cachedIntensity - 100).coerceAtLeast(0) *
-            (MAX_LIVE_RADIUS_200 - MAX_LIVE_RADIUS) / 100
-        return base + extra
+        return NotificationCardBlurMath.scaleLiveRadius(
+            original = original,
+            intensityPercent = cachedIntensity,
+            beautify = cachedBeautify,
+            stackSoftCap = IosNotificationStackHook.stackBlurSoftCapActive
+        )
     }
 
     /**
@@ -377,41 +339,12 @@ object NotificationCardBlurHook : FeatureHook {
         }
     }
 
-    private fun effectiveOpacityPercent(): Int {
-        val raw = if (!cachedBeautify) {
-            cachedOpacityBias
-        } else {
-            val couple = (50f - cachedIntensity) / 50f * COUPLE_SPAN
-            (cachedOpacityBias + couple).roundToInt().coerceIn(0, 100)
-        }
-        // 幂映射：同滑块值比线性更不透明（35 → 约 48%，70 → 约 78%）
-        return (100f * Math.pow((raw / 100f).toDouble(), OPACITY_EXP.toDouble()).toFloat())
-            .roundToInt().coerceIn(0, 100)
-    }
-
     private fun applyMaskColor(color: Int): Int {
-        if (color == Color.TRANSPARENT) return color
-        val alpha = (255 * effectiveOpacityPercent() / 100f).roundToInt().coerceIn(0, 255)
-        if (!cachedBeautify) {
-            return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
-        }
-        var r = Color.red(color)
-        var g = Color.green(color)
-        var b = Color.blue(color)
-        val luminance = (r * 299 + g * 587 + b * 114) / 1000
-        if (luminance >= 160) {
-            r = mixChannel(r, 236, DAY_TINT_MIX)
-            g = mixChannel(g, 241, DAY_TINT_MIX)
-            b = mixChannel(b, 247, DAY_TINT_MIX)
-        } else if (luminance <= 80) {
-            r = mixChannel(r, 34, NIGHT_TINT_MIX)
-            g = mixChannel(g, 36, NIGHT_TINT_MIX)
-            b = mixChannel(b, 40, NIGHT_TINT_MIX)
-        }
-        return Color.argb(alpha, r, g, b)
-    }
-
-    private fun mixChannel(from: Int, to: Int, t: Float): Int {
-        return (from + (to - from) * t).roundToInt().coerceIn(0, 255)
+        return NotificationCardBlurMath.applyMaskColor(
+            color = color,
+            intensityPercent = cachedIntensity,
+            opacityBias = cachedOpacityBias,
+            beautify = cachedBeautify
+        )
     }
 }
