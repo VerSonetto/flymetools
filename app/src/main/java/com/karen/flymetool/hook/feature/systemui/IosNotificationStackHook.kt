@@ -21,15 +21,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-/**
- * iOS 锁屏通知堆叠 — 对齐 showcase.html layoutFor。
- *
- * 折叠 p≈0：整组沉底，首卡全尺寸顶在 THRESH，下层 L*PEEK 错位 + 缩放下沉。
- * 展开 p→1：与原生列表 Y 插值；仅 overflow 继续堆叠。
- * 折叠态点击卡片：展开列表（不跳转）；顶层卡与横屏走系统默认（跳转）；有 pinned HUN 时整段不碰。
- *
- * 性能：prefs/dp 缓存、Item 带 viewState、阴影只抑制一次、字段变更才写。
- */
+
 object IosNotificationStackHook : FeatureHook {
 
     private const val TAG = "IosNotifStack"
@@ -342,6 +334,13 @@ object IosNotificationStackHook : FeatureHook {
 
     private fun isStackCollapsed(): Boolean = lastPe < COLLAPSED_CLICK_PE
 
+    private fun isActiveHeadsUpRow(row: View): Boolean {
+        if (callBool(row, "isHeadsUpState")) return true
+        if (callBool(row, "isHeadsUp")) return true
+        if (callBool(row, "isPinned")) return true
+        return callBool(row, "mustStayOnScreen")
+    }
+
     private fun isTopStackCard(view: View): Boolean = stackTopRowRef?.get() === view
 
     /**
@@ -448,7 +447,7 @@ object IosNotificationStackHook : FeatureHook {
 
         val host = XposedHelpers.getObjectField(algo, "mHostView") as? ViewGroup ?: return
         lastHostRef = WeakReference(host)
-        if (hasPinnedHeadsUp(host, rowCl)) {
+        if (hasActiveHeadsUp(host, rowCl)) {
             lastPe = 1f
             setStackSoftCap(false, emptyList())
             return
@@ -1168,12 +1167,11 @@ object IosNotificationStackHook : FeatureHook {
         return max(0f, total - innerH)
     }
 
-    private fun hasPinnedHeadsUp(host: ViewGroup, rowCl: Class<*>): Boolean {
+    private fun hasActiveHeadsUp(host: ViewGroup, rowCl: Class<*>): Boolean {
         for (i in 0 until host.childCount) {
             val child = host.getChildAt(i) ?: continue
             if (!rowCl.isInstance(child)) continue
-            if (callBool(child, "isHeadsUp") && callBool(child, "isPinned")) return true
-            if (boolField(child, "mIsHeadsUpStatus") && callBool(child, "isPinned")) return true
+            if (isActiveHeadsUpRow(child)) return true
         }
         return false
     }
@@ -1210,12 +1208,7 @@ object IosNotificationStackHook : FeatureHook {
         }
     }
 
-    /**
-     * 媒体相对堆叠顶界 stackTop（帧间稳定；resetViewStates 后读到的 Y 即算法 native）：
-     * - stick：折叠贴顶界上方，ease → native
-     * - !stick：min(native, 放宽上界)，只防重叠
-     * 横屏由调用方下推 stackTop 预留媒体高度，此处不再抬 Y 压通知。
-     */
+
     private fun placeMediaAboveStack(
         media: View,
         pe: Float,
@@ -1350,13 +1343,17 @@ object IosNotificationStackHook : FeatureHook {
         trackedHun: Any?,
     ): Boolean {
         if (trackedHun != null && trackedHun === row) return true
-        if (callBool(row, "isPinned")) return true
-        if (callBool(row, "isHeadsUpAnimatingAway")) return true
+        if (isActiveHeadsUpRow(row)) return true
         if (callBool(row, "showingPulsing")) return true
-        if (boolField(row, "mHeadsupDisappearRunning")) return true
         if (st != null) {
             try {
                 if (XposedHelpers.getIntField(st, "location") == 1) return true
+            } catch (_: Throwable) {
+            }
+            // Flyme 12：HUN 已可见后 location 被 updateChild 每帧重置，不再为 1；
+            // headsUpIsVisible 持续为 true，可作补充特征
+            try {
+                if (XposedHelpers.getBooleanField(st, "headsUpIsVisible")) return true
             } catch (_: Throwable) {
             }
         }
