@@ -31,9 +31,12 @@ import kotlin.math.hypot
  *
  * 两个功能共享一份触摸状态机，独立开关，避免多个 hook 同时 return true 覆盖 result 的竞态：
  * - 双击锁屏：干净 UP 暂扣，窗口内第二击吞掉并触发 PowerManager.goToSleep。
- * - 亮度滑动：FIRST_TRACKING 中首次超过 slop 的方向锁定，横向 → 拦截后续事件并实时
+ * - 亮度滑动：FIRST_TRACKING 中判定方向，横向 → 拦截后续事件并实时
  *   setTemporaryBrightness，UP 时 setBrightness 持久化；纵向 → 放行（正常下拉）。
  *   进入亮度前发送 CANCEL 终止系统侧可能的下拉手势。
+ *
+ * 方向判定遍历 MOVE 的历史采样点，横向须达到 DIRECTION_SLOP_DP 且相对本次手势的
+ * 最大纵向偏移形成 HORIZONTAL_DOMINANCE 倍优势；纵向先越过 VERTICAL_LOCK_DP 则锁为下拉。
  *
  * 亮度值域与写入方式对齐 BrightnessController：float 0.0~1.0（当前亮度取
  * display.brightnessInfo.brightness，滑动量 = ΔX / 状态栏宽）。
@@ -55,6 +58,15 @@ object StatusBarDoubleClickHook : FeatureHook {
     private const val TAP_MAX_HOLD_MS = 180L
 
     private const val MOVE_SLOP_DP = 12f
+
+    /** 锁定横向所需的最小横向位移 */
+    private const val DIRECTION_SLOP_DP = 16f
+
+    /** 纵向越过此值即锁为下拉 */
+    private const val VERTICAL_LOCK_DP = 8f
+
+    /** 横向优势倍数，2.0 约合 26.5° */
+    private const val HORIZONTAL_DOMINANCE = 2.0f
 
     private val hooked = AtomicBoolean(false)
 
@@ -91,9 +103,15 @@ object StatusBarDoubleClickHook : FeatureHook {
     private var movedOffTap = false
     private var moveSlopPx = 24f
 
-    /** 首次超过 slop 的方向一旦锁定，中途不再切换（横滑调亮度 / 纵向下拉互斥） */
+    /** 方向一旦锁定，中途不再切换（横滑调亮度 / 纵向下拉互斥） */
     private var directionDecided = false
     private var directionHorizontal = false
+
+    private var directionSlopPx = 32f
+    private var verticalLockPx = 16f
+
+    /** 本次手势内出现过的最大纵向偏移 */
+    private var maxAbsDy = 0f
 
     private var displayId = Display.DEFAULT_DISPLAY
     private var startBrightness = 0f
@@ -178,6 +196,7 @@ object StatusBarDoubleClickHook : FeatureHook {
                 movedOffTap = false
                 directionDecided = false
                 directionHorizontal = false
+                maxAbsDy = 0f
                 displayId = try {
                     view.display?.displayId ?: Display.DEFAULT_DISPLAY
                 } catch (_: Throwable) {
@@ -191,20 +210,14 @@ object StatusBarDoubleClickHook : FeatureHook {
             MotionEvent.ACTION_MOVE -> {
                 when (phase) {
                     Phase.FIRST_TRACKING -> {
-                        if (brightnessEnabled && !directionDecided) {
-                            val dx = event.rawX - downX
-                            val dy = event.rawY - downY
-                            if (abs(dx) > moveSlopPx || abs(dy) > moveSlopPx) {
-                                directionDecided = true
-                                directionHorizontal = abs(dx) > abs(dy)
-                                if (directionHorizontal) {
-                                    Logger.d(BRIGHTNESS_TAG) { "进入亮度滑动" }
-                                    // 终止系统侧可能的下拉手势
-                                    abortFirstGesture(view, event.rawX, event.rawY)
-                                    phase = Phase.BRIGHTNESS_ACTIVE
-                                    applyBrightness(view, event)
-                                    return true
-                                }
+                        if (brightnessEnabled && !directionDecided && event.pointerCount == 1) {
+                            if (decideDirection(event) && directionHorizontal) {
+                                Logger.d(BRIGHTNESS_TAG) { "进入亮度滑动" }
+                                // 终止系统侧可能的下拉手势
+                                abortFirstGesture(view, event.rawX, event.rawY)
+                                phase = Phase.BRIGHTNESS_ACTIVE
+                                applyBrightness(view, event)
+                                return true
                             }
                         }
                         // 纵向 / 未决定：放行给系统（下拉）
@@ -299,10 +312,49 @@ object StatusBarDoubleClickHook : FeatureHook {
 
     private fun ensureMetrics(view: View) {
         try {
-            moveSlopPx = MOVE_SLOP_DP * view.resources.displayMetrics.density
+            val density = view.resources.displayMetrics.density
+            moveSlopPx = MOVE_SLOP_DP * density
+            directionSlopPx = DIRECTION_SLOP_DP * density
+            verticalLockPx = VERTICAL_LOCK_DP * density
         } catch (_: Throwable) {
             moveSlopPx = 24f
+            directionSlopPx = 32f
+            verticalLockPx = 16f
         }
+    }
+
+    /**
+     * 按采样顺序判定方向，返回 true 表示本次已锁定（结果看 [directionHorizontal]）。
+     *
+     * MOVE 事件会把多个采样点合并上报，只取末点会丢掉中途轨迹：斜下滑快速甩动时末点
+     * 常常是横向主导的，而历史点里已经有明显下移。
+     */
+    private fun decideDirection(event: MotionEvent): Boolean {
+        // 历史点只有 View 局部坐标，raw 与局部的偏移在单个事件内是常量，据此换算
+        val offsetX = event.rawX - event.x
+        val offsetY = event.rawY - event.y
+        val samples = event.historySize
+        for (i in 0..samples) {
+            val x = if (i < samples) event.getHistoricalX(i) + offsetX else event.rawX
+            val y = if (i < samples) event.getHistoricalY(i) + offsetY else event.rawY
+            val absDx = abs(x - downX)
+            val absDy = abs(y - downY)
+            if (absDy > maxAbsDy) maxAbsDy = absDy
+
+            if (absDx >= directionSlopPx && absDx >= maxAbsDy * HORIZONTAL_DOMINANCE) {
+                directionDecided = true
+                directionHorizontal = true
+                Logger.d(BRIGHTNESS_TAG) { "方向=横向 dx=$absDx maxDy=$maxAbsDy" }
+                return true
+            }
+            if (maxAbsDy >= verticalLockPx) {
+                directionDecided = true
+                directionHorizontal = false
+                Logger.d(BRIGHTNESS_TAG) { "方向=纵向，放行下拉 dx=$absDx maxDy=$maxAbsDy" }
+                return true
+            }
+        }
+        return false
     }
 
     private fun isMovedOff(event: MotionEvent): Boolean {
