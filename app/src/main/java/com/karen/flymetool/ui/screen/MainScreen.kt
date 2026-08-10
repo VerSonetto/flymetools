@@ -2,7 +2,7 @@ package com.karen.flymetool.ui.screen
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.SizeTransform
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.exclude
@@ -78,11 +78,15 @@ private fun MainContent(
         transitionSpec = {
             ScreenTransitions.tabContentTransform(
                 forward = targetState.ordinal > initialState.ordinal
-            ).using(SizeTransform(clip = false))
+            )
         },
         label = "main_tab"
     ) { tab ->
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MiuixTheme.colorScheme.background)
+        ) {
             when (tab) {
                 MainTab.HOME -> HomeScreen(
                     onAppClick = onAppClick,

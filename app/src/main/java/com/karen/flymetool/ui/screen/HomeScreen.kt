@@ -79,6 +79,9 @@ import androidx.compose.ui.state.ToggleableState
 private val DialogContentMaxHeight: Dp
     @Composable get() = LocalConfiguration.current.screenHeightDp.dp * 0.5f
 
+/** 为底部悬浮 Tab 栏预留空间，使 FAB 始终位于其上方。 */
+private val HomeFabBottomPadding = 112.dp
+
 @Composable
 fun HomeScreen(
     onAppClick: (ScopedApp) -> Unit,
@@ -153,7 +156,7 @@ fun HomeScreen(
         FloatingActionButton(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 24.dp, bottom = 24.dp),
+                .padding(end = 24.dp, bottom = HomeFabBottomPadding),
             onClick = { showRestartDialog = true }
         ) {
             Icon(

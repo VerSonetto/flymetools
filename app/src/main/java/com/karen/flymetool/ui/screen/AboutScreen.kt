@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,12 +52,16 @@ import com.karen.flymetool.ui.component.DonatePanel
 import com.karen.flymetool.ui.component.FeatureSwitch
 import com.karen.flymetool.util.GithubAvatarLoader
 import com.karen.flymetool.util.FlymeVersionUtils
+import com.karen.flymetool.util.LogExportManager
+import kotlinx.coroutines.launch
+import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import top.yukonga.miuix.kmp.icon.extended.Community
 import top.yukonga.miuix.kmp.icon.extended.Favorites
 import top.yukonga.miuix.kmp.icon.extended.Info
 import top.yukonga.miuix.kmp.icon.extended.Settings
+import top.yukonga.miuix.kmp.icon.extended.Share
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -114,6 +119,10 @@ fun AboutScreen(modifier: Modifier = Modifier) {
 
             item(key = "debug_log", contentType = "card") {
                 DebugLogCard()
+            }
+
+            item(key = "export_log", contentType = "card") {
+                LogExportCard()
             }
 
             item(key = "device_title", contentType = "section_title") {
@@ -209,6 +218,98 @@ fun AboutScreen(modifier: Modifier = Modifier) {
                 LegalNotice()
             }
         }
+}
+
+@Composable
+private fun LogExportCard() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val interactionSource = remember { MutableInteractionSource() }
+    var exporting by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(MiuixTheme.colorScheme.surface)
+            .clickable(
+                enabled = !exporting,
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = {
+                    exporting = true
+                    scope.launch {
+                        try {
+                            val archive = LogExportManager.createArchive(context)
+                            Toast.makeText(
+                                context,
+                                "日志已导出：${archive.absolutePath}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            LogExportManager.shareArchive(context, archive)
+                        } catch (e: Exception) {
+                            Toast.makeText(
+                                context,
+                                e.message ?: "模块日志导出失败",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        } finally {
+                            exporting = false
+                        }
+                    }
+                }
+            )
+            .padding(18.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = MiuixIcons.Share,
+                contentDescription = null,
+                tint = MiuixTheme.colorScheme.primary,
+                modifier = Modifier.size(25.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(15.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "导出模块日志",
+                style = MiuixTheme.textStyles.body1,
+                color = MiuixTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = if (exporting) {
+                    "正在读取 LSPosed 日志并打包…"
+                } else {
+                    "仅收集当前模块的 LSPosed 日志和 FlymeTool Logcat"
+                },
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onBackgroundVariant
+            )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        if (exporting) {
+            InfiniteProgressIndicator(
+                color = MiuixTheme.colorScheme.primary,
+                size = 28.dp
+            )
+        } else {
+            Icon(
+                imageVector = MiuixIcons.ChevronForward,
+                contentDescription = "导出模块日志",
+                tint = MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.55f),
+                modifier = Modifier.size(22.dp)
+            )
+        }
+    }
 }
 
 @Composable
