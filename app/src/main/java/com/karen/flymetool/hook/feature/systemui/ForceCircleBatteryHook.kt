@@ -203,9 +203,11 @@ object ForceCircleBatteryHook : FeatureHook {
         hookBooleanNoArg(clazz, "isShowingCircleBattery") {
             !replaceStatusBarIcon
         }
-        hookMarkTargetBatteryView(clazz)
 
         if (replaceStatusBarIcon) {
+            // 标记与强制可见只服务「替换状态栏电池图标」模式；
+            // 前摄孔位环（replace=false）下状态栏电池显隐交给系统 updateBatteryViewVisibility 管理
+            hookMarkTargetBatteryView(clazz)
             hookDrawStatusBarCircle(clazz)
             hookMeasureStatusBarCircle(clazz)
             hookKeepStatusBarCircleVisible(clazz)
