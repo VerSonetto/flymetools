@@ -1,6 +1,5 @@
 package com.karen.flymetool.hook.feature.systemui
 
-import android.view.View
 import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
@@ -9,21 +8,33 @@ import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
-import java.lang.ref.WeakReference
-import java.lang.reflect.Method
 
+/**
+ * 控制中心背景模糊强度（Flyme 12）。
+ *
+ * 反编译链路：
+ * - [CenterController] / [NotificationPanelViewController].setBlurRadius(r)
+ *   → blurRadiusFactor = r / max，并带动 blurScaleFactor 弹簧到同一比例
+ * - blurFraction = Pair(blurRadiusFactor, blurScaleFactor)
+ * - 非锁屏窗口模糊：NotificationShadeDepthController → BlurUtils.applyBlurMZ(
+ *     radius, blurScaleFactor)，其中 scale 会换算成 background blur inset
+ * - 锁屏内容模糊：ControlCenterBlurInteractor.createBlurState(factor)
+ *   → MzRootContainerBlurBinder → MzBlurUtils.setFlymeBlurEffect(root, r)
+ * - 遮罩 dim：showBackgroundBlurDimLayer(blurFraction.first)
+ *
+ * 旧实现只缩放 computeBlurAndZoomOut 的 radius，未同步 blurScaleFactor，
+ * 低强度时 inset 仍按满强度缩放背景，与真实壁纸错位，状态栏/底部按钮出现重影。
+ * 改为在 setBlurRadius 源头按比例缩放，半径、背景缩放、dim、锁屏 RenderEffect 一并生效。
+ */
 object ControlCenterBlurHook : FeatureHook {
 
     private const val FEATURE_KEY = "control_center_blur_intensity"
     private const val TAG = "ControlCenterBlur"
-    private const val FLYME_BLUR_UTILS_CLASS = "com.flyme.systemui.utils.MzBlurUtils"
-    private const val SHADE_DEPTH_CONTROLLER_CLASS =
-        "com.android.systemui.statusbar.NotificationShadeDepthController"
-    private const val ROOT_CONTAINER_ID_NAME = "mz_root_container"
-    private const val KEYGUARD_BACKGROUND_FRAME_ID_NAME = "keyguard_background_frame"
 
-    private var cachedShadeRoot = WeakReference<View>(null)
-    private var cachedKeyguardBackgroundFrame = WeakReference<View>(null)
+    private const val CENTER_CONTROLLER_CLASS =
+        "com.flyme.systemui.controlcenter.phone.CenterController"
+    private const val NOTIFICATION_PANEL_CLASS =
+        "com.android.systemui.shade.NotificationPanelViewController"
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (lpparam.packageName != "com.android.systemui") return
@@ -36,138 +47,50 @@ object ControlCenterBlurHook : FeatureHook {
             FEATURE_KEY,
             100
         ).coerceIn(0, 100)
-        hookLockscreenContentBlur(lpparam, intensity)
-        hookUnlockedWindowBlur(lpparam, intensity)
+        if (intensity == 100) {
+            Logger.i(TAG, "模糊强度为 100%，跳过挂载")
+            return
+        }
+
+        val scale = intensity / 100f
+        hookSetBlurRadius(lpparam, CENTER_CONTROLLER_CLASS, scale, "控制中心")
+        hookSetBlurRadius(lpparam, NOTIFICATION_PANEL_CLASS, scale, "通知面板")
     }
 
-    /** 锁屏壁纸位于 SystemUI 窗口内部，控制中心通过根容器 RenderEffect 对其模糊。 */
-    private fun hookLockscreenContentBlur(
+    /**
+     * 按特征定位 setBlurRadius(float)：单 float 入参、void 返回。
+     * 控制中心与经典通知下拉共用同一因子链路。
+     */
+    private fun hookSetBlurRadius(
         lpparam: XC_LoadPackage.LoadPackageParam,
-        intensity: Int
+        className: String,
+        scale: Float,
+        label: String
     ) {
         try {
-            val blurUtilsClass = XposedHelpers.findClass(
-                FLYME_BLUR_UTILS_CLASS,
-                lpparam.classLoader
-            )
-            val targetMethod = blurUtilsClass.declaredMethods.singleOrNull { method ->
+            val clazz = XposedHelpers.findClass(className, lpparam.classLoader)
+            val target = clazz.declaredMethods.singleOrNull { method ->
                 !method.isSynthetic &&
+                    method.name == "setBlurRadius" &&
                     method.returnType == Void.TYPE &&
                     method.parameterTypes.contentEquals(
-                        arrayOf(
-                            View::class.java,
-                            Boolean::class.javaPrimitiveType,
-                            Float::class.javaPrimitiveType
-                        )
+                        arrayOf(Float::class.javaPrimitiveType)
                     )
             } ?: throw NoSuchMethodException(
-                "未找到唯一的 (View, Boolean, Float) 模糊方法"
+                "未找到唯一的 setBlurRadius(float): $className"
             )
 
-            XposedBridge.hookMethod(targetMethod, object : XC_MethodHook() {
+            XposedBridge.hookMethod(target, object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
-                    val view = param.args[0] as? View ?: return
-                    if (!isControlCenterRoot(view)) return
-
-                    val shouldApply = param.args[1] as? Boolean ?: return
-                    if (!shouldApply || intensity == 100) return
-
-                    if (intensity == 0) {
-                        param.args[1] = false
-                        param.args[2] = 0f
-                    } else {
-                        val originalRadius = (param.args[2] as? Number)?.toFloat() ?: return
-                        param.args[2] = originalRadius * intensity / 100f
-                    }
+                    val original = (param.args[0] as? Number)?.toFloat() ?: return
+                    if (original <= 0f) return
+                    param.args[0] = original * scale
                 }
             })
 
-            Logger.i(TAG, "锁屏控制中心内容模糊 Hook 完成: $intensity%")
+            Logger.i(TAG, "${label}模糊强度 Hook 完成: ${(scale * 100).toInt()}%")
         } catch (e: Throwable) {
-            Logger.e(TAG, "锁屏控制中心内容模糊 Hook 失败", e)
-        }
-    }
-
-    /** 非锁屏场景使用窗口级背景模糊，缩放深度控制器最终计算出的半径。 */
-    private fun hookUnlockedWindowBlur(
-        lpparam: XC_LoadPackage.LoadPackageParam,
-        intensity: Int
-    ) {
-        try {
-            val depthControllerClass = XposedHelpers.findClass(
-                SHADE_DEPTH_CONTROLLER_CLASS,
-                lpparam.classLoader
-            )
-            val rootAccessor = depthControllerClass.declaredMethods.singleOrNull { method ->
-                !method.isSynthetic &&
-                    method.parameterTypes.isEmpty() &&
-                    View::class.java.isAssignableFrom(method.returnType)
-            } ?: throw NoSuchMethodException("未找到唯一的无参数 View 根容器访问方法")
-            val blurResultMethod = depthControllerClass.declaredMethods.singleOrNull { method ->
-                !method.isSynthetic &&
-                    method.parameterTypes.isEmpty() &&
-                    method.returnType.name == "kotlin.Pair"
-            } ?: throw NoSuchMethodException("未找到唯一的无参数 Pair 模糊计算方法")
-
-            rootAccessor.isAccessible = true
-            XposedBridge.hookMethod(blurResultMethod, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (intensity == 100) return
-                    if (isKeyguardBackgroundVisible(param.thisObject, rootAccessor)) return
-
-                    val result = param.result ?: return
-                    val radius = (XposedHelpers.callMethod(result, "getFirst") as? Number)
-                        ?.toInt() ?: return
-                    val zoomOut = XposedHelpers.callMethod(result, "getSecond") ?: return
-                    val scaledRadius = (radius * intensity / 100f).toInt()
-                    param.result = XposedHelpers.newInstance(
-                        blurResultMethod.returnType,
-                        scaledRadius,
-                        zoomOut
-                    )
-                }
-            })
-
-            Logger.i(TAG, "非锁屏控制中心窗口模糊 Hook 完成: $intensity%")
-        } catch (e: Throwable) {
-            Logger.e(TAG, "非锁屏控制中心窗口模糊 Hook 失败", e)
-        }
-    }
-
-    private fun isControlCenterRoot(view: View): Boolean {
-        if (view.id == View.NO_ID) return false
-        return try {
-            view.resources.getResourceEntryName(view.id) == ROOT_CONTAINER_ID_NAME
-        } catch (_: Throwable) {
-            false
-        }
-    }
-
-    private fun isKeyguardBackgroundVisible(
-        depthController: Any,
-        rootAccessor: Method
-    ): Boolean {
-        return try {
-            val root = rootAccessor.invoke(depthController) as? View ?: return false
-            var keyguardBackgroundFrame = if (cachedShadeRoot.get() === root) {
-                cachedKeyguardBackgroundFrame.get()
-            } else {
-                null
-            }
-            if (keyguardBackgroundFrame == null) {
-                val frameId = root.resources.getIdentifier(
-                    KEYGUARD_BACKGROUND_FRAME_ID_NAME,
-                    "id",
-                    root.context.packageName
-                )
-                if (frameId == 0) return false
-                keyguardBackgroundFrame = root.findViewById(frameId)
-                cachedShadeRoot = WeakReference(root)
-                cachedKeyguardBackgroundFrame = WeakReference(keyguardBackgroundFrame)
-            }
-            keyguardBackgroundFrame.visibility == View.VISIBLE
-        } catch (_: Throwable) {
-            false
+            Logger.e(TAG, "${label}模糊强度 Hook 失败", e, "class" to className)
         }
     }
 }
