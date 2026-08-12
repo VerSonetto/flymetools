@@ -87,6 +87,9 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         // 手势导航
         HookFeature("hide_gesture_bar", "隐藏底部手势条",
             description = "隐藏底部导航栏的手势指示条", group = "手势导航"),
+        HookFeature("hide_gesture_bar_area", "彻底隐藏底部导航栏区域",
+            description = "在隐藏手势条的基础上，透明化导航栏背景并取消底部 insets 占位，消除底部白边/灰带",
+            group = "手势导航", dependsOn = "hide_gesture_bar"),
         HookFeature("mback_double_click", "底部手势条双击",
             description = "双击底部手势条执行所选动作",
             group = "手势导航"),

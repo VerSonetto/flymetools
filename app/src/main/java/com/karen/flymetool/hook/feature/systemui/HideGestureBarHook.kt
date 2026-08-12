@@ -38,20 +38,28 @@ object HideGestureBarHook : FeatureHook {
 
     private var navBarViewRef: WeakReference<Any>? = null
 
+    /** 彻底隐藏底部导航栏区域（背景透明 + insets 压零），由子开关控制。 */
+    private var hideAreaEnabled: Boolean = false
+
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_gesture_bar")) return
         if (lpparam.packageName != "com.android.systemui") return
+
+        hideAreaEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_gesture_bar_area")
+        Logger.i(TAG, "隐藏手势条已启用, 彻底隐藏区域=$hideAreaEnabled")
 
         val viewClazz = resolveClass(lpparam, NAV_BAR_VIEW_CANDIDATES, "NavigationBarView") ?: return
         val controllerClazz = resolveClass(lpparam, NAV_BAR_CONTROLLER_CANDIDATES, "NavigationBar")
 
         hookUpdateCurrentView(viewClazz)
         hookSetBarTransitions(viewClazz)
-        hookOverrideAlphaPin(viewClazz)
-        if (controllerClazz != null) {
-            hookInsetsFrameProvider(controllerClazz)
-        } else {
-            Logger.w(TAG, "NavigationBar 控制器类未找到，仅隐藏视觉层，无法压掉 app 底部 insets 白边")
+        if (hideAreaEnabled) {
+            hookOverrideAlphaPin(viewClazz)
+            if (controllerClazz != null) {
+                hookInsetsFrameProvider(controllerClazz)
+            } else {
+                Logger.w(TAG, "NavigationBar 控制器类未找到，仅隐藏视觉层，无法压掉 app 底部 insets 白边")
+            }
         }
     }
 
@@ -223,8 +231,8 @@ object HideGestureBarHook : FeatureHook {
             }
         }
 
-        // 手势模式判定：dispatcher 在构造时就有，只有手势布局会真正挂载 View。
-        if (isGesturePillActive(navBarView)) {
+        // 彻底隐藏区域：仅子开关开启且手势模式时处理背景/灰带。
+        if (hideAreaEnabled && isGesturePillActive(navBarView)) {
             hideNavBarBackground(navBarView)
         }
     }
