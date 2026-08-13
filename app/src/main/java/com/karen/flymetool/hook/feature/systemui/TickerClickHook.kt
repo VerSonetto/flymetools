@@ -3,6 +3,9 @@ package com.karen.flymetool.hook.feature.systemui
 import android.app.ActivityOptions
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.res.Configuration
+import android.os.Bundle
+import android.provider.Settings
 import android.service.notification.StatusBarNotification
 import android.view.MotionEvent
 import android.view.View
@@ -235,10 +238,10 @@ object TickerClickHook : FeatureHook {
                     launchPendingIntentProperly(contentIntent, context, pkgName, lpparam)
                 } catch (e: Throwable) {
                     Logger.d(TAG) { "正常启动失败（${e.javaClass.simpleName}），尝试回退" }
-                    launchPendingIntentFallback(contentIntent, context, pkgName)
+                    launchPendingIntentFallback(contentIntent, context, pkgName, lpparam)
                 }
             } else {
-                launchAppByPackageName(context, pkgName)
+                launchAppByPackageName(context, pkgName, lpparam)
             }
 
             haltTicker(ticker)
@@ -262,29 +265,93 @@ object TickerClickHook : FeatureHook {
                 Logger.d(TAG) { "resumeAppSwitches 失败（可忽略）" }
             }
 
-            val options = ActivityOptions.makeBasic().apply {
-                try {
-                    val method = ActivityOptions::class.java.getMethod("setPendingIntentBackgroundActivityLaunchAllowed", Boolean::class.java)
-                    method.invoke(this, true)
-                } catch (e: Throwable) {
-                }
-            }.toBundle()
-
+            val options = buildLaunchOptions(lpparam, context, pkgName)
             val fillInIntent = Intent().apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
 
             contentIntent.send(context, 0, fillInIntent, null, null, null, options)
+            clearWindowModeMark(context, pkgName, lpparam)
             Logger.i(TAG, "已通过 contentIntent 启动: $pkgName")
         } catch (e: Throwable) {
             throw e
         }
     }
 
+    /** 构造启动 options；系统开启"跳转小窗"时附加与系统一致的小窗标记 */
+    private fun buildLaunchOptions(
+        lpparam: XC_LoadPackage.LoadPackageParam,
+        context: android.content.Context,
+        pkgName: String
+    ): Bundle {
+        val options = ActivityOptions.makeBasic().apply {
+            try {
+                val method = ActivityOptions::class.java.getMethod("setPendingIntentBackgroundActivityLaunchAllowed", Boolean::class.java)
+                method.invoke(this, true)
+            } catch (e: Throwable) {
+            }
+        }.toBundle()
+
+        if (!shouldOpenInWindowMode(context)) return options
+
+        try {
+            val faoClass = lpparam.classLoader.loadClass("flyme.app.FlymeActivityOptions")
+            val ctor = faoClass.getConstructor(Bundle::class.java)
+            val fao = ctor.newInstance(options)
+            faoClass.getMethod("setStartWindowMode", Boolean::class.javaPrimitiveType).invoke(fao, true)
+            faoClass.getMethod("setPendingIntentBackgroundActivityStartMode", Int::class.javaPrimitiveType).invoke(fao, 1)
+            val finalBundle = faoClass.getMethod("toBundle").invoke(fao) as? Bundle
+            if (finalBundle != null) {
+                options.clear()
+                options.putAll(finalBundle)
+            }
+        } catch (e: Throwable) {
+            options.putBoolean("start_windowmode", true)
+            Logger.d(TAG) { "FlymeActivityOptions 反射失败，改用 bundle 标记" }
+        }
+
+        // 与系统 StatusBarNotificationActivityStarter 一致：预标记本次启动转小窗
+        try {
+            val wmeClass = lpparam.classLoader.loadClass("flyme.view.WindowManagerExt")
+            val instance = wmeClass.getMethod("getInstance", android.content.Context::class.java).invoke(null, context)
+            wmeClass.getMethod("setStartWindowMode", String::class.java).invoke(instance, pkgName)
+        } catch (e: Throwable) {
+            Logger.d(TAG) { "WindowManagerExt 预标记失败（可忽略）" }
+        }
+        return options
+    }
+
+    /** 清除 WindowManagerExt 小窗预标记，避免影响该应用后续启动 */
+    private fun clearWindowModeMark(
+        context: android.content.Context,
+        pkgName: String,
+        lpparam: XC_LoadPackage.LoadPackageParam
+    ) {
+        try {
+            val wmeClass = lpparam.classLoader.loadClass("flyme.view.WindowManagerExt")
+            val instance = wmeClass.getMethod("getInstance", android.content.Context::class.java).invoke(null, context)
+            wmeClass.getMethod("setStartWindowMode", String::class.java, Boolean::class.javaPrimitiveType)
+                .invoke(instance, pkgName, false)
+        } catch (e: Throwable) {
+        }
+    }
+
+    /** 系统"跳转小窗"开关：window_mode_vertical_notification（竖屏）/ window_mode_horizontal_notification（横屏） */
+    private fun shouldOpenInWindowMode(context: android.content.Context): Boolean {
+        val resolver = context.contentResolver
+        val isLandscape = context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        return if (isLandscape) {
+            Settings.System.getInt(resolver, "window_mode_horizontal_notification", 1) == 1
+        } else {
+            Settings.System.getInt(resolver, "window_mode_vertical_notification", 0) == 1
+        }
+    }
+
     private fun launchPendingIntentFallback(
         contentIntent: PendingIntent,
         context: android.content.Context,
-        pkgName: String
+        pkgName: String,
+        lpparam: XC_LoadPackage.LoadPackageParam
     ) {
         try {
             val intentSender = contentIntent.intentSender
@@ -297,8 +364,10 @@ object TickerClickHook : FeatureHook {
                 fillInIntent,
                 Intent.FLAG_ACTIVITY_NEW_TASK,
                 0,
-                0
+                0,
+                buildLaunchOptions(lpparam, context, pkgName)
             )
+            clearWindowModeMark(context, pkgName, lpparam)
             Logger.i(TAG, "已通过 IntentSender 启动: $pkgName")
         } catch (e: Throwable) {
             Logger.d(TAG) { "IntentSender 失败，尝试直接 send()" }
@@ -308,18 +377,22 @@ object TickerClickHook : FeatureHook {
                 Logger.i(TAG, "已通过 send() 启动: $pkgName")
             } catch (e2: Throwable) {
                 Logger.d(TAG) { "send() 失败，按包名启动" }
-                launchAppByPackageName(context, pkgName)
+                launchAppByPackageName(context, pkgName, lpparam)
             }
         }
     }
 
-    private fun launchAppByPackageName(context: android.content.Context, pkgName: String) {
+    private fun launchAppByPackageName(
+        context: android.content.Context,
+        pkgName: String,
+        lpparam: XC_LoadPackage.LoadPackageParam
+    ) {
         try {
             val pm = context.packageManager
             val launchIntent = pm.getLaunchIntentForPackage(pkgName)
             if (launchIntent != null) {
                 launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(launchIntent)
+                context.startActivity(launchIntent, buildLaunchOptions(lpparam, context, pkgName))
                 Logger.i(TAG, "已按包名启动: $pkgName")
             } else {
                 Logger.w(TAG, "无启动 Intent: $pkgName")
