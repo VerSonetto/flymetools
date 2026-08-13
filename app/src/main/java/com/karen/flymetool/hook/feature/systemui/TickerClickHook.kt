@@ -4,7 +4,9 @@ import android.app.ActivityOptions
 import android.app.PendingIntent
 import android.content.Intent
 import android.service.notification.StatusBarNotification
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.widget.ImageSwitcher
 import android.widget.TextSwitcher
 import de.robv.android.xposed.XC_MethodHook
@@ -19,7 +21,18 @@ object TickerClickHook : FeatureHook {
     /** Flyme 12 起 ticker 移入 systemui 子包；旧版在 statusbar.ticker（与 AppIconNotificationHook 同源兼容） */
     private const val MARQUEE_TICKER = "com.flyme.systemui.statusbar.ticker.MarqueeTicker"
     private const val MARQUEE_TICKER_LEGACY = "com.flyme.statusbar.ticker.MarqueeTicker"
+    private const val PHONE_STATUS_BAR_VIEW = "com.android.systemui.statusbar.phone.PhoneStatusBarView"
     private const val TAG = "TickerClick"
+    private const val MAX_TAP_DURATION_MS = 500L
+
+    /** 当前显示的 ticker；ticker 结束后 mTickerView 为 GONE，判定自动失效 */
+    private var activeTicker: Any? = null
+
+    private var tapDownRawX = 0f
+    private var tapDownRawY = 0f
+    private var tapDownTime = 0L
+    private var isTapCandidate = false
+    private var touchSlop = -1
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "ticker_click")) return
@@ -47,6 +60,9 @@ object TickerClickHook : FeatureHook {
             return
         }
 
+        // tap 判定上移到 PhoneStatusBarView.onTouchEvent 层，滚动期间可下拉；挂载失败降级 clickable 旧机制
+        val tapInterceptHooked = hookStatusBarTouchTapIntercept(lpparam)
+
         try {
             XposedHelpers.findAndHookMethod(
                 clazz,
@@ -54,19 +70,23 @@ object TickerClickHook : FeatureHook {
                 StatusBarNotification::class.java,
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        setupClickListener(param.thisObject, lpparam)
+                        if (tapInterceptHooked) {
+                            rememberTicker(param.thisObject)
+                        } else {
+                            setupClickListener(param.thisObject, lpparam)
+                        }
                     }
                 }
             )
 
-            Logger.i(TAG, "已挂载 MarqueeTicker.addEntry")
+            Logger.i(TAG, "已挂载 MarqueeTicker.addEntry（${if (tapInterceptHooked) "tap 拦截" else "clickable 降级"}）")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 MarqueeTicker.addEntry 失败", e)
-            tryAlternativeHook(clazz, lpparam)
+            tryAlternativeHook(clazz, lpparam, tapInterceptHooked)
         }
     }
 
-    private fun tryAlternativeHook(clazz: Class<*>, lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun tryAlternativeHook(clazz: Class<*>, lpparam: XC_LoadPackage.LoadPackageParam, tapInterceptHooked: Boolean) {
         try {
             XposedHelpers.findAndHookConstructor(
                 clazz,
@@ -74,7 +94,11 @@ object TickerClickHook : FeatureHook {
                 android.view.View::class.java,
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        setupClickListener(param.thisObject, lpparam)
+                        if (tapInterceptHooked) {
+                            rememberTicker(param.thisObject)
+                        } else {
+                            setupClickListener(param.thisObject, lpparam)
+                        }
                     }
                 }
             )
@@ -85,6 +109,77 @@ object TickerClickHook : FeatureHook {
         }
     }
 
+    /** ticker 可见期间拦截 tap 跳转，拖动/长按放行；@return 是否挂载成功 */
+    private fun hookStatusBarTouchTapIntercept(lpparam: XC_LoadPackage.LoadPackageParam): Boolean {
+        return try {
+            XposedHelpers.findAndHookMethod(
+                PHONE_STATUS_BAR_VIEW,
+                lpparam.classLoader,
+                "onTouchEvent",
+                MotionEvent::class.java,
+                object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val event = param.args[0] as? MotionEvent ?: return
+                        val ticker = activeTicker ?: return
+                        val tickerView = try {
+                            XposedHelpers.getObjectField(ticker, "mTickerView") as? View
+                        } catch (_: Throwable) {
+                            null
+                        } ?: return
+                        if (tickerView.visibility != View.VISIBLE) return
+
+                        when (event.actionMasked) {
+                            MotionEvent.ACTION_DOWN -> {
+                                tapDownRawX = event.rawX
+                                tapDownRawY = event.rawY
+                                tapDownTime = event.eventTime
+                                isTapCandidate = true
+                            }
+
+                            MotionEvent.ACTION_MOVE -> {
+                                if (isTapCandidate && movedBeyondSlop(param, event)) {
+                                    isTapCandidate = false
+                                }
+                            }
+
+                            MotionEvent.ACTION_UP -> {
+                                if (isTapCandidate &&
+                                    !movedBeyondSlop(param, event) &&
+                                    event.eventTime - tapDownTime <= MAX_TAP_DURATION_MS
+                                ) {
+                                    param.result = true
+                                    handleTickerClick(ticker, lpparam)
+                                }
+                                isTapCandidate = false
+                            }
+
+                            MotionEvent.ACTION_CANCEL -> isTapCandidate = false
+                        }
+                    }
+
+                    private fun movedBeyondSlop(param: MethodHookParam, event: MotionEvent): Boolean {
+                        if (touchSlop < 0) {
+                            val view = param.thisObject as? View ?: return true
+                            touchSlop = ViewConfiguration.get(view.context).scaledTouchSlop
+                        }
+                        return Math.abs(event.rawX - tapDownRawX) > touchSlop ||
+                            Math.abs(event.rawY - tapDownRawY) > touchSlop
+                    }
+                }
+            )
+            Logger.i(TAG, "已挂载 PhoneStatusBarView.onTouchEvent tap 拦截（滚动消息期间可正常下拉）")
+            true
+        } catch (e: Throwable) {
+            Logger.e(TAG, "挂载 PhoneStatusBarView.onTouchEvent 失败，降级 clickable 机制", e)
+            false
+        }
+    }
+
+    private fun rememberTicker(ticker: Any) {
+        activeTicker = ticker
+    }
+
+    /** 降级方案：clickable 捕获点击（跳转可用，滚动期间无法下拉） */
     private fun setupClickListener(ticker: Any, lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
             val textSwitcher = XposedHelpers.getObjectField(ticker, "mTextSwitcher") as? TextSwitcher

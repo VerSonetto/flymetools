@@ -78,7 +78,7 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
             description = "隐藏媒体播放器卡片上应用图标的白色背景", group = "通知样式"),
         // 通知行为
         HookFeature("ticker_click", "点击滚动消息跳转",
-            description = "点击状态栏滚动通知消息跳转到对应应用（开启后滚动消息区域无法下拉）", group = "通知行为"),
+            description = "点击状态栏滚动通知消息跳转到对应应用（点击跳转，滑动仍可下拉通知栏/控制中心）", group = "通知行为"),
         HookFeature("notification_manage", "解除通知管理限制",
             description = "解除系统通知不支持管理的限制，允许管理所有系统通知", group = "通知行为"),
         HookFeature("force_live_notification", "强制实况通知",
