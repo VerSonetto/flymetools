@@ -38,7 +38,8 @@ fun hasFeatureConfig(featureKey: String): Boolean = when (featureKey) {
     "edge_back_vibrate_intensity",
     "edge_back_hold_previous_app",
     "mback_double_click",
-    "slide_gesture_multi_arc" -> true
+    "slide_gesture_multi_arc",
+    "custom_search_engine" -> true
     else -> false
 }
 
@@ -83,5 +84,6 @@ fun FeatureConfig(
         "edge_back_hold_previous_app" -> EdgeBackHoldPreviousAppConfig(packageName, featureKey)
         "mback_double_click" -> MBackDoubleClickConfig(packageName, featureKey)
         "slide_gesture_multi_arc" -> SlideGestureMultiArcConfig(packageName, featureKey)
+        "custom_search_engine" -> CustomSearchEngineConfig(packageName, featureKey)
     }
 }

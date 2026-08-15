@@ -51,6 +51,10 @@
     {
       "package": "com.flyme.systemuitools",
       "name": "系统界面工具"
+    },
+    {
+      "package": "com.meizu.net.search",
+      "name": "搜索"
     }
   ]
 }

@@ -99,4 +99,5 @@ private val entryFactories: Map<String, () -> HookEntry> = mapOf(
     "com.meizu.flyme.update" to { com.karen.flymetool.hook.entry.FlymeUpdateEntry },
     "com.meizu.battery" to { com.karen.flymetool.hook.entry.BatteryEntry },
     "com.flyme.systemuitools" to { com.karen.flymetool.hook.entry.SystemToolsEntry },
+    "com.meizu.net.search" to { com.karen.flymetool.hook.entry.SearchEntry },
 )
