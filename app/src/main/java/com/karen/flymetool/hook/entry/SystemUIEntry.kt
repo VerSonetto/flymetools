@@ -15,6 +15,7 @@ object SystemUIEntry : HookEntry {
         "PulldownAreaRatioHook" to { com.karen.flymetool.hook.feature.systemui.PulldownAreaRatioHook },
         "ControlCenterBlurHook" to { com.karen.flymetool.hook.feature.systemui.ControlCenterBlurHook },
         "ControlCenterRadiusHook" to { com.karen.flymetool.hook.feature.systemui.ControlCenterRadiusHook },
+        "ControlCenterOpacityHook" to { com.karen.flymetool.hook.feature.systemui.ControlCenterOpacityHook },
         "NotificationIconLimitHook" to { com.karen.flymetool.hook.feature.systemui.NotificationIconLimitHook },
         "ShowDataSimOnlyHook" to { com.karen.flymetool.hook.feature.systemui.ShowDataSimOnlyHook },
         "HideStatusBarIconHook" to { com.karen.flymetool.hook.feature.systemui.HideStatusBarIconHook },

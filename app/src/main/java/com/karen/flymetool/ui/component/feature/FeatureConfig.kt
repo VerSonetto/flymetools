@@ -16,6 +16,7 @@ fun hasFeatureConfig(featureKey: String): Boolean = when (featureKey) {
     "pulldown_area_ratio",
     "control_center_blur_intensity",
     "control_center_radius",
+    "control_center_bg_opacity",
     "notification_icon_limit",
     "task_card_radius",
     "task_blur_intensity",
@@ -59,6 +60,7 @@ fun FeatureConfig(
         "pulldown_area_ratio" -> PulldownAreaRatioConfig(packageName, featureKey)
         "control_center_blur_intensity" -> ControlCenterBlurConfig(packageName, featureKey)
         "control_center_radius" -> ControlCenterRadiusConfig(packageName, featureKey)
+        "control_center_bg_opacity" -> ControlCenterOpacityConfig(packageName, featureKey)
         "notification_icon_limit" -> NotificationIconLimitConfig(packageName, featureKey)
         "task_card_radius" -> TaskCardRadiusConfig(packageName, featureKey)
         "task_blur_intensity" -> BlurIntensityConfig(packageName, featureKey)
