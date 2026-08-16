@@ -79,6 +79,9 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
             description = "自定义通知中心媒体播放器卡片的圆角大小", group = "通知样式"),
         HookFeature("hide_media_app_icon_bg", "隐藏媒体播放器应用图标背景",
             description = "隐藏媒体播放器卡片上应用图标的白色背景", group = "通知样式"),
+        HookFeature("media_card_compact", "媒体播放器卡片紧凑布局",
+            description = "重排通知中心媒体卡片：大封面居左，右侧依次为标题、歌手、进度条与胶囊按钮组",
+            group = "通知样式", minVersion = "Flyme 12"),
         // 通知行为
         HookFeature("ticker_click", "点击滚动消息跳转",
             description = "点击状态栏滚动通知消息跳转到对应应用（点击跳转，滑动仍可下拉通知栏/控制中心）", group = "通知行为"),
