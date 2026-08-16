@@ -10,6 +10,7 @@ import android.graphics.drawable.Drawable
 import android.os.SystemClock
 import android.util.FloatProperty
 import android.util.Log
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import com.karen.flymetool.hook.base.FeatureHook
@@ -140,6 +141,20 @@ object IosDepthStackRecentsHook : FeatureHook {
         hookDismissChannel(taskClass, hooks)
         hookDismissAll(recentsClass)
         hookReset(recentsClass, hooks)
+        hookDismissGestureUnlock(classLoader)
+        // 诊断：quickswitch 重排打点
+        findMethod(recentsClass, "moveRunningTaskToExpectedPosition", Void.TYPE)?.let { m ->
+            XposedBridge.hookMethod(m, object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    Logger.i(TAG, "MOVE-RUNNING before t=${SystemClock.uptimeMillis()}")
+                }
+
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val recents = param.thisObject as? ViewGroup ?: return
+                    Logger.i(TAG, "MOVE-RUNNING after children=${recents.childCount} order=[${(0 until recents.childCount).joinToString { i -> taskIdentity(recents.getChildAt(i)) }}]")
+                }
+            })
+        }
 
         Logger.i(
             TAG,
@@ -223,6 +238,9 @@ object IosDepthStackRecentsHook : FeatureHook {
                     // 这里在 afterHook 中立即执行一次清理，确保卡片回到原生位置。
                     if (alpha <= EPSILON && !state.applying) {
                         resetAllTransforms(recents, state, hooks)
+                        state.quickswitchStray = false
+                        state.strayHandled = false
+                        state.strayAnchorSettled = false
                         state.rotation = -1
                         state.cachedPages = null
                         state.cachedAxis = null
@@ -363,6 +381,73 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     /**
+     * 快速连续删除解锁：堆叠模式下 dismiss 动画的收尾窗口被拉长，期间到来的新手势 DOWN
+     * 会因 mCurrentAnimation 非空被跳过卡片查找而整轮作废（原生 TaskViewTouchControllerDeprecated
+     * 的 onControllerInterceptTouchEvent 行为）。这里在 DOWN 到达且删除动画仍在播放时把动画
+     * 快进到结束（ValueAnimator.end() → endAction → onCurrentAnimationEnd → clearState），
+     * 使本次 DOWN 正常走查找逻辑。快进触发的 removeView 布局重排要下一帧才生效，若本次
+     * 查找仍 miss（原方法放弃拦截），则把 DOWN 副本 post 到 dragLayer 重放一帧后重新分发，
+     * 保证快速连删时新手势总能命中已补位的卡片。
+     */
+    private fun hookDismissGestureUnlock(classLoader: ClassLoader) {
+        val controllerClass = try {
+            classLoader.loadClass("com.android.launcher3.uioverrides.touchcontrollers.TaskViewTouchControllerDeprecated")
+        } catch (_: Throwable) {
+            Logger.w(TAG, "未找到 TaskViewTouchControllerDeprecated，连删解锁跳过")
+            return
+        }
+        val intercept = findMethodsInHierarchy(controllerClass).firstOrNull {
+            it.name == "onControllerInterceptTouchEvent" &&
+                it.parameterTypes.size == 1 &&
+                it.parameterTypes[0] == MotionEvent::class.java
+        } ?: run {
+            Logger.w(TAG, "未找到 onControllerInterceptTouchEvent，连删解锁跳过")
+            return
+        }
+        val fastForwarded = HashSet<Any>()
+        XposedBridge.hookMethod(intercept, object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                val event = param.args[0] as? MotionEvent ?: return
+                if (event.actionMasked != MotionEvent.ACTION_DOWN) return
+                val animation = try {
+                    XposedHelpers.getObjectField(param.thisObject, "mCurrentAnimation")
+                } catch (_: Throwable) {
+                    null
+                } ?: return
+                try {
+                    val player = XposedHelpers.callMethod(animation, "getAnimationPlayer")
+                    XposedHelpers.callMethod(player, "end")
+                } catch (e: Throwable) {
+                    try {
+                        XposedHelpers.callMethod(animation, "dispatchOnCancel")
+                    } catch (e2: Throwable) {
+                        Logger.e(TAG, "连删解锁失败", e2)
+                        return
+                    }
+                }
+                fastForwarded.add(param.thisObject)
+            }
+
+            override fun afterHookedMethod(param: MethodHookParam) {
+                if (param.thisObject !in fastForwarded) return
+                fastForwarded.remove(param.thisObject)
+                if (param.result == true) return
+                val event = param.args[0] as? MotionEvent ?: return
+                try {
+                    val container = XposedHelpers.getObjectField(param.thisObject, "mContainer")
+                    val dragLayer = XposedHelpers.callMethod(container, "getDragLayer") as? View ?: return
+                    val replay = MotionEvent.obtainNoHistory(event)
+                    dragLayer.post { dragLayer.dispatchTouchEvent(replay) }
+                    Logger.d(TAG) { "连删解锁：DOWN 已延迟一帧重放" }
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "DOWN 重放失败", e)
+                }
+            }
+        })
+        Logger.i(TAG, "已挂载快速连删解锁")
+    }
+
+    /**
      * 删除位移分两轴，且轴角色随方向对调（竖屏主X次Y、横屏主Y次X）：
      * - 次轴 dismiss = 被删卡飞出：记录它 + 按“次轴位移/次轴维度”算删除进度，放行。
      * - 主轴 dismiss = 原生补位平移：吃掉(置0)，补位由 applyStack 接管。
@@ -462,6 +547,9 @@ object IosDepthStackRecentsHook : FeatureHook {
                     val state = stateFor(recents)
                     if (state.applying) return
                     resetAllTransforms(recents, state, hooks)
+                    state.quickswitchStray = false
+                    state.strayHandled = false
+                    state.strayAnchorSettled = false
                     state.rotation = -1
                     state.cachedPages = null
                     state.cachedAxis = null
@@ -490,6 +578,9 @@ object IosDepthStackRecentsHook : FeatureHook {
                 invokeBoolean(hooks.isSplitSelectionActive, recents)
             if (!active || unsupported || recents.width <= 0 || recents.height <= 0) {
                 resetAllTransforms(recents, state, hooks)
+                state.quickswitchStray = false
+                state.strayHandled = false
+                state.strayAnchorSettled = false
                 state.rotation = -1
                 state.cachedPages = null
                 state.cachedAxis = null
@@ -523,6 +614,10 @@ object IosDepthStackRecentsHook : FeatureHook {
                     state.cachedPages = it
                     state.cachedPagesChildCount = recents.childCount
                     state.cachedPagesRotation = rotation
+                    // 诊断：rebuild 时打印页面顺序与滚动位置
+                    val running = resolveRunningTaskView(recents, hooks)
+                    val runningOrd = pagesIndexOf(it, running)
+                    Logger.i(TAG, "REBUILD pages=[${it.joinToString { p -> taskIdentity(p.view) }}] scrollPos=${calculateScrollPosition(it, axis.primaryScroll(recents))} runningOrd=$runningOrd running=${running?.let { v -> taskIdentity(v) }} children=${recents.childCount}")
                 }
             }
             if (pages.isEmpty()) return
@@ -611,6 +706,44 @@ object IosDepthStackRecentsHook : FeatureHook {
             // isRunningTask() 内部 = this == getRecentsView().getRunningTaskView()（反编译对照），
             // 每帧每卡 invoke 会重复走视图树与任务扫描；这里每帧只解析一次运行卡再按身份比较。
             val runningTaskView = resolveRunningTaskView(recents, hooks)
+            // quickswitch 后的过渡期 mRunningTaskId 滞留旧卡（getRunningTaskView 返回上一张），
+            // 此时把 running 特权（全尺寸/最高层/live tile 同步）错给旧卡会浮顶错位。
+            // 只有 running 卡位于主位附近时才承认锚定；否则按无 running 处理。
+            val runningOrdinal = if (runningTaskView != null) pages.indexOfFirst { it.view === runningTaskView } else -1
+            val anchoredRunning = if (runningOrdinal >= 0 && abs(runningOrdinal - clampedPosition) <= 0.55f) runningTaskView else null
+            // 稳定态判定提前：仅用于标题遮挡/头部模糊等稳态附加效果。
+            val settledOverview = !state.detachFadeActive &&
+                state.contentAlpha >= 0.98f &&
+                (!state.fullscreenProgressKnown || state.fullscreenProgress <= 0.02f) &&
+                state.adjacentPageScale <= 0.02f
+            // quickswitch 错位修正会话化：
+            // 进入——上滑入场动画中或静止稳态，running 卡锚定主位但不在最新位即进入，
+            //   入场中介入让上滑过程中当前应用就处于视觉最右（live tile 与卡片一致）。
+            // 退出——running 归位最新位；或稳态后用户翻页（scroll 偏离锚点超 0.2 页），
+            //   后者标记本次会话已处理，之后滑动全程原生动画。入场动画的 scroll 变化
+            //   不作为退出依据（锚点在首次稳态时才记录）。
+            val enteringOverview = state.fullscreenProgressKnown && state.fullscreenProgress > 0.02f
+            if (!state.quickswitchStray) {
+                if (!state.strayHandled && anchoredRunning != null && runningOrdinal < pages.lastIndex &&
+                    (settledOverview || enteringOverview)
+                ) {
+                    state.quickswitchStray = true
+                    state.strayAnchorScroll = clampedPosition
+                    state.strayAnchorSettled = false
+                }
+            } else {
+                if (runningOrdinal < 0 || runningOrdinal >= pages.lastIndex) {
+                    state.quickswitchStray = false
+                } else if (settledOverview) {
+                    if (!state.strayAnchorSettled) {
+                        state.strayAnchorScroll = clampedPosition
+                        state.strayAnchorSettled = true
+                    } else if (abs(clampedPosition - state.strayAnchorScroll) > 0.2f) {
+                        state.quickswitchStray = false
+                        state.strayHandled = true
+                    }
+                }
+            }
             // depthStep 与卡无关（同一 display），每帧提一次，省去每卡 resources 读取。
             val depthStepPx = DEPTH_Z_STEP_DP * recents.resources.displayMetrics.density
 
@@ -620,10 +753,13 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val nativePrimaryTranslation = removeCustomPrimaryOffset(task, taskState, hooks, axis)
                 val isDismissing = task === dismissing
                 // running task 用独立 live tile surface 渲染，若给它加 offset/scale，TaskView 空白底板
-                // (清空+dimming)会与 surface 分离而露出。故让它停在原生位置，不施加我们的位移与缩放。
-                val isRunning = if (hooks.getRunningTaskView != null) task === runningTaskView
-                else invokeBoolean(hooks.isRunningTask, task)
-                val suppressPlaceholder = isRunning &&
+                // (清空+dimming)会与 surface 分离而露出。特权(scale/live tile 同步)仅授予锚定 running；
+                // 占位抑制跟随真实 running 身份（不锚定）——live tile 卡没有静态缩略图，
+                // 翻页滑离主位时若解除抑制会闪出白板占位。
+                val isRunningView = task === runningTaskView
+                val isRunning = if (hooks.getRunningTaskView != null) task === anchoredRunning
+                else invokeBoolean(hooks.isRunningTask, task) && abs(ordinal - clampedPosition) <= 0.55f
+                val suppressPlaceholder = isRunningView &&
                     (recents.getTag(TAG_REMOTE_TARGETS) == true || task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING) == true)
                 setPlaceholderSuppressedCached(task, taskState, suppressPlaceholder)
 
@@ -634,7 +770,13 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val relativePosition = effectiveOrdinal - clampedPosition
                 // Seascape：逻辑 ordinal 与屏幕左右相反。曲线/缩放/overscroll 在「视觉空间」采样
                 // （stackRelative = -rel，使后方 peek + 缩小落在低 Z 侧），再把目标主轴坐标镜像回 layout。
-                val stackRelative = if (axis.invertStackDepth) -relativePosition else relativePosition
+                // quickswitch 错位态：主位右侧滞留的旧卡折叠到左侧对称堆叠位，当前应用恢复
+                // "最右/最顶层"视觉；正常翻页滚动保持右侧 peek 曲线，不做折叠。
+                val stackRelative = when {
+                    axis.invertStackDepth -> -relativePosition
+                    state.quickswitchStray && relativePosition > 0.55f -> -relativePosition
+                    else -> relativePosition
+                }
                 val stackOverscroll = if (axis.invertStackDepth) -overscroll else overscroll
                 val visual = stackVisual(
                     visualCenter,
@@ -683,10 +825,12 @@ object IosDepthStackRecentsHook : FeatureHook {
                             "pending=${task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)} hasThumb=${thumbnail?.let { hasThumbnailView(it) }} bounds=${task.left},${task.top},${task.right},${task.bottom}",
                     )
                 }
-                // Z 序：默认 ordinal 越大越高；Seascape 下 ordinal 与屏幕左右相反，需镜像使右侧更高。
-                // 被删卡保持自身堆叠层级（effectiveOrdinal=fullOrdinal）飞出，不顶到最上——
-                // 顶 z 会在上滑删除瞬间让卡片短暂违背堆叠层级，清空动画已交还原生，单卡也不该例外。
+                // Z 序：默认 ordinal 越大越高（正常滚动层级不变）；Seascape 镜像。
+                // quickswitch 错位态改按视觉堆叠深度（主位最高、越远越低），与折叠位一致；
+                // 被删卡保持自身堆叠层级（effectiveOrdinal）飞出，不顶到最上。
                 val depthOrder = when {
+                    isDismissing -> if (axis.invertStackDepth) (pages.lastIndex - effectiveOrdinal) else effectiveOrdinal
+                    state.quickswitchStray -> -abs(stackRelative)
                     axis.invertStackDepth -> (pages.lastIndex - effectiveOrdinal)
                     else -> effectiveOrdinal
                 }
@@ -706,10 +850,6 @@ object IosDepthStackRecentsHook : FeatureHook {
             // 上层邻卡覆盖 app_name：默认 ordinal+1；Seascape 镜像后上层为 ordinal-1。
             // 标题遮挡/头部模糊依赖 getGlobalVisibleRect + overlay，开销大。
             // 仅 overview 稳定态做：入场交会期(fullscreen>0 或 content 未满)跳过，避免掉帧。
-            val settledOverview = !state.detachFadeActive &&
-                state.contentAlpha >= 0.98f &&
-                (!state.fullscreenProgressKnown || state.fullscreenProgress <= 0.02f) &&
-                state.adjacentPageScale <= 0.02f
             if (settledOverview && exitFade >= 1f - EPSILON && dismissing == null && !state.multiDismissActive) {
                 pages.forEach { it.view.getGlobalVisibleRect(state.taskStates.getValue(it.view).bounds) }
                 val frontOrdinalDelta = if (axis.invertStackDepth) -1 else 1
@@ -750,6 +890,13 @@ object IosDepthStackRecentsHook : FeatureHook {
                         ts.titleLastApplied = Float.NaN
                     }
                 }
+            }
+            // 诊断：翻页帧摘要（节流 150ms）
+            val nowMs = SystemClock.uptimeMillis()
+            if (nowMs - state.lastFrameLogMs >= 150) {
+                state.lastFrameLogMs = nowMs
+                val rels = pages.mapIndexed { i, _ -> (i - clampedPosition) }.joinToString { String.format("%.1f", it) }
+                Logger.i(TAG, "FRAME stray=${state.quickswitchStray} scroll=${String.format("%.2f", scrollPosition)} clamp=${String.format("%.2f", clampedPosition)} runOrd=$runningOrdinal anchored=${anchoredRunning != null} settled=$settledOverview rels=[$rels]")
             }
         } catch (throwable: Throwable) {
             Logger.once(TAG, "runtime_degrade", "运行时降级: ${throwable.javaClass.simpleName}: ${throwable.message}")
@@ -1405,6 +1552,18 @@ object IosDepthStackRecentsHook : FeatureHook {
         return try { method.invoke(recents) as? View } catch (_: Throwable) { null }
     }
 
+    // === 诊断辅助（临时） ===
+    private fun taskIdentity(view: View): String = try {
+        val component = runCatching { XposedHelpers.callMethod(view, "getTaskFlowComponent") as? ComponentName }.getOrNull()
+        val pkg = component?.shortClassName?.takeLast(12) ?: component?.packageName?.take(6)
+        if (pkg != null) pkg else "tv@${System.identityHashCode(view).toString(16)}"
+    } catch (_: Throwable) {
+        "tv@${System.identityHashCode(view).toString(16)}"
+    }
+
+    private fun pagesIndexOf(pages: List<TaskPage>, view: View?): Int =
+        if (view == null) -1 else pages.indexOfFirst { it.view === view }
+
     private fun syncRunningLiveTile(recents: ViewGroup, hooks: ResolvedHooks, primary: Float, secondary: Float) {
         try {
             if (!readLiveTileEnabled(recents, hooks)) return
@@ -1514,6 +1673,16 @@ object IosDepthStackRecentsHook : FeatureHook {
         var contentAlpha = 0f
         var fullscreenProgress = 0f
         var fullscreenProgressKnown = false
+        // quickswitch 错位态：running 卡锚定主位但不在最新位（滞留旧卡占着最右）。
+        // 进入后保持（滚动中不跳变），running 归位最右或 overview 退出时解除。
+        var quickswitchStray = false
+        // 会话标记：本次 overview 内已因用户滑动退出过修正，不再重新进入（避免滑动中反复跳变）。
+        var strayHandled = false
+        var strayAnchorScroll = 0f
+        // 锚点在首次稳态时才记录（入场动画中 scroll 由动画驱动，不能作为用户翻页的判定基准）。
+        var strayAnchorSettled = false
+        // 诊断帧摘要节流时间戳。
+        var lastFrameLogMs = 0L
         // Flyme ADJACENT_PAGE_SCALE：0=贴合 overview，1=退桌 detached。
         var adjacentPageScale = 0f
         var lastAdjacentPageScale = 0f
