@@ -1,5 +1,6 @@
 package com.karen.flymetool.hook.feature.systemui
 
+import android.graphics.Color
 import android.os.SystemClock
 import android.view.View
 import com.karen.flymetool.hook.base.FeatureHook
@@ -55,6 +56,9 @@ object NotificationCardBlurHook : FeatureHook {
     private const val MZ_BLUR_UTILS = "com.flyme.systemui.utils.MzBlurUtils"
     private const val WALLPAPER_BLUR_MANAGER =
         "com.flyme.systemui.wallpaper.WallpaperBlurDrawableManager"
+
+    /** 胶囊要比卡片本体再亮/再实一点，避免模糊开启后完全融进卡片。 */
+    private const val PILL_ALPHA_BOOST = 25
 
     private var prefsPackage: String = "com.android.systemui"
     private var loadParam: XC_LoadPackage.LoadPackageParam? = null
@@ -178,7 +182,7 @@ object NotificationCardBlurHook : FeatureHook {
                     // 直传 color：HUN、媒体；通知背景色已在 setBlurBackground 处理
                     if (isDirectColorBlurView(view)) {
                         val color = param.args[4] as? Int ?: return
-                        val adjusted = applyMaskColor(color)
+                        val adjusted = applyMaskColorForView(color, view)
                         if (adjusted != color) {
                             param.args[4] = adjusted
                         }
@@ -196,7 +200,6 @@ object NotificationCardBlurHook : FeatureHook {
      * 与 addBlurDrawableTo(View, int color, float r) 的 color 参数。
      */
     private fun hookMediaStaticForegroundColor() {
-        if (mediaCarouselClass == null) return
         try {
             val mgr = XposedHelpers.findClass(WALLPAPER_BLUR_MANAGER, loadParam!!.classLoader)
 
@@ -208,10 +211,10 @@ object NotificationCardBlurHook : FeatureHook {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val view = param.args[0] as? View ?: return
-                        if (!isMediaCarousel(view)) return
+                        if (!isMediaCarousel(view) && !isMediaPill(view)) return
                         refreshPrefs(force = false)
                         val original = param.args[1] as? Int ?: return
-                        val adjusted = applyMaskColor(original)
+                        val adjusted = applyMaskColorForView(original, view)
                         if (adjusted != original) {
                             param.args[1] = adjusted
                             Logger.once(
@@ -233,10 +236,10 @@ object NotificationCardBlurHook : FeatureHook {
                 XposedBridge.hookMethod(m, object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val view = param.args[0] as? View ?: return
-                        if (!isMediaCarousel(view)) return
+                        if (!isMediaCarousel(view) && !isMediaPill(view)) return
                         refreshPrefs(force = false)
                         val original = param.args[1] as? Int ?: return
-                        val adjusted = applyMaskColor(original)
+                        val adjusted = applyMaskColorForView(original, view)
                         if (adjusted != original) param.args[1] = adjusted
                     }
                 })
@@ -250,13 +253,17 @@ object NotificationCardBlurHook : FeatureHook {
     private fun isTargetBlurView(view: View): Boolean {
         return isNotificationBackground(view) ||
             isLandscapeHun(view) ||
-            isMediaCarousel(view)
+            isMediaCarousel(view) ||
+            isMediaPill(view)
     }
 
     /** color 不经 setBlurBackground、直接进 MzBlurUtils / Static manager */
     private fun isDirectColorBlurView(view: View): Boolean {
-        return isLandscapeHun(view) || isMediaCarousel(view)
+        return isLandscapeHun(view) || isMediaCarousel(view) || isMediaPill(view)
     }
+
+    /** 媒体卡片紧凑布局注入的底部胶囊背景，同样属于媒体卡片模糊的一部分。 */
+    private fun isMediaPill(view: View): Boolean = MediaCardCompactHook.isPillView(view)
 
     private fun isNotificationBackground(view: View): Boolean {
         val cl = backgroundViewClass ?: return false
@@ -309,6 +316,11 @@ object NotificationCardBlurHook : FeatureHook {
         var n = 0
         for (row in rows) {
             if (applyRadiusToRowBackgrounds(row, target)) n++
+            // 媒体卡片紧凑布局的胶囊也跟随堆叠 softCap 一起压/恢复
+            try {
+                MediaCardCompactHook.refreshPillBackgrounds(row)
+            } catch (_: Throwable) {
+            }
         }
         if (n > 0) {
             Logger.d(TAG) { "stackSoftCap=$softCap → radius=$target on $n rows" }
@@ -346,5 +358,13 @@ object NotificationCardBlurHook : FeatureHook {
             opacityBias = cachedOpacityBias,
             beautify = cachedBeautify
         )
+    }
+
+    /** 胶囊在统一模糊映射基础上再提高一点 alpha，保持可见的按钮分组边界。 */
+    private fun applyMaskColorForView(color: Int, view: View): Int {
+        val adjusted = applyMaskColor(color)
+        if (!isMediaPill(view)) return adjusted
+        val alpha = (Color.alpha(adjusted) + PILL_ALPHA_BOOST).coerceIn(0, 255)
+        return Color.argb(alpha, Color.red(adjusted), Color.green(adjusted), Color.blue(adjusted))
     }
 }

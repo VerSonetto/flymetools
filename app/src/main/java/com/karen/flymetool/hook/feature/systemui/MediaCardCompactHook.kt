@@ -12,6 +12,7 @@ import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
 import com.karen.flymetool.util.FlymeVersionUtils
+import com.karen.flymetool.util.NotificationCardBlurMath
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
@@ -41,6 +42,11 @@ object MediaCardCompactHook : FeatureHook {
     private const val TAG = "MediaCardCompact"
     private const val SYSTEMUI = "com.android.systemui"
     private const val KEY = "media_card_compact"
+
+    /** 与“通知卡片模糊”共用同一组调节参数，让胶囊也跟随强度/不透明度/曲线联动。 */
+    private const val BLUR_FEATURE_KEY = "notification_card_blur"
+    private const val BLUR_OPACITY_SUFFIX = "opacity"
+    private const val BLUR_BEAUTIFY_SUFFIX = "beautify"
 
     private const val CLS_VIEW_CONTROLLER =
         "com.android.systemui.media.controls.ui.controller.MediaViewController"
@@ -90,6 +96,19 @@ object MediaCardCompactHook : FeatureHook {
     /** 每张卡片注入的两个胶囊背景 View 的 id（[左组, 右组]） */
     private val pillIdCache = WeakHashMap<View, IntArray>()
 
+    /** 胶囊 View 自身索引，供“通知卡片模糊”Hook 识别并一起调节。 */
+    private val pillViews = WeakHashMap<View, Boolean>()
+
+    private var loadParam: XC_LoadPackage.LoadPackageParam? = null
+
+    /** 供 [NotificationCardBlurHook] 判断某个 View 是否为紧凑布局注入的胶囊背景。 */
+    internal fun isPillView(view: View): Boolean {
+        if (pillViews.containsKey(view)) return true
+        val parent = view.parent as? ViewGroup ?: return false
+        val ids = pillIdCache[parent] ?: return false
+        return view.id == ids[0] || view.id == ids[1]
+    }
+
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, KEY)) return
         if (lpparam.packageName != SYSTEMUI) return
@@ -97,11 +116,13 @@ object MediaCardCompactHook : FeatureHook {
             Logger.w(TAG, "仅适配 Flyme 12 的媒体卡片结构，已跳过")
             return
         }
+        loadParam = lpparam
 
         hookLayoutConstraints(lpparam)
         hookBindPlayer(lpparam)
         hookCardHeight(lpparam)
         hookPillBlurAlpha(lpparam)
+        hookPillModeRefresh(lpparam)
     }
 
     /** 约束集载入后立刻重排一次（attach 时调用），避免首帧闪原版布局。 */
@@ -216,7 +237,7 @@ object MediaCardCompactHook : FeatureHook {
         val pills = ensurePillViews(player)
         val ordered = computeButtonOrder(ctx, holder, set)
         applyLayout(ctx, set, ordered, pills)
-        applyPillBackgrounds(ctx, player, holder, ordered, pills)
+        applyPillBackgrounds(player, holder, ordered, pills)
         hideSeekThumb(holder)
 
         val h = dp(ctx, CARD_H)
@@ -272,6 +293,8 @@ object MediaCardCompactHook : FeatureHook {
             player.addView(right, 1)
             val ids = intArrayOf(left.id, right.id)
             pillIdCache[player] = ids
+            pillViews[left] = true
+            pillViews[right] = true
             Logger.once(TAG, "pill_created", "已注入胶囊背景 View")
             ids
         } catch (e: Throwable) {
@@ -506,7 +529,6 @@ object MediaCardCompactHook : FeatureHook {
      * 前景色比卡片略白一档，形成"同质感、更亮一层"的层次；不支持模糊时退回半透明白。
      */
     private fun applyPillBackgrounds(
-        ctx: Context,
         player: View,
         holder: Any,
         ordered: Pair<List<Int>, Int>,
@@ -525,10 +547,22 @@ object MediaCardCompactHook : FeatureHook {
         }
 
         if (pills == null || player !is ViewGroup) return
+        refreshPillBackgrounds(player)
+    }
+
+    /**
+     * 按当前深浅色模式与“通知卡片模糊”参数给胶囊套背景。
+     * tag 记录已应用的模式 + 模糊参数；参数变化会触发重新套用，
+     * 避免重复 new 出模糊 drawable。
+     */
+    internal fun refreshPillBackgrounds(player: View) {
+        if (player !is ViewGroup) return
+        val pills = pillIdCache[player] ?: return
+        val ctx = player.context ?: return
         val night = (ctx.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
         val radius = BTN_H / 2f * ctx.resources.displayMetrics.density
-        val stateTag = "pill:${if (night) "night" else "day"}"
+        val stateTag = "pill:${if (night) "night" else "day"}:${blurSettingsKey()}"
         val cl = player.javaClass.classLoader
 
         for (pillId in pills) {
@@ -545,6 +579,24 @@ object MediaCardCompactHook : FeatureHook {
             }
             pill.tag = stateTag
         }
+    }
+
+    /** 读取“通知卡片模糊”的当前参数，拼进胶囊 tag；未启用时返回 off。 */
+    private fun blurSettingsKey(): String {
+        val lp = loadParam ?: return "off"
+        if (!XposedPrefs.isFeatureEnabled(lp, SYSTEMUI, BLUR_FEATURE_KEY)) return "off"
+        val intensity = XposedPrefs.getFeatureValue(
+            lp, SYSTEMUI, BLUR_FEATURE_KEY, NotificationCardBlurMath.DEFAULT_INTENSITY
+        ).coerceIn(0, NotificationCardBlurMath.MAX_INTENSITY)
+        val opacity = XposedPrefs.getFeatureExtraValue(
+            lp, SYSTEMUI, BLUR_FEATURE_KEY, BLUR_OPACITY_SUFFIX,
+            NotificationCardBlurMath.DEFAULT_OPACITY
+        ).coerceIn(0, 100)
+        val beautify = XposedPrefs.getFeatureExtraValue(
+            lp, SYSTEMUI, BLUR_FEATURE_KEY, BLUR_BEAUTIFY_SUFFIX, 0
+        )
+        val stackCap = IosNotificationStackHook.stackBlurSoftCapActive
+        return "blur:$intensity:$opacity:$beautify:${if (stackCap) "cap" else "nocap"}"
     }
 
     /** 胶囊前景色：比卡片(70% 白 / 70% 深灰)略白一档。 */
@@ -596,6 +648,35 @@ object MediaCardCompactHook : FeatureHook {
         } catch (e: Throwable) {
             Logger.once(TAG, "pill_blur_fail", "胶囊模糊失败，退回半透明底：${e.javaClass.simpleName}")
             false
+        }
+    }
+
+    /**
+     * 卡片自己重算背景时（深浅色模式切换、实况通知状态变化、配置变化都会走
+     * MediaCarouseTransitionLayout.setBackground()）顺带刷新胶囊，
+     * 否则切到深色模式后胶囊仍是浅色模式的底。
+     */
+    private fun hookPillModeRefresh(lpparam: XC_LoadPackage.LoadPackageParam) {
+        try {
+            val clazz = XposedHelpers.findClass(CLS_CAROUSE_LAYOUT, lpparam.classLoader)
+            XposedBridge.hookAllMethods(
+                clazz,
+                "setBackground",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        try {
+                            // 只处理 Flyme 自己的无参 setBackground()，不碰 View.setBackground(Drawable)
+                            if (param.args.isNotEmpty()) return
+                            val player = param.thisObject as? View ?: return
+                            refreshPillBackgrounds(player)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            )
+            Logger.i(TAG, "已挂载 MediaCarouseTransitionLayout#setBackground")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "挂载胶囊模式刷新失败", e)
         }
     }
 
