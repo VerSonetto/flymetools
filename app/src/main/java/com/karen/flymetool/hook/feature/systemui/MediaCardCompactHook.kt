@@ -5,6 +5,8 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.widget.SeekBar
@@ -99,6 +101,14 @@ object MediaCardCompactHook : FeatureHook {
     /** 胶囊 View 自身索引，供“通知卡片模糊”Hook 识别并一起调节。 */
     private val pillViews = WeakHashMap<View, Boolean>()
 
+    /** 音乐壁纸状态（key = MediaViewController）：壁纸态下约束集归壁纸版式接管，不得套紧凑约束。 */
+    private val wallpaperState = WeakHashMap<Any, Boolean>()
+
+    /** 退出壁纸后待执行的紧凑版式补套任务（key = MediaControlPanel）。 */
+    private val pendingReapply = WeakHashMap<Any, Runnable>()
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     private var loadParam: XC_LoadPackage.LoadPackageParam? = null
 
     /** 供 [NotificationCardBlurHook] 判断某个 View 是否为紧凑布局注入的胶囊背景。 */
@@ -120,6 +130,7 @@ object MediaCardCompactHook : FeatureHook {
 
         hookLayoutConstraints(lpparam)
         hookBindPlayer(lpparam)
+        hookMusicWallpaperTransition(lpparam)
         hookCardHeight(lpparam)
         hookPillBlurAlpha(lpparam)
         hookPillModeRefresh(lpparam)
@@ -135,6 +146,8 @@ object MediaCardCompactHook : FeatureHook {
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         try {
+                            // 壁纸大卡片期间约束集由壁纸版式接管，套紧凑约束会打崩展开态
+                            if (wallpaperState[param.thisObject] == true) return
                             val ctx = XposedHelpers.getObjectField(param.thisObject, "context")
                                 as? Context ?: return
                             val set = XposedHelpers.callMethod(param.thisObject, "getExpandedLayout")
@@ -188,6 +201,92 @@ object MediaCardCompactHook : FeatureHook {
         }
     }
 
+    /**
+     * 音乐壁纸退出补套。
+     *
+     * 退出时系统会把约束集回写成原版：收起动画（HEIGHT_ANIMATION_DURATION=1500ms）每帧
+     * setAlbumArtSize()，结束时封面尺寸与卡片 minHeight 均为原版值；setExpandedAlphaAnimator
+     * 起始就同步把 media_seamless_text / icon 翻回 VISIBLE（原版约束位置）。而 bindPlayer 与
+     * loadLayoutConstraints 都不会重跑，紧凑版式无人恢复。
+     * 故在 refreshMusicWallpaperState 收到 toOpen=false 后补套：动画路径等收起动画结束后补
+     * （对齐系统自身 settle 时机 +300ms）；无动画路径当帧补。
+     */
+    private fun hookMusicWallpaperTransition(lpparam: XC_LoadPackage.LoadPackageParam) {
+        try {
+            val clazz = XposedHelpers.findClass(CLS_CONTROL_PANEL, lpparam.classLoader)
+            val hooked = XposedBridge.hookAllMethods(
+                clazz,
+                "refreshMusicWallpaperState",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        try {
+                            val panel = param.thisObject ?: return
+                            val inWallpaper = try {
+                                XposedHelpers.getBooleanField(panel, "mIsUseMediaBackground")
+                            } catch (_: Throwable) {
+                                return
+                            }
+                            markWallpaper(panel, inWallpaper)
+                            if (inWallpaper) {
+                                pendingReapply.remove(panel)?.let { mainHandler.removeCallbacks(it) }
+                            } else {
+                                // 第 5 参 z5 = animate
+                                val animate = param.args.getOrNull(4) as? Boolean ?: true
+                                scheduleCompactReapply(panel, animate)
+                            }
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            )
+            if (hooked.isEmpty()) {
+                Logger.w(TAG, "未找到 MediaControlPanel#refreshMusicWallpaperState，退出壁纸后紧凑版式可能错位")
+            } else {
+                Logger.i(TAG, "已挂载 MediaControlPanel#refreshMusicWallpaperState")
+            }
+        } catch (e: Throwable) {
+            Logger.e(TAG, "挂载音乐壁纸退出补套失败", e)
+        }
+    }
+
+    private fun scheduleCompactReapply(panel: Any, animate: Boolean) {
+        pendingReapply.remove(panel)?.let { mainHandler.removeCallbacks(it) }
+        val reapply = Runnable {
+            try {
+                val inWallpaper = XposedHelpers.callMethod(panel, "isUseMediaBackground")
+                    as? Boolean ?: false
+                if (!inWallpaper) {
+                    restyle(panel)
+                    Logger.d(TAG) { "退出音乐壁纸后已补套紧凑版式" }
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        pendingReapply[panel] = reapply
+        if (!animate) {
+            mainHandler.post(reapply)
+            return
+        }
+        val duration = try {
+            (XposedHelpers.getStaticObjectField(
+                panel.javaClass, "HEIGHT_ANIMATION_DURATION"
+            ) as? Number)?.toLong() ?: 1500L
+        } catch (_: Throwable) {
+            1500L
+        }
+        mainHandler.postDelayed(reapply, duration + 300)
+        mainHandler.postDelayed(reapply, duration + 800)
+    }
+
+    private fun markWallpaper(panel: Any, inWallpaper: Boolean) {
+        try {
+            XposedHelpers.getObjectField(panel, "mMediaViewController")?.let {
+                wallpaperState[it] = inWallpaper
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     /** 轮播容器高度：原版 qs_media_container_height(188dp) -> 紧凑高度。 */
     private fun hookCardHeight(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
@@ -227,7 +326,11 @@ object MediaCardCompactHook : FeatureHook {
         } catch (_: Throwable) {
             false
         }
-        if (useMediaBg) return
+        if (useMediaBg) {
+            markWallpaper(panel, true)
+            return
+        }
+        markWallpaper(panel, false)
 
         val viewController = XposedHelpers.getObjectField(panel, "mMediaViewController") ?: return
         val set = XposedHelpers.callMethod(viewController, "getExpandedLayout") ?: return
