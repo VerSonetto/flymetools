@@ -7,9 +7,11 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.text.format.DateUtils
 import android.view.View
 import android.view.ViewGroup
 import android.widget.SeekBar
+import android.widget.TextView
 import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.XposedPrefs
@@ -58,6 +60,8 @@ object MediaCardCompactHook : FeatureHook {
         "com.android.systemui.media.controls.ui.controller.MediaCarouselController"
     private const val CLS_CAROUSE_LAYOUT =
         "com.flyme.systemui.media.controls.ui.view.MediaCarouseTransitionLayout"
+    private const val CLS_TRANSITION_LAYOUT =
+        "com.android.systemui.util.animation.TransitionLayout"
     private const val CLS_BLUR_UTILS = "com.flyme.systemui.utils.MzBlurUtils"
     private const val CLS_WALLPAPER_BLUR_MANAGER =
         "com.flyme.systemui.wallpaper.WallpaperBlurDrawableManager"
@@ -86,7 +90,12 @@ object MediaCardCompactHook : FeatureHook {
     private const val GROUP_GAP = 8
     private const val BTN_H = 38
     private const val SEEK_H = 18
-    private const val TIME_GAP = 6
+    // 时间文本固定宽度 + 紧凑间距：宽度不能小于常见时间文本宽度，否则 TransitionLayout
+    // 会按 widgetState.width 裁剪秒位；固定 34dp 在 Flyme 10dp 时间字号下足够显示 1:00:00。
+    private const val TIME_W = 34
+    private const val TIME_START_GAP = 10
+    private const val TIME_END_MARGIN = 12
+    private const val TIME_GAP = 4
     private const val ROW_GAP = 6
 
     private val PREV_WORDS = listOf("上一", "prev", "pre", "previous", "rewind")
@@ -130,6 +139,7 @@ object MediaCardCompactHook : FeatureHook {
 
         hookLayoutConstraints(lpparam)
         hookBindPlayer(lpparam)
+        hookTransitionTimeClip(lpparam)
         hookMusicWallpaperTransition(lpparam)
         hookCardHeight(lpparam)
         hookPillBlurAlpha(lpparam)
@@ -198,6 +208,49 @@ object MediaCardCompactHook : FeatureHook {
             }
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 MediaControlPanel 失败", e)
+        }
+    }
+
+    /**
+     * TransitionLayout 对 TextView 会按 widgetState.width 做 clipBounds 裁剪，
+     * 时间文本用 WRAP_CONTENT 时动画中间态宽度小于文本测量宽度，会把右侧秒位裁掉。
+     * 这里在 applyCurrentState() 之后把媒体卡片两个时间 TextView 的裁剪清掉：
+     * 文本始终完整显示，同时保留 WRAP_CONTENT，不让进度条额外变短。
+     */
+    private fun hookTransitionTimeClip(lpparam: XC_LoadPackage.LoadPackageParam) {
+        try {
+            val clazz = XposedHelpers.findClass(CLS_TRANSITION_LAYOUT, lpparam.classLoader)
+            val hooked = XposedBridge.hookAllMethods(
+                clazz,
+                "applyCurrentState",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        try {
+                            val layout = param.thisObject as? ViewGroup ?: return
+                            val ctx = layout.context ?: return
+                            val rootId = id(ctx, "qs_media_controls")
+                            if (rootId != 0 && layout.id != rootId) return
+                            val elapsed = id(ctx, "media_scrubbing_elapsed_time")
+                            val total = id(ctx, "media_scrubbing_total_time")
+                            if (elapsed == 0 && total == 0) return
+                            if (elapsed != 0) {
+                                (layout.findViewById<View>(elapsed) as? TextView)?.clipBounds = null
+                            }
+                            if (total != 0) {
+                                (layout.findViewById<View>(total) as? TextView)?.clipBounds = null
+                            }
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            )
+            if (hooked.isEmpty()) {
+                Logger.w(TAG, "未找到 TransitionLayout#applyCurrentState，时间文本可能仍会动画裁字")
+            } else {
+                Logger.i(TAG, "已挂载 TransitionLayout#applyCurrentState 时间文本防裁剪")
+            }
+        } catch (e: Throwable) {
+            Logger.e(TAG, "挂载 TransitionLayout#applyCurrentState 失败", e)
         }
     }
 
@@ -339,7 +392,8 @@ object MediaCardCompactHook : FeatureHook {
 
         val pills = ensurePillViews(player)
         val ordered = computeButtonOrder(ctx, holder, set)
-        applyLayout(ctx, set, ordered, pills)
+        val timeWidthPx = measureTimeWidthPx(ctx, holder)
+        applyLayout(ctx, set, ordered, pills, timeWidthPx)
         applyPillBackgrounds(player, holder, ordered, pills)
         hideSeekThumb(holder)
 
@@ -351,6 +405,51 @@ object MediaCardCompactHook : FeatureHook {
         }
 
         XposedHelpers.callMethod(viewController, "refreshState")
+    }
+
+    /**
+     * 用当前系统字体/字号实测时间文本最大宽度，再作为固定宽度写入约束集。
+     * 这样不同用户字体大小、不同字体族下都不会裁字，同时避免无脑给死宽度导致进度条过短。
+     */
+    private fun measureTimeWidthPx(ctx: Context, holder: Any): Int? {
+        val elapsed = try {
+            XposedHelpers.callMethod(holder, "getScrubbingElapsedTimeView") as? TextView
+        } catch (_: Throwable) {
+            null
+        }
+        val total = try {
+            XposedHelpers.callMethod(holder, "getScrubbingTotalTimeView") as? TextView
+        } catch (_: Throwable) {
+            null
+        }
+        val views = listOfNotNull(elapsed, total)
+        if (views.isEmpty()) return null
+
+        // 优先用总时长文本：它是一首歌里最长会显示的时间（如 3:45 / 59:59 / 1:00:00）。
+        var maxText = elapsed?.text?.toString().orEmpty()
+        total?.text?.toString()?.takeIf { it.isNotBlank() }?.let { totalText ->
+            if (totalText.length > maxText.length) maxText = totalText
+        }
+        if (maxText.isBlank()) {
+            val seek = try {
+                XposedHelpers.callMethod(holder, "getSeekBar") as? SeekBar
+            } catch (_: Throwable) {
+                null
+            }
+            maxText = seek?.max?.takeIf { it > 0 }?.let {
+                DateUtils.formatElapsedTime((it / 1000L).coerceAtLeast(0L)).toString()
+            } ?: "0:00"
+        }
+
+        val paint = total?.paint ?: elapsed?.paint ?: return null
+        val maxTextWidth = try {
+            paint.measureText(maxText)
+        } catch (_: Throwable) {
+            0f
+        }
+        val withPadding = maxTextWidth + dp(ctx, 2)
+        val measured = Math.ceil(withPadding.toDouble()).toInt()
+        return maxOf(dp(ctx, TIME_W), measured)
     }
 
     /**
@@ -469,7 +568,8 @@ object MediaCardCompactHook : FeatureHook {
         ctx: Context,
         set: Any,
         ordered: Pair<List<Int>, Int>?,
-        pills: IntArray?
+        pills: IntArray?,
+        timeWidthPx: Int? = null
     ) {
         val album = id(ctx, "album_art")
         val title = id(ctx, "header_title")
@@ -489,6 +589,7 @@ object MediaCardCompactHook : FeatureHook {
         val padV = dp(ctx, PAD_V)
         val gap = dp(ctx, GAP)
         val rowGap = dp(ctx, ROW_GAP)
+        val timeW = timeWidthPx ?: dp(ctx, TIME_W)
 
         // 封面：左侧，垂直居中，决定卡片内容高度
         reset(set, album)
@@ -576,20 +677,20 @@ object MediaCardCompactHook : FeatureHook {
         }
         if (elapsed != 0) {
             reset(set, elapsed)
-            call(set, "constrainWidth", elapsed, WRAP_CONTENT)
+            call(set, "constrainWidth", elapsed, timeW)
             call(set, "constrainHeight", elapsed, WRAP_CONTENT)
-            call(set, "connect", elapsed, START, album, END, gap)
+            call(set, "connect", elapsed, START, album, END, dp(ctx, TIME_START_GAP))
             call(set, "connect", elapsed, TOP, bar, TOP, 0)
             call(set, "connect", elapsed, BOTTOM, bar, BOTTOM, 0)
             call(set, "connect", bar, START, elapsed, END, dp(ctx, TIME_GAP))
         } else {
-            call(set, "connect", bar, START, album, END, gap)
+            call(set, "connect", bar, START, album, END, dp(ctx, TIME_START_GAP))
         }
         if (total != 0) {
             reset(set, total)
-            call(set, "constrainWidth", total, WRAP_CONTENT)
+            call(set, "constrainWidth", total, timeW)
             call(set, "constrainHeight", total, WRAP_CONTENT)
-            call(set, "connect", total, END, PARENT_ID, END, padH)
+            call(set, "connect", total, END, PARENT_ID, END, dp(ctx, TIME_END_MARGIN))
             call(set, "connect", total, TOP, bar, TOP, 0)
             call(set, "connect", total, BOTTOM, bar, BOTTOM, 0)
             call(set, "connect", bar, END, total, START, dp(ctx, TIME_GAP))
