@@ -8,6 +8,7 @@ object LauncherEntry : HookEntry {
 
     private val hookFactories: List<Pair<String, () -> FeatureHook>> = listOf(
         "TaskCardHook" to { com.karen.flymetool.hook.feature.launcher.TaskCardHook },
+        "HideClearAllButtonHook" to { com.karen.flymetool.hook.feature.launcher.HideClearAllButtonHook },
         "IosDepthStackRecentsHook" to { com.karen.flymetool.hook.feature.launcher.IosDepthStackRecentsHook },
         "MemoryDisplayHook" to { com.karen.flymetool.hook.feature.launcher.MemoryDisplayHook },
         "FolderBlurHook" to { com.karen.flymetool.hook.feature.launcher.FolderBlurHook },

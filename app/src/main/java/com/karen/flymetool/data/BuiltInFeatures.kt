@@ -148,6 +148,9 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
             exclusiveWith = "folder_icon_no_mask"),
         HookFeature("folder_open_blur", "文件夹展开模糊强度",
             description = "自定义打开文件夹时桌面背景的模糊程度"),
+        HookFeature("hide_clear_all_button", "隐藏最近任务清空按钮",
+            description = "隐藏最近任务界面底部的清空按钮和最后一页的清空项",
+            minVersion = "Flyme 12"),
     ),
     "com.android.mms" to listOf(
         HookFeature("auto_copy_verify_code", "自动复制验证码",
