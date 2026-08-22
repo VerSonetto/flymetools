@@ -24,6 +24,7 @@ object SystemUIEntry : HookEntry {
         "HideKeyguardShortcutsHook" to { com.karen.flymetool.hook.feature.systemui.HideKeyguardShortcutsHook },
         "HideKeyguardStatusBarHook" to { com.karen.flymetool.hook.feature.systemui.HideKeyguardStatusBarHook },
         "HideKeyguardFingerprintIconHook" to { com.karen.flymetool.hook.feature.systemui.HideKeyguardFingerprintIconHook },
+        "ClassicClockDepthOverlayHook" to { com.karen.flymetool.hook.feature.systemui.ClassicClockDepthOverlayHook },
         "AODLyricHook" to { com.karen.flymetool.hook.feature.systemui.AODLyricHook },
         "AODNotificationHook" to { com.karen.flymetool.hook.feature.systemui.AODNotificationHook },
         "HideChargingAnimationHook" to { com.karen.flymetool.hook.feature.systemui.HideChargingAnimationHook },

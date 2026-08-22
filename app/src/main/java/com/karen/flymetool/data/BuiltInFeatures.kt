@@ -189,6 +189,8 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
             description = "自定义斜滑唤出的小窗快捷菜单圆弧条数，最多 4 条；更多应用入口保留在系统默认圆弧")
     ),
     "com.flyme.systemuieditor" to listOf(
+        HookFeature("classic_clock_depth", "经典时钟景深",
+            description = "在经典时钟的锁屏壁纸编辑栏加入“景深”按钮；抠图前景只覆盖时钟区域"),
         HookFeature("force_fullscreen_aod", "强制解锁全屏 AOD",
             description = "在外观编辑器的 AOD 效果列表中补回被机型限制隐藏的「全屏 AOD」")
     ),
