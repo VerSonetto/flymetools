@@ -1,5 +1,6 @@
 package com.karen.flymetool.hook.feature.systemui
 
+import android.app.WallpaperManager
 import android.content.Context
 import android.database.ContentObserver
 import android.graphics.Bitmap
@@ -80,6 +81,12 @@ object ClassicClockDepthOverlayHook : FeatureHook {
             removeCutout(clock)
             val config = readConfig(clock) ?: return
             if (!config.optBoolean("enabled")) return
+            val expectedWallpaperId = config.optInt("wallpaper_id", -1)
+            val currentWallpaperId = currentLockscreenWallpaperId(clock.context)
+            if (expectedWallpaperId <= 0 || expectedWallpaperId != currentWallpaperId) {
+                Logger.w(TAG, "景深抠图与当前锁屏壁纸不匹配，已跳过旧抠图")
+                return
+            }
             val path = config.optString("mask_path").takeIf { it.isNotBlank() } ?: return
             val image = File(path)
             if (!image.isFile || !image.canRead()) {
@@ -151,6 +158,13 @@ object ClassicClockDepthOverlayHook : FeatureHook {
     } catch (e: Throwable) {
         Logger.w(TAG, "读取经典时钟景深配置失败: ${e.javaClass.simpleName}")
         null
+    }
+
+    private fun currentLockscreenWallpaperId(context: Context): Int = try {
+        WallpaperManager.getInstance(context).getWallpaperId(WallpaperManager.FLAG_LOCK)
+    } catch (e: Throwable) {
+        Logger.w(TAG, "读取当前锁屏壁纸 ID 失败: ${e.javaClass.simpleName}")
+        -1
     }
 
     private data class CutoutState(
