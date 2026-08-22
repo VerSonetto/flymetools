@@ -17,11 +17,14 @@ data class UpdateInfo(
     val downloadUrl: String,
     val releaseNotes: String,
     val apkSize: Long,
+    /** 强制更新标记：Release 正文含 [force] 时置真，弹窗不可取消、仅保留更新按钮。 */
+    val force: Boolean = false,
 )
 
 object UpdateManager {
 
     private const val API = "https://api.github.com/repos/VerSonetto/flymetools/releases/latest"
+    private const val FORCE_MARKER = "[force]"
     private var cached: UpdateInfo? = null
     private var localVer: String? = null
 
@@ -52,7 +55,9 @@ object UpdateManager {
 
         val json = JSONObject(conn.inputStream.bufferedReader().readText())
         val tag = json.getString("tag_name").removePrefix("v")
-        val notes = json.optString("body", "").trim()
+        val rawNotes = json.optString("body", "").trim()
+        val force = rawNotes.contains(FORCE_MARKER)
+        val notes = rawNotes.replace(FORCE_MARKER, "").trim()
 
         val assets = json.getJSONArray("assets")
         var downloadUrl = ""
@@ -67,7 +72,7 @@ object UpdateManager {
         }
         if (downloadUrl.isBlank() || !isNewer(currentVersion, tag)) return@withContext null
 
-        UpdateInfo(tag, downloadUrl, notes, apkSize)
+        UpdateInfo(tag, downloadUrl, notes, apkSize, force)
     }
 
     private fun isNewer(local: String, remote: String): Boolean {

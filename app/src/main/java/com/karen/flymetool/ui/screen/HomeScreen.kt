@@ -407,7 +407,8 @@ private fun UpdateDialog(
     WindowDialog(
         show = true,
         title = "发现新版本 v${info.latestVersion}",
-        onDismissRequest = onDismiss
+        // 强制更新：传 null，点击外部/返回键均不触发取消回调
+        onDismissRequest = if (info.force) null else onDismiss
     ) {
         val dismiss = LocalDismissState.current
 
@@ -463,7 +464,7 @@ private fun UpdateDialog(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (!downloading) {
+            if (!downloading && !info.force) {
                 TextButton(
                     text = "稍后再说",
                     onClick = { dismiss?.invoke() },
