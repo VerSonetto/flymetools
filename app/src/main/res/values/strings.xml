@@ -1,8 +1,3 @@
 <resources>
     <string name="app_name">FlymeTool</string>
-    <string name="donate_title">支持开发</string>
-    <string name="donate_summary">我来讨口子了，模块开发不易，希望有好心人多少施舍一点🙏</string>
-    <string name="donate_alipay">支付宝</string>
-    <string name="donate_wechat">微信支付</string>
-    <string name="donate_dismiss">关闭</string>
 </resources>

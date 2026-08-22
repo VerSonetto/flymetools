@@ -10,7 +10,6 @@ object PrefsHelper {
     private const val PREFS_NAME = "flymetool_prefs"
     private const val INTRO_VERSION_KEY = "intro_version"
     private const val CURRENT_INTRO_VERSION = 1
-    private const val DONATE_DIALOG_SHOWN_KEY = "donate_dialog_shown"
 
     /** 全局调试日志开关（不带 package 前缀，Hook 侧启动读取） */
     private const val DEBUG_LOG_KEY = "__debug__"
@@ -182,16 +181,6 @@ object PrefsHelper {
     fun markIntroShown(context: Context) {
         editPrefs(context) {
             putInt(INTRO_VERSION_KEY, CURRENT_INTRO_VERSION)
-        }
-    }
-
-    fun isDonateDialogShown(context: Context): Boolean {
-        return getPrefs(context).getBoolean(DONATE_DIALOG_SHOWN_KEY, false)
-    }
-
-    fun markDonateDialogShown(context: Context) {
-        editPrefs(context) {
-            putBoolean(DONATE_DIALOG_SHOWN_KEY, true)
         }
     }
 

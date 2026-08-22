@@ -41,14 +41,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.karen.flymetool.BuildConfig
 import com.karen.flymetool.data.PrefsHelper
-import com.karen.flymetool.R
 import com.karen.flymetool.ui.component.AppIcon
-import com.karen.flymetool.ui.component.DonatePanel
 import com.karen.flymetool.ui.component.FeatureSwitch
 import com.karen.flymetool.util.GithubAvatarLoader
 import com.karen.flymetool.util.FlymeVersionUtils
@@ -159,24 +156,6 @@ fun AboutScreen(modifier: Modifier = Modifier) {
 
             item(key = "ruyue", contentType = "card") {
                 RuyueCard(onClick = { openUrl(context, RUYUE_GITHUB_URL) })
-            }
-
-            item(key = "donate_title", contentType = "section_title") {
-                SectionTitle(
-                    title = stringResource(R.string.donate_title),
-                    icon = {
-                        Icon(
-                            imageVector = MiuixIcons.Favorites,
-                            contentDescription = null,
-                            tint = MiuixTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                )
-            }
-
-            item(key = "donate", contentType = "card") {
-                DonateSection()
             }
 
             item(key = "opensource_title", contentType = "section_title") {
@@ -523,19 +502,6 @@ private fun DeviceInfoSection() {
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun DonateSection() {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(22.dp))
-            .background(MiuixTheme.colorScheme.surface)
-            .padding(18.dp)
-    ) {
-        DonatePanel(imageSize = 140)
     }
 }
 

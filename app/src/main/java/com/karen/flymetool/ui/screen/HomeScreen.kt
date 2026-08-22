@@ -42,18 +42,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.DpSize
-import com.karen.flymetool.R
 import com.karen.flymetool.data.AppData
 import com.karen.flymetool.data.PrefsHelper
 import com.karen.flymetool.data.ScopedApp
 import com.karen.flymetool.ui.component.AppIcon
-import com.karen.flymetool.ui.component.DonatePanel
 import com.karen.flymetool.util.RootUtils
 import com.karen.flymetool.util.UpdateManager
 import com.karen.flymetool.util.UpdateInfo
@@ -90,7 +87,6 @@ fun HomeScreen(
     val apps = remember(context) { AppData.getScopedApps(context) }
     var showRestartDialog by remember { mutableStateOf(false) }
     var showIntroDialog by remember { mutableStateOf(false) }
-    var showDonateDialog by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var checkingUpdate by remember { mutableStateOf(true) }
     var showUpdateDialog by remember { mutableStateOf(false) }
@@ -103,9 +99,8 @@ fun HomeScreen(
     var updateChecked by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        when {
-            !PrefsHelper.isIntroShown(context) -> showIntroDialog = true
-            !PrefsHelper.isDonateDialogShown(context) -> showDonateDialog = true
+        if (!PrefsHelper.isIntroShown(context)) {
+            showIntroDialog = true
         }
 
         if (!updateChecked) {
@@ -222,21 +217,10 @@ fun HomeScreen(
             onDismiss = {
                 PrefsHelper.markIntroShown(context)
                 showIntroDialog = false
-                if (!PrefsHelper.isDonateDialogShown(context)) {
-                    showDonateDialog = true
-                }
             }
         )
     }
 
-    if (showDonateDialog) {
-        DonateDialog(
-            onDismiss = {
-                PrefsHelper.markDonateDialogShown(context)
-                showDonateDialog = false
-            }
-        )
-    }
 }
 
 @Composable
@@ -408,30 +392,6 @@ private fun IntroDialog(
                 modifier = Modifier.fillMaxWidth()
             )
         }
-    }
-}
-
-@Composable
-private fun DonateDialog(
-    onDismiss: () -> Unit
-) {
-    WindowDialog(
-        show = true,
-        title = stringResource(R.string.donate_title),
-        onDismissRequest = onDismiss
-    ) {
-        val dismiss = LocalDismissState.current
-
-        DonatePanel(imageSize = 130)
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        TextButton(
-            text = stringResource(R.string.donate_dismiss),
-            onClick = { dismiss?.invoke() },
-            colors = ButtonDefaults.textButtonColorsPrimary(),
-            modifier = Modifier.fillMaxWidth()
-        )
     }
 }
 
