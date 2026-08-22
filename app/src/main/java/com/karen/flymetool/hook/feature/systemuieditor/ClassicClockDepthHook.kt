@@ -54,6 +54,7 @@ object ClassicClockDepthHook : FeatureHook {
     private const val LEGACY_BUTTON_LAYOUT = "editor_lockscreen_button_photo_wp_legacy_sysui"
     private const val SETTING_KEY = "flymetool_classic_clock_dof_data"
     private const val BUTTON_TAG = "flymetool:classic-clock-dof"
+    private const val BUTTON_ICON_TAG = "flymetool:classic-clock-dof-icon"
     private const val ACTION_WALLPAPER_CHANGED = "android.intent.action.WALLPAPER_CHANGED"
     private const val PENDING_SOURCE_IMAGE_PATH = "pending_source_image_path"
     private const val MATTING_HELPER = "com.meizu.algorithm.wallpapermatting.MattingHelper"
@@ -117,6 +118,7 @@ object ClassicClockDepthHook : FeatureHook {
             val iconSize = dimension(context, "editor_bottom_button_size", 48)
             val iconMargin = dimension(context, "editor_button_margin_horizontal_normal", 18)
             val icon = ImageView(context).apply {
+                tag = BUTTON_ICON_TAG
                 background = drawable(context, "editor_btn_bg_selector")
                 setImageDrawable(drawable(context, "ic_depth_of_field"))
                 setColorFilter(Color.WHITE)
@@ -380,7 +382,13 @@ object ClassicClockDepthHook : FeatureHook {
 
     private fun updateButtonState(context: Context, button: View, label: TextView) {
         val enabled = readConfig(context)?.optBoolean("enabled") == true
-        button.alpha = if (enabled) 1f else 0.72f
+        // 原生四款景深时钟以 selected 状态点亮圆形按钮：白底、黑色图标。
+        button.isSelected = enabled
+        button.findViewWithTag<ImageView>(BUTTON_ICON_TAG)?.apply {
+            isSelected = enabled
+            setColorFilter(if (enabled) Color.BLACK else Color.WHITE)
+        }
+        button.alpha = 1f
         label.text = string(context, "depth_of_field", "景深")
     }
 
