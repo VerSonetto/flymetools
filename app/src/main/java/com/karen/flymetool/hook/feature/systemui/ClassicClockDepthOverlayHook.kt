@@ -1,7 +1,10 @@
 package com.karen.flymetool.hook.feature.systemui
 
 import android.app.WallpaperManager
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -41,10 +44,15 @@ object ClassicClockDepthOverlayHook : FeatureHook {
     private const val DATE_CLOCK_SECTION =
         "com.flyme.systemui.keyguard.ui.view.layout.sections.DateClockSection"
     private const val SETTING_KEY = "flymetool_classic_clock_dof_data"
+    private const val ACTION_WALLPAPER_CHANGED = "android.intent.action.WALLPAPER_CHANGED"
+    private const val WALLPAPER_REFRESH_INTERVAL_MS = 500L
+    private const val WALLPAPER_REFRESH_RETRIES = 12
 
     private val cutouts = WeakHashMap<View, CutoutState>()
     private val watchedClocks = WeakHashMap<View, Unit>()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var configObserver: ContentObserver? = null
+    private var wallpaperChangedReceiver: BroadcastReceiver? = null
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, EDITOR_PACKAGE, FEATURE_KEY)) return
@@ -60,6 +68,7 @@ object ClassicClockDepthOverlayHook : FeatureHook {
                         val clock = findClassicClock(host) ?: return
                         watchedClocks[clock] = Unit
                         installConfigObserver(clock)
+                        installWallpaperChangedReceiver(clock.context.applicationContext)
                         clock.post { installOrClear(host, clock) }
                     }
                 },
@@ -78,16 +87,28 @@ object ClassicClockDepthOverlayHook : FeatureHook {
 
     private fun installOrClear(host: ViewGroup, clock: View) {
         try {
-            removeCutout(clock)
             val config = readConfig(clock) ?: return
-            if (!config.optBoolean("enabled")) return
+            if (!config.optBoolean("enabled")) {
+                removeCutout(clock)
+                return
+            }
             val expectedWallpaperId = config.optInt("wallpaper_id", -1)
             val currentWallpaperId = currentLockscreenWallpaperId(clock.context)
             if (expectedWallpaperId <= 0 || expectedWallpaperId != currentWallpaperId) {
+                removeCutout(clock)
                 Logger.w(TAG, "景深抠图与当前锁屏壁纸不匹配，已跳过旧抠图")
                 return
             }
-            val path = config.optString("mask_path").takeIf { it.isNotBlank() } ?: return
+            val path = config.optString("mask_path").takeIf { it.isNotBlank() } ?: run {
+                removeCutout(clock)
+                return
+            }
+            if (
+                cutouts[clock]?.let { it.wallpaperId == currentWallpaperId && it.maskPath == path } == true
+            ) {
+                return
+            }
+            removeCutout(clock)
             val image = File(path)
             if (!image.isFile || !image.canRead()) {
                 Logger.w(TAG, "景深抠图不可读: $path")
@@ -113,7 +134,7 @@ object ClassicClockDepthOverlayHook : FeatureHook {
             )
             host.addView(cutout, params)
             cutout.startTrackingClockGeometry()
-            cutouts[clock] = CutoutState(host, cutout, previousLayerType)
+            cutouts[clock] = CutoutState(host, cutout, previousLayerType, currentWallpaperId, path)
             host.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> cutout.invalidate() }
             Logger.d(TAG) { "已更新经典时钟景深挖空层" }
         } catch (e: Throwable) {
@@ -134,12 +155,9 @@ object ClassicClockDepthOverlayHook : FeatureHook {
     private fun installConfigObserver(clock: View) {
         if (configObserver != null) return
         try {
-            configObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            configObserver = object : ContentObserver(mainHandler) {
                 override fun onChange(selfChange: Boolean) {
-                    watchedClocks.keys.toList().forEach { watched ->
-                        val host = watched.parent as? ViewGroup ?: return@forEach
-                        watched.post { installOrClear(host, watched) }
-                    }
+                    refreshWatchedClocks()
                 }
             }
             clock.context.contentResolver.registerContentObserver(
@@ -149,6 +167,49 @@ object ClassicClockDepthOverlayHook : FeatureHook {
             )
         } catch (e: Throwable) {
             Logger.e(TAG, "监听经典时钟景深配置失败", e)
+        }
+    }
+
+    /**
+     * 壁纸先完成切换、编辑器随后才完成抠图写入。连续几次轻量刷新可覆盖这段间隔，
+     * 使已创建的时钟层无需息屏重建也能换成新 Bitmap。
+     */
+    private fun installWallpaperChangedReceiver(context: Context?) {
+        if (context == null || wallpaperChangedReceiver != null) return
+        try {
+            val appContext = context.applicationContext
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(receiverContext: Context, intent: Intent) {
+                    if (intent.action == ACTION_WALLPAPER_CHANGED) {
+                        refreshAfterWallpaperChanged(0)
+                    }
+                }
+            }
+            appContext.registerReceiver(
+                receiver,
+                IntentFilter(ACTION_WALLPAPER_CHANGED),
+                Context.RECEIVER_EXPORTED,
+            )
+            wallpaperChangedReceiver = receiver
+            Logger.i(TAG, "已监听经典时钟壁纸刷新")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "监听经典时钟壁纸刷新失败", e)
+        }
+    }
+
+    private fun refreshAfterWallpaperChanged(retry: Int) {
+        mainHandler.postDelayed({
+            refreshWatchedClocks()
+            if (retry < WALLPAPER_REFRESH_RETRIES && watchedClocks.isNotEmpty()) {
+                refreshAfterWallpaperChanged(retry + 1)
+            }
+        }, WALLPAPER_REFRESH_INTERVAL_MS)
+    }
+
+    private fun refreshWatchedClocks() {
+        watchedClocks.keys.toList().forEach { watched ->
+            val host = watched.parent as? ViewGroup ?: return@forEach
+            watched.post { installOrClear(host, watched) }
         }
     }
 
@@ -171,6 +232,8 @@ object ClassicClockDepthOverlayHook : FeatureHook {
         val host: ViewGroup,
         val cutout: ClassicDofCutoutView,
         val previousLayerType: Int,
+        val wallpaperId: Int,
+        val maskPath: String,
     )
 
     /**

@@ -39,6 +39,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.WeakHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 为经典时钟所使用的 legacy 锁屏壁纸工具栏补上景深入口。
@@ -54,6 +55,7 @@ object ClassicClockDepthHook : FeatureHook {
     private const val SETTING_KEY = "flymetool_classic_clock_dof_data"
     private const val BUTTON_TAG = "flymetool:classic-clock-dof"
     private const val ACTION_WALLPAPER_CHANGED = "android.intent.action.WALLPAPER_CHANGED"
+    private const val PENDING_SOURCE_IMAGE_PATH = "pending_source_image_path"
     private const val MATTING_HELPER = "com.meizu.algorithm.wallpapermatting.MattingHelper"
     private const val MATTING_MODEL = "/system/media/models/imagematting/matting.mnn"
 
@@ -63,6 +65,8 @@ object ClassicClockDepthHook : FeatureHook {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val previewCutouts = WeakHashMap<ViewGroup, PreviewCutoutState>()
     private val previewRoots = WeakHashMap<View, Unit>()
+    /** 每次壁纸变更都淘汰此前排队的抠图任务，避免连续应用时旧任务覆盖新结果。 */
+    private val wallpaperTaskGeneration = AtomicLong()
     private var wallpaperChangedReceiver: BroadcastReceiver? = null
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
@@ -152,6 +156,7 @@ object ClassicClockDepthHook : FeatureHook {
     private fun toggleDepth(context: Context, button: View, label: TextView) {
         if (!button.isEnabled) return
         button.isEnabled = false
+        val generation = wallpaperTaskGeneration.incrementAndGet()
         executor.execute {
             try {
                 val current = readConfig(context)
@@ -173,6 +178,10 @@ object ClassicClockDepthHook : FeatureHook {
                 if (wallpaperId <= 0) throw IllegalStateException("无法读取当前锁屏壁纸 ID")
                 val mask = createMask(context, source.imagePath, wallpaperId.toString())
                     ?: throw IllegalStateException("当前照片不支持景深效果")
+                if (!isWallpaperSourceStable(context, generation, wallpaperId, source)) {
+                    mask.delete()
+                    throw IllegalStateException("锁屏壁纸仍在切换，请稍后重试")
+                }
                 saveConfig(context, true, source.groupId, mask.absolutePath, wallpaperId, source.imagePath)
                 clearLegacyDofFlag(context, source.groupId)
                 onMain {
@@ -226,8 +235,7 @@ object ClassicClockDepthHook : FeatureHook {
     }
 
     private fun createMask(context: Context, imagePath: String, cacheKey: String): File? {
-        val source = BitmapFactory.decodeFile(imagePath)
-            ?: throw IllegalStateException("无法读取锁屏壁纸: $imagePath")
+        val source = loadMattingSource(context, imagePath)
         try {
             val helper = Class.forName(MATTING_HELPER, true, context.classLoader)
             XposedHelpers.callStaticMethod(helper, "init", MATTING_MODEL)
@@ -253,6 +261,32 @@ object ClassicClockDepthHook : FeatureHook {
             }
         } finally {
             if (!source.isRecycled) source.recycle()
+        }
+    }
+
+    /**
+     * 景深结果最终只会绘制到屏幕上。先缩到屏幕像素可大幅降低模型推理与 PNG 编码耗时，
+     * 同时保留壁纸宽高比，保证 SystemUI 的中心裁剪坐标不变。
+     */
+    private fun loadMattingSource(context: Context, imagePath: String): Bitmap {
+        val decoded = BitmapFactory.decodeFile(imagePath)
+            ?: throw IllegalStateException("无法读取锁屏壁纸: $imagePath")
+        try {
+            val metrics = context.resources.displayMetrics
+            val scale = minOf(
+                1f,
+                metrics.widthPixels.toFloat() / decoded.width,
+                metrics.heightPixels.toFloat() / decoded.height,
+            )
+            if (scale >= 1f) return decoded
+            val width = (decoded.width * scale).toInt().coerceAtLeast(1)
+            val height = (decoded.height * scale).toInt().coerceAtLeast(1)
+            return Bitmap.createScaledBitmap(decoded, width, height, true).also { resized ->
+                if (resized !== decoded) decoded.recycle()
+            }
+        } catch (e: Throwable) {
+            if (!decoded.isRecycled) decoded.recycle()
+            throw e
         }
     }
 
@@ -305,6 +339,7 @@ object ClassicClockDepthHook : FeatureHook {
                     output.absolutePath,
                     config.optInt("wallpaper_id", -1),
                     config.optString("source_image_path"),
+                    config.optString(PENDING_SOURCE_IMAGE_PATH),
                 )
                 onMain { updateEditorPreview(root) }
                 Logger.i(TAG, "已将经典时钟景深前景图迁移到共享媒体目录")
@@ -328,6 +363,7 @@ object ClassicClockDepthHook : FeatureHook {
         maskPath: String?,
         wallpaperId: Int = -1,
         sourceImagePath: String? = null,
+        pendingSourceImagePath: String? = null,
     ) {
         val config = JSONObject().apply {
             put("enabled", enabled)
@@ -335,6 +371,7 @@ object ClassicClockDepthHook : FeatureHook {
             put("mask_path", maskPath)
             put("wallpaper_id", wallpaperId)
             put("source_image_path", sourceImagePath)
+            put(PENDING_SOURCE_IMAGE_PATH, pendingSourceImagePath)
         }
         if (!Settings.Secure.putString(context.contentResolver, SETTING_KEY, config.toString())) {
             throw IllegalStateException("无法保存景深状态")
@@ -354,8 +391,7 @@ object ClassicClockDepthHook : FeatureHook {
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(receiverContext: Context, intent: Intent) {
                     if (intent.action == ACTION_WALLPAPER_CHANGED) {
-                        // 系统先发送广播、再完成锁屏图文件替换的机型上，稍后读取才能确保拿到新图。
-                        regenerateForCurrentWallpaperAsync(appContext, 700, retryWhenUnchanged = true)
+                        invalidateMaskForWallpaperChangeAsync(appContext)
                     }
                 }
             }
@@ -378,12 +414,52 @@ object ClassicClockDepthHook : FeatureHook {
     private fun regenerateForCurrentWallpaperAsync(
         context: Context,
         delayMillis: Long,
-        retryCount: Int = 0,
         retryWhenUnchanged: Boolean = false,
+    ) {
+        val generation = wallpaperTaskGeneration.incrementAndGet()
+        scheduleWallpaperRegeneration(context, delayMillis, generation, 0, retryWhenUnchanged)
+    }
+
+    /**
+     * 锁屏壁纸 ID 改变时，先原子地撤销旧景深并清理模块缓存。
+     * 等数据库提交了不同的新预览成品后才重新抠图，绝不让旧主体进入新底图。
+     */
+    private fun invalidateMaskForWallpaperChangeAsync(context: Context) {
+        val generation = wallpaperTaskGeneration.incrementAndGet()
+        executor.execute {
+            try {
+                val config = readConfig(context) ?: return@execute
+                if (!config.optBoolean("enabled")) return@execute
+                val wallpaperId = currentLockscreenWallpaperId(context)
+                if (wallpaperId <= 0 || wallpaperId == config.optInt("wallpaper_id", -1)) return@execute
+
+                val pendingSource = config.optString("source_image_path").takeIf { it.isNotBlank() }
+                // 先清配置，SystemUI 将立即去除当前旧挖空层；随后再删除磁盘缓存。
+                saveConfig(context, true, null, null, -1, null, pendingSource)
+                clearOwnedMaskCache()
+                onMain {
+                    refreshAllEditorPreviews()
+                    // 广播可能早于数据库应用记录，延迟后通过 pendingSource 判断是否已切到新成品。
+                    scheduleWallpaperRegeneration(context, 700, generation, 0, retryWhenUnchanged = true)
+                }
+                Logger.i(TAG, "已清除旧锁屏壁纸景深缓存")
+            } catch (e: Throwable) {
+                Logger.e(TAG, "清除旧锁屏壁纸景深缓存失败", e)
+            }
+        }
+    }
+
+    private fun scheduleWallpaperRegeneration(
+        context: Context,
+        delayMillis: Long,
+        generation: Long,
+        retryCount: Int,
+        retryWhenUnchanged: Boolean,
     ) {
         mainHandler.postDelayed({
             executor.execute {
                 try {
+                    if (generation != wallpaperTaskGeneration.get()) return@execute
                     val config = readConfig(context) ?: return@execute
                     if (!config.optBoolean("enabled")) return@execute
                     val source = queryCurrentLockscreenImage(context) ?: return@execute
@@ -397,11 +473,13 @@ object ClassicClockDepthHook : FeatureHook {
                     }
                     // 只有数据库已切到新锁屏成品时才生成。否则广播可能早于数据库提交，
                     // 不能把上一次图片错误绑定到新的壁纸 ID。
-                    if (config.optString("source_image_path") == source.imagePath) {
+                    val pendingSource = config.optString(PENDING_SOURCE_IMAGE_PATH)
+                    if (pendingSource.isNotBlank() && pendingSource == source.imagePath) {
                         if (retryWhenUnchanged && retryCount < 5) {
-                            regenerateForCurrentWallpaperAsync(
+                            scheduleWallpaperRegeneration(
                                 context,
                                 700,
+                                generation,
                                 retryCount + 1,
                                 retryWhenUnchanged = true,
                             )
@@ -410,6 +488,10 @@ object ClassicClockDepthHook : FeatureHook {
                     }
                     val mask = createMask(context, source.imagePath, wallpaperId.toString())
                         ?: throw IllegalStateException("当前锁屏壁纸不支持景深效果")
+                    if (!isWallpaperSourceStable(context, generation, wallpaperId, source)) {
+                        mask.delete()
+                        return@execute
+                    }
                     saveConfig(context, true, source.groupId, mask.absolutePath, wallpaperId, source.imagePath)
                     clearLegacyDofFlag(context, source.groupId)
                     onMain { refreshAllEditorPreviews() }
@@ -422,8 +504,28 @@ object ClassicClockDepthHook : FeatureHook {
         }, delayMillis)
     }
 
+    /** 抠图耗时期间，壁纸 ID、应用记录或任务代际任一变化都拒绝写入结果。 */
+    private fun isWallpaperSourceStable(
+        context: Context,
+        generation: Long,
+        wallpaperId: Int,
+        source: WallpaperSource,
+    ): Boolean =
+        generation == wallpaperTaskGeneration.get() &&
+            wallpaperId == currentLockscreenWallpaperId(context) &&
+            source == queryCurrentLockscreenImage(context)
+
     private fun refreshAllEditorPreviews() {
         previewRoots.keys.toList().forEach(::updateEditorPreview)
+    }
+
+    /** 仅删除本功能在共享目录生成的文件，壁纸源图和编辑器资产不在此范围。 */
+    private fun clearOwnedMaskCache() {
+        sharedOutputDirectory().listFiles()
+            ?.filter { it.isFile && it.name.startsWith("flymetool_classic_dof_") }
+            ?.forEach { file ->
+                if (!file.delete()) Logger.w(TAG, "删除旧景深缓存失败: ${file.name}")
+            }
     }
 
     private fun sharedOutputDirectory(): File {
