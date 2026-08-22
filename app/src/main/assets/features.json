@@ -53,6 +53,10 @@
       "name": "系统界面工具"
     },
     {
+      "package": "com.flyme.systemuieditor",
+      "name": "外观编辑器"
+    },
+    {
       "package": "com.meizu.net.search",
       "name": "搜索"
     }

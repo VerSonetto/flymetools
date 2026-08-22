@@ -188,6 +188,10 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         HookFeature("slide_gesture_multi_arc", "小窗快捷菜单多圆弧",
             description = "自定义斜滑唤出的小窗快捷菜单圆弧条数，最多 4 条；更多应用入口保留在系统默认圆弧")
     ),
+    "com.flyme.systemuieditor" to listOf(
+        HookFeature("force_fullscreen_aod", "强制解锁全屏 AOD",
+            description = "在外观编辑器的 AOD 效果列表中补回被机型限制隐藏的「全屏 AOD」")
+    ),
     "com.meizu.net.search" to listOf(
         HookFeature("custom_search_engine", "自定义搜索引擎",
             description = "在 Flyme 搜索的“搜索引擎”设置中插入自定义搜索引擎，内置必应和谷歌，可自由添加其它搜索引擎"),
