@@ -43,6 +43,7 @@ object ClassicClockDepthOverlayHook : FeatureHook {
     private const val FEATURE_KEY = "classic_clock_depth"
     private const val DATE_CLOCK_SECTION =
         "com.flyme.systemui.keyguard.ui.view.layout.sections.DateClockSection"
+    private const val KEYGUARD_DATE_CLOCK_VIEW = "com.flyme.keyguard.clock.KeyguardDateClockView"
     private const val SETTING_KEY = "flymetool_classic_clock_dof_data"
     private const val ACTION_WALLPAPER_CHANGED = "android.intent.action.WALLPAPER_CHANGED"
     private const val WALLPAPER_REFRESH_INTERVAL_MS = 500L
@@ -50,6 +51,8 @@ object ClassicClockDepthOverlayHook : FeatureHook {
 
     private val cutouts = WeakHashMap<View, CutoutState>()
     private val watchedClocks = WeakHashMap<View, Unit>()
+    /** AOD 会复用锁屏的 DateClockSection；息屏态绝不向该树注入挖空 View。 */
+    private val dozingClocks = WeakHashMap<View, Unit>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var configObserver: ContentObserver? = null
     private var wallpaperChangedReceiver: BroadcastReceiver? = null
@@ -77,6 +80,39 @@ object ClassicClockDepthOverlayHook : FeatureHook {
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载经典时钟景深挖空层失败", e)
         }
+        hookDozingState(lpparam.classLoader)
+    }
+
+    /**
+     * DateClockSection 同时服务锁屏和跟随锁屏的 AOD。以时钟公开的 dozing 回调作为边界，
+     * 而不是猜测父容器或依赖混淆后的 AOD 控制器。
+     */
+    private fun hookDozingState(classLoader: ClassLoader) {
+        try {
+            val clockClass = XposedHelpers.findClass(KEYGUARD_DATE_CLOCK_VIEW, classLoader)
+            XposedHelpers.findAndHookMethod(
+                clockClass,
+                "setDozing",
+                Boolean::class.javaPrimitiveType,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val clock = param.thisObject as? View ?: return
+                        if (!watchedClocks.containsKey(clock)) return
+                        if (param.args.firstOrNull() as? Boolean == true) {
+                            dozingClocks[clock] = Unit
+                            removeCutout(clock)
+                        } else {
+                            dozingClocks.remove(clock)
+                            val host = clock.parent as? ViewGroup ?: return
+                            clock.post { installOrClear(host, clock) }
+                        }
+                    }
+                },
+            )
+            Logger.i(TAG, "已挂载经典时钟 AOD 状态隔离")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "挂载经典时钟 AOD 状态隔离失败", e)
+        }
     }
 
     /** 通过公开资源 id 定位经典时钟根布局，而非混淆字段或方法。 */
@@ -87,6 +123,10 @@ object ClassicClockDepthOverlayHook : FeatureHook {
 
     private fun installOrClear(host: ViewGroup, clock: View) {
         try {
+            if (dozingClocks.containsKey(clock)) {
+                removeCutout(clock)
+                return
+            }
             val config = readConfig(clock) ?: return
             if (!config.optBoolean("enabled")) {
                 removeCutout(clock)
