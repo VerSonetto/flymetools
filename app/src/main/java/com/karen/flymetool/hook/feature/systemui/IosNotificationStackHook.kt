@@ -71,7 +71,6 @@ object IosNotificationStackHook : FeatureHook {
     /** 折叠态堆叠顶层卡（全尺寸那张，items[firstOverflow]），点击它走默认跳转不展开 */
     private var stackTopRowRef: WeakReference<View>? = null
 
-    // —— 缓存 ——
     private var density = 0f
     private var pxStep = 0f
     private var pxPeek = 0f
@@ -242,13 +241,8 @@ object IosNotificationStackHook : FeatureHook {
 
     /**
      * 控制中心过渡期禁用卡片实时毛玻璃（BackgroundBlurDrawable）。
-     *
-     * Flyme 通知卡片背景是系统级实时模糊（MzBlurUtils.setBackgroundBlurDrawable，半径 180），
-     * 跟随下拉手势更新 alpha（NSSL.updateLiveBlurAlpha → 各 row.updateLiveBlurAlpha）。
-     * 其隐藏条件 shouldHideBlurForControlCenter() 要求 panelAlpha==255 且完全展开，
-     * 过渡期间不隐藏 → 多张堆叠卡片的模糊块错位，在控制中心模糊背景上形成
-     * 「先从卡片外缘展开、最后成整张矩形模糊」的卡片轮廓。
-     * 这里在控制中心展开期间把 radius 与 alpha 都压 0（阴影清理管不到系统级模糊）。
+     * 多张堆叠卡模糊块错位时，在控制中心模糊背景上形成卡片轮廓。
+     * 此处展开期间把 radius 与 alpha 都压 0。
      */
     private fun hookMzBlurUtils(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
@@ -256,7 +250,6 @@ object IosNotificationStackHook : FeatureHook {
                 "com.flyme.systemui.utils.MzBlurUtils",
                 lpparam.classLoader
             )
-            // 创建路径：setBackgroundBlurDrawable(View,int,float,float,int,boolean,int,int,Function0,Consumer)
             val create = blurCl.declaredMethods.singleOrNull { m ->
                 !m.isSynthetic &&
                     m.parameterTypes.size == 10 &&
@@ -277,7 +270,6 @@ object IosNotificationStackHook : FeatureHook {
                 })
                 Logger.i(TAG, "已挂载 MzBlurUtils.create")
             }
-            // 更新路径：setBackgroundBlurDrawableAlpha(View,int,boolean,Function0,Consumer)
             val update = blurCl.declaredMethods.singleOrNull { m ->
                 !m.isSynthetic &&
                     m.parameterTypes.size == 5 &&
@@ -307,7 +299,6 @@ object IosNotificationStackHook : FeatureHook {
                 "com.flyme.systemui.controlcenter.phone.CenterController",
                 lpparam.classLoader
             )
-            // setExpandedHeightInternal 每帧更新 mExpandedFraction
             XposedHelpers.findAndHookMethod(
                 ccCl,
                 "setExpandedHeightInternal",
@@ -931,9 +922,8 @@ object IosNotificationStackHook : FeatureHook {
      */
     /**
      * 控制中心展开时压暗/隐藏整个通知栈宿主，而不是改每条 row 的 ViewState。
-     * 原因：
-     * - 改 row.hidden/alpha 后，返回通知栏时系统不一定立刻 resetViewStates，表现成「通知没了，滑一下才回来」
-     * - 宿主 alpha=0 可立刻去掉模糊底上的堆叠轮廓，且恢复时一次设回 1 即可
+     * 原因：改 row.hidden/alpha 后返回通知栏时不一定会立即 resetViewStates，
+     * 表现成「通知没了，滑一下才回来」；宿主 alpha 恢复时一次设回 1 即可。
      */
     private fun applyControlCenterHostDim(frac: Float, forceUpdate: Boolean) {
         val host = lastHostRef?.get() ?: return
@@ -1063,7 +1053,7 @@ object IosNotificationStackHook : FeatureHook {
             return
         }
 
-        // —— 首次深度清理 ——
+        // 首次深度清理：反射取字段/outline
         try {
             val fs = XposedHelpers.getObjectField(row, "mFakeShadow") as? View
             if (fs != null) {
@@ -1455,7 +1445,6 @@ object IosNotificationStackHook : FeatureHook {
         }
     }
 
-    // —— ViewState 写：尽量少反射失败分支 ——
 
     private fun getY(st: Any): Float = try {
         XposedHelpers.callMethod(st, "getYTranslation") as Float

@@ -78,7 +78,7 @@ object ForceFullPackageHook : FeatureHook {
                             XposedHelpers.callMethod(response, "getValue")
                         } catch (_: Throwable) { null } ?: return
 
-                        // first check: capture target mask id from new version
+                        // 首次检查：从新版本信息里抓目标 mask id
                         if (targetMaskId == null) {
                             val newObj = try {
                                 XposedHelpers.callMethod(value, "getJSONObject", "new")
@@ -94,7 +94,7 @@ object ForceFullPackageHook : FeatureHook {
                             return
                         }
 
-                        // spoofed response: need to create fake new from cur
+                        // 伪造响应：基于当前版本构造 fake new
                         val newObj = try {
                             XposedHelpers.callMethod(value, "getJSONObject", "new")
                         } catch (_: Throwable) { null }

@@ -21,7 +21,7 @@ class MainActivity : ComponentActivity() {
         )
         window.isNavigationBarContrastEnforced = false
 
-        // 创建/fix复 prefs 可读性，避免 Hook 侧 XSharedPreferences 读不到配置。
+        // 创建/fix prefs 可读性，避免 Hook 侧 XSharedPreferences 读不到配置。
         PrefsHelper.warmup(applicationContext)
 
         // 在首屏显示期间提前获取头像，进入关于页时直接使用缓存。

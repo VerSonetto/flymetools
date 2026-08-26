@@ -219,8 +219,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                         fullscreenProgress = ((param.args[0] as? Number)?.toFloat() ?: 0f).coerceIn(0f, 1f)
                         fullscreenProgressKnown = true
                     }
-                    // 入场动画中 setFullscreenProgress 每帧回调：页面几何(mPageScrolls)只随
-                    // onLayout 变化，子卡增减已由 cachedPagesChildCount 兜底，无需每帧重建。
+                    // 入场动画期间页面几何不变，跳过页面重建。
                     requestStackApply(recents, rebuildPages = false)
                 }
             })
@@ -232,10 +231,8 @@ object IosDepthStackRecentsHook : FeatureHook {
                     val alpha = ((param.args[0] as? Number)?.toFloat() ?: 0f).coerceIn(0f, 1f)
                     val state = stateFor(recents)
                     state.contentAlpha = alpha
-                    // contentAlpha 降到 0 后 setVisibility(GONE) 会立即生效，
-                    // dispatchDraw 不再被触发，applyStack/resetAllTransforms 无法
-                    // 通过常规路径清零 horizontalOffsetTranslationX 等堆叠通道。
-                    // 这里在 afterHook 中立即执行一次清理，确保卡片回到原生位置。
+                    // contentAlpha 归零后 setVisibility(GONE) 生效、dispatchDraw 不再触发，
+                    // 堆叠通道无法常规清理，须在此立即复位。
                     if (alpha <= EPSILON && !state.applying) {
                         resetAllTransforms(recents, state, hooks)
                         state.quickswitchStray = false
@@ -271,9 +268,8 @@ object IosDepthStackRecentsHook : FeatureHook {
                     }
                     state.lastAdjacentPageScale = scale
                     state.adjacentPageScale = scale
-                    // 入场/稳态 updatePageScales 很密：只 request，真正重算并进 dispatchDraw，
-                    // 避免与 dispatchDraw 双倍 applyStack 掉帧。
-                    // 退桌必须同帧收敛，否则 exitFade 慢一帧会看见堆叠卡滞留。
+                    // 入场/稳态只 request 由 dispatchDraw 统一重算，避免双倍 applyStack；
+                    // 退桌必须同帧收敛，否则 exitFade 慢一帧会滞留堆叠卡。
                     if (state.detachFadeActive && !state.applying) {
                         applyStack(recents, hooks, allowPageRebuild = false)
                     } else {
@@ -381,13 +377,9 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     /**
-     * 快速连续删除解锁：堆叠模式下 dismiss 动画的收尾窗口被拉长，期间到来的新手势 DOWN
-     * 会因 mCurrentAnimation 非空被跳过卡片查找而整轮作废（原生 TaskViewTouchControllerDeprecated
-     * 的 onControllerInterceptTouchEvent 行为）。这里在 DOWN 到达且删除动画仍在播放时把动画
-     * 快进到结束（ValueAnimator.end() → endAction → onCurrentAnimationEnd → clearState），
-     * 使本次 DOWN 正常走查找逻辑。快进触发的 removeView 布局重排要下一帧才生效，若本次
-     * 查找仍 miss（原方法放弃拦截），则把 DOWN 副本 post 到 dragLayer 重放一帧后重新分发，
-     * 保证快速连删时新手势总能命中已补位的卡片。
+     * 快速连续删除解锁：dismiss 动画播放期间新手势 DOWN 会被原生跳过卡片查找。
+     * 检测到 DOWN 时快进动画到结束（ValueAnimator.end()）；若本次查找仍 miss，
+     * 把 DOWN 副本延迟一帧重放，保证连删时新手势总能命中已补位的卡片。
      */
     private fun hookDismissGestureUnlock(classLoader: ClassLoader) {
         val controllerClass = try {
@@ -512,10 +504,9 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     /**
-     * 清空最近任务入口：清空按钮 → dismissAllTasks() → 第一行 preDismissAllTasks()（反编译对照，
-     * protected 空钩子，CTS/非 CTS 两条分支都经过）。直接置清空模式，不依赖并发检测——
-     * 初始态（未右滑）currentPage=0 时动画范围只有 [0,1]，running task 跳过动画后可能只剩
-     * 一张卡移动，永远不满足并发条件，单槽接管仍会把移动卡顶到最高 z。
+     * 清空入口 preDismissAllTasks（反编译对照，CTS/非 CTS 两分支均经过）。
+     * 直接置清空模式而非依赖并发检测：初始态动画可能只有一张卡移动，
+     * 不满足并发条件时单槽接管会把卡顶到最高 z。
      */
     private fun hookDismissAll(recentsClass: Class<*>) {
         findMethod(recentsClass, "preDismissAllTasks", Void.TYPE)?.let { method ->
@@ -533,12 +524,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         } ?: Logger.w(TAG, "未找到 preDismissAllTasks()，清空模式降级为并发检测")
     }
 
-    /**
-     * RecentsView.reset() 在 onStateTransitionComplete(NORMAL) 中被调用，
-     * 它会调 resetTaskVisuals() → resetViewTransforms()，但原生不清零
-     * Hook 专用的 horizontalOffsetTranslationX 通道。这里作为安全兜底，
-     * 确保 reset 后所有堆叠位移通道都被清零。
-     */
+    /** RecentsView.reset() 不清零 Hook 的位移通道，此处兜底清理。 */
     private fun hookReset(recentsClass: Class<*>, hooks: ResolvedHooks) {
         findMethod(recentsClass, "reset", Void.TYPE)?.let { method ->
             XposedBridge.hookMethod(method, object : XC_MethodHook() {
@@ -632,16 +618,10 @@ object IosDepthStackRecentsHook : FeatureHook {
             val maxPosition = (pages.size - 1).coerceAtLeast(0).toFloat()
             val clampedPosition = scrollPosition.coerceIn(0f, maxPosition)
             val overscroll = scrollPosition - clampedPosition
-            // Flyme 退桌时 contentAlpha 常保持 1，直到 spring 结束才置 0；
-            // 真正驱动退桌的是 mAdjacentPageScale(0→1)。堆叠强度按两者共同收敛：
-            // amount = contentAlpha * (1 - adjacentPageScale)。
-            // 这样退桌 spring 过程中左侧卡会同步收回原生位，而不是卡在堆叠位直到 contentAlpha 突变。
-            // 退桌时绝不能把 stackLayoutAmount 收到 0：左侧卡原生 page 位在屏外左侧，
-            // 收回偏移会让它们横向飞过屏幕（录屏第二版现象）。保持堆叠几何，
-            // 仅用 exitFade 把整组卡 alpha 淡出。
+            // Flyme 退桌由 mAdjacentPageScale(0→1) 驱动，contentAlpha 到 spring 结束才归零。
+            // 堆叠强度恒为 1（退桌时左侧卡原生位在屏外，收回会引起横飞过屏），
+            // 退桌淡出交给 exitFade；入场不压暗，避免交会期每帧改 alpha 掉帧。
             val stackLayoutAmount = 1f
-            // 只在 scale 抬升（退桌）时启用 exitFade；入场 scale 从高到低时不压暗，
-            // 避免入场交会期每帧额外改 alpha 造成掉帧。
             val scale = state.adjacentPageScale
             if (scale > state.lastAdjacentPageScale + 0.001f && scale > 0.02f) {
                 state.detachFadeActive = true
@@ -650,17 +630,13 @@ object IosDepthStackRecentsHook : FeatureHook {
                 state.detachFadeActive = false
             }
             state.lastAdjacentPageScale = scale
-            // native setStableAlpha 已把 contentAlpha 写进 task.alpha（由 applyTaskAlpha 读为 nativeAlpha）。
-            // 入场/稳态 exitFade=1，不再二次乘 contentAlpha，避免交会期重复改 alpha 掉帧。
-            // 仅退桌时 contentAlpha 常钉在 1，用 (1-adjacentPageScale) 额外淡出堆叠卡。
+            // 入场/稳态 exitFade=1；退桌时用 (1-adjacentPageScale) 淡出堆叠卡。
             val exitFade = if (state.detachFadeActive) {
                 (1f - scale).coerceIn(0f, 1f)
             } else {
                 1f
             }
-            // 已完全淡出时只卸位移通道，避免 GONE 后残留 offset。
-            // 不能走完整 resetAllTransforms：它会把 alpha 恢复成 nativeAlpha(常为 1)，
-            // 在 contentAlpha 尚未置 0 的最后几帧造成整组卡闪一下。
+            // 淡出末帧只卸位移通道（不走 resetAllTransforms，会把 alpha 恢复成 nativeAlpha 导致闪一下）。
             if (exitFade <= EPSILON) {
                 clearStackOffsetsOnly(recents, state, hooks)
                 return
@@ -703,12 +679,9 @@ object IosDepthStackRecentsHook : FeatureHook {
                 )
             }
 
-            // isRunningTask() 内部 = this == getRecentsView().getRunningTaskView()（反编译对照），
-            // 每帧每卡 invoke 会重复走视图树与任务扫描；这里每帧只解析一次运行卡再按身份比较。
+            // 每帧只解析一次运行卡（isRunningTask 内部即 getRunningTaskView 比较，逐卡 invoke 浪费）；
+            // quickswitch 过渡期 running 身份滞留旧卡，仅主位附近才承认锚定，否则浮顶错位。
             val runningTaskView = resolveRunningTaskView(recents, hooks)
-            // quickswitch 后的过渡期 mRunningTaskId 滞留旧卡（getRunningTaskView 返回上一张），
-            // 此时把 running 特权（全尺寸/最高层/live tile 同步）错给旧卡会浮顶错位。
-            // 只有 running 卡位于主位附近时才承认锚定；否则按无 running 处理。
             val runningOrdinal = if (runningTaskView != null) pages.indexOfFirst { it.view === runningTaskView } else -1
             val anchoredRunning = if (runningOrdinal >= 0 && abs(runningOrdinal - clampedPosition) <= 0.55f) runningTaskView else null
             // 稳定态判定提前：仅用于标题遮挡/头部模糊等稳态附加效果。
@@ -716,12 +689,8 @@ object IosDepthStackRecentsHook : FeatureHook {
                 state.contentAlpha >= 0.98f &&
                 (!state.fullscreenProgressKnown || state.fullscreenProgress <= 0.02f) &&
                 state.adjacentPageScale <= 0.02f
-            // quickswitch 错位修正会话化：
-            // 进入——上滑入场动画中或静止稳态，running 卡锚定主位但不在最新位即进入，
-            //   入场中介入让上滑过程中当前应用就处于视觉最右（live tile 与卡片一致）。
-            // 退出——running 归位最新位；或稳态后用户翻页（scroll 偏离锚点超 0.2 页），
-            //   后者标记本次会话已处理，之后滑动全程原生动画。入场动画的 scroll 变化
-            //   不作为退出依据（锚点在首次稳态时才记录）。
+            // quickswitch 错位修正：入场/稳态时 running 锚定主位但不在最新位则进入；
+            // running 归位最新位或用户翻页（偏离锚点 >0.2 页）后退出，入场动画 scroll 不作依据。
             val enteringOverview = state.fullscreenProgressKnown && state.fullscreenProgress > 0.02f
             if (!state.quickswitchStray) {
                 if (!state.strayHandled && anchoredRunning != null && runningOrdinal < pages.lastIndex &&
@@ -752,10 +721,8 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val taskState = state.taskStates.getOrPut(task) { TaskVisualState(task.translationZ) }
                 val nativePrimaryTranslation = removeCustomPrimaryOffset(task, taskState, hooks, axis)
                 val isDismissing = task === dismissing
-                // running task 用独立 live tile surface 渲染，若给它加 offset/scale，TaskView 空白底板
-                // (清空+dimming)会与 surface 分离而露出。特权(scale/live tile 同步)仅授予锚定 running；
-                // 占位抑制跟随真实 running 身份（不锚定）——live tile 卡没有静态缩略图，
-                // 翻页滑离主位时若解除抑制会闪出白板占位。
+                // live tile 用独立 surface，加 offset/scale 会让 TaskView 底板与 surface 分离露出；
+                // 特权仅授予锚定 running；占位抑制跟随真实身份（不锚定），防滑离主位时闪白板。
                 val isRunningView = task === runningTaskView
                 val isRunning = if (hooks.getRunningTaskView != null) task === anchoredRunning
                 else invokeBoolean(hooks.isRunningTask, task) && abs(ordinal - clampedPosition) <= 0.55f
@@ -763,15 +730,11 @@ object IosDepthStackRecentsHook : FeatureHook {
                     (recents.getTag(TAG_REMOTE_TARGETS) == true || task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING) == true)
                 setPlaceholderSuppressedCached(task, taskState, suppressPlaceholder)
 
-                // 补位规则(拖动中按 dismissProgress 渐进，删除确认后 rebuild 补完剩余距离)：
-                //  · 被删卡有左邻(dismissedOrdinal>0)：其左侧卡朝被删卡位置右移(+1)，右侧卡不动。
-                //  · 被删卡是最左侧(dismissedOrdinal==0)：无左邻，改由右侧卡整体左移(-1)填补空位。
+                // 补位：拖动中按 dismissProgress 渐进；被删卡有左邻则左邻右移(+1)，否则右侧整体左移(-1)。
                 val effectiveOrdinal = effectiveOrdinalFor(ordinal, isDismissing)
                 val relativePosition = effectiveOrdinal - clampedPosition
-                // Seascape：逻辑 ordinal 与屏幕左右相反。曲线/缩放/overscroll 在「视觉空间」采样
-                // （stackRelative = -rel，使后方 peek + 缩小落在低 Z 侧），再把目标主轴坐标镜像回 layout。
-                // quickswitch 错位态：主位右侧滞留的旧卡折叠到左侧对称堆叠位，当前应用恢复
-                // "最右/最顶层"视觉；正常翻页滚动保持右侧 peek 曲线，不做折叠。
+                // Seascape 下 ordinal 与屏幕左右相反：曲线在视觉空间采样（stackRelative=-rel），
+                // 坐标再镜像回 layout；quickswitch 错位态把右侧滞留旧卡折叠到对称堆叠位。
                 val stackRelative = when {
                     axis.invertStackDepth -> -relativePosition
                     state.quickswitchStray && relativePosition > 0.55f -> -relativePosition
@@ -825,9 +788,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                             "pending=${task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)} hasThumb=${thumbnail?.let { hasThumbnailView(it) }} bounds=${task.left},${task.top},${task.right},${task.bottom}",
                     )
                 }
-                // Z 序：默认 ordinal 越大越高（正常滚动层级不变）；Seascape 镜像。
-                // quickswitch 错位态改按视觉堆叠深度（主位最高、越远越低），与折叠位一致；
-                // 被删卡保持自身堆叠层级（effectiveOrdinal）飞出，不顶到最上。
+                // Z 序：默认/Seascape 按 ordinal；quickswitch 错位态按视觉堆叠深度；被删卡保持自身层级飞出。
                 val depthOrder = when {
                     isDismissing -> if (axis.invertStackDepth) (pages.lastIndex - effectiveOrdinal) else effectiveOrdinal
                     state.quickswitchStray -> -abs(stackRelative)
@@ -846,10 +807,8 @@ object IosDepthStackRecentsHook : FeatureHook {
                 taskState.frameVisibleAlpha = alpha
             }
 
-            // 标题遮挡淡出：仅稳定态计算(入场/删除中略过以省 getGlobalVisibleRect 开销)。
-            // 上层邻卡覆盖 app_name：默认 ordinal+1；Seascape 镜像后上层为 ordinal-1。
-            // 标题遮挡/头部模糊依赖 getGlobalVisibleRect + overlay，开销大。
-            // 仅 overview 稳定态做：入场交会期(fullscreen>0 或 content 未满)跳过，避免掉帧。
+            // 标题遮挡/头部模糊依赖 getGlobalVisibleRect + overlay，开销大，仅稳定态计算；
+            // 上层邻卡默认 ordinal+1，Seascape 镜像后为 ordinal-1。
             if (settledOverview && exitFade >= 1f - EPSILON && dismissing == null && !state.multiDismissActive) {
                 pages.forEach { it.view.getGlobalVisibleRect(state.taskStates.getValue(it.view).bounds) }
                 val frontOrdinalDelta = if (axis.invertStackDepth) -1 else 1
@@ -1229,10 +1188,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         }
     }
 
-    /**
-     * Flyme 到达“停顿将应用悬浮”阈值时会通过 RecentsView.updatePageScales() 直接放大非运行卡。
-     * 这里先让 TaskView.applyScale() 按自身持久状态重算，避免把那次临时放大误记为堆叠基线。
-     */
+    /** Flyme 在悬浮阈值时通过 updatePageScales() 放大非运行卡，此处先让 applyScale() 重算以校正基线。 */
     private fun normalizeNativeScale(task: View, state: TaskVisualState, hooks: ResolvedHooks) {
         val before = task.scaleX
         val expected = state.lastAppliedScale
@@ -1303,7 +1259,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             if (ts.headerBlurred) {
                 ts.iconView?.let { clearHeaderBlur(it, ts) }
             }
-            // alpha：保持当前淡出值，只丢掉我们的脏标记，避免被读回 native=1。
+            // alpha：保持当前淡出值，仅丢脏标记，防被读回 native=1。
             ts.lastAppliedAlpha = Float.NaN
             ts.nativeAlpha = 1f
             setPlaceholderSuppressed(task, false)
@@ -1318,7 +1274,7 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     private fun resetAllTransforms(recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks) {
-        // 清空模式随 reset 一并复位，避免下次进 overview 误屏蔽单卡删除。
+        // 清空模式随 reset 一并复位，防下次进 overview 误屏蔽单卡删除。
         state.multiDismissActive = false
         state.lastDismissMoveTime = 0L
         state.dismissingTask = null
@@ -1326,8 +1282,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         val it = state.taskStates.entries.iterator()
         while (it.hasNext()) {
             val (task, ts) = it.next()
-            // 即便已从 parent 摘掉也要清 View 上的 offset 通道：TaskView 会被复用，
-            // 竖屏 horizontalOffset(X) 残留会在横屏再叠 Y → 斜对角。
+            // 即便已从 parent 摘掉也要清 offset 通道：TaskView 被复用后残留会造成斜对角位移。
             clearAllStackOffsetChannels(task, ts, hooks)
             if (task.parent !== recents) { it.remove(); continue }
             if (!ts.lastAppliedScale.isNaN()) { task.scaleX = ts.nativeScale; task.scaleY = ts.nativeScale; ts.lastAppliedScale = Float.NaN }
@@ -1348,7 +1303,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             }
             setPlaceholderSuppressed(task, false)
         }
-        // 仍挂在 recents 下、但尚未进入 taskStates 的 TaskView 也清一遍（旋转后新建 state 前的残留）。
+        // 仍挂在 recents 下但未入 taskStates 的 TaskView 也清一遍（旋转后新建 state 前的残留）。
         for (i in 0 until recents.childCount) {
             val child = recents.getChildAt(i) ?: continue
             if (!hooks.taskClass.isInstance(child)) continue

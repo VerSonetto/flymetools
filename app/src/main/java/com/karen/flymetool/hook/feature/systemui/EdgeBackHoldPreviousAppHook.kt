@@ -35,9 +35,7 @@ import kotlin.math.abs
  *
  * 幅度：mSwipeThreshold / mMinDeltaForSwitch 均为 final（系统约 16dp / 32dp），
  * 直接改字段不可靠（写入失败或 ART 内联），因此在 whetherTriggerBack 之后按配置重算 mTriggerBack。
- *
- * 策略：按下即计时；松手时幅度够且时长≥holdMs → 切上个应用，并走 cancelBack 收起指示条
- * （避免发 KEYCODE_BACK）。幅度与时长都满足时在鼓包内画上个应用图标。
+ * 策略：按下即计时；松手时幅度够且时长≥holdMs → 切上个应用，走 cancelBack 收起指示条，鼓包内画图标。
  */
 object EdgeBackHoldPreviousAppHook : FeatureHook {
 
@@ -274,7 +272,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                 }
             )
 
-            // MOVE：用配置幅度覆盖 mTriggerBack；幅度够 + 时长够 → 显示图标
+            // MOVE：按配置幅度覆盖 mTriggerBack；幅度够则显示预览图标
             XposedHelpers.findAndHookMethod(
                 viewCl,
                 "whetherTriggerBack",
@@ -351,7 +349,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                         }
                         clearArmedState()
                         if (!ok) return
-                        // 走 View.cancelBack：回调 cancelBack + 收起，不发返回键
+                        // 走 View.cancelBack 收起，不发返回键。
                         switchingApp = true
                         try {
                             XposedHelpers.callMethod(view, "cancelBack")
@@ -539,10 +537,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         return null
     }
 
-    /**
-     * 兜底挂载 EdgeBackGestureHandler.mBackCallback.triggerBack。
-     * Flyme 主路径已在 EdgeBackView.triggerBack 拦截；此处防插件替换或漏挂。
-     */
+    /** 兜底挂载 EdgeBackGestureHandler.mBackCallback.triggerBack，防插件替换或漏挂。 */
     private fun hookCallbackFromHandler(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
             val handlerCl = XposedHelpers.findClass(HANDLER, lpparam.classLoader)

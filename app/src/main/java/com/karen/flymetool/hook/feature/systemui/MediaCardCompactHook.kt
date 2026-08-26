@@ -32,14 +32,10 @@ import java.util.WeakHashMap
  *
  * 原理：卡片根布局是 MediaCarouseTransitionLayout(extends TransitionLayout)，
  * 每个子 View 的位置与尺寸都由 MediaViewController 里的 expandedLayout(ConstraintSet)
- * 经 TransitionLayout.calculateViewState -> ConstraintSet.applyTo -> initFromLayout
- * 换算成 WidgetState，再由 applyCurrentState() 每帧 setLeftTopRightBottom 摆位。
- * 因此重排卡片必须改这个 ConstraintSet —— 直接改 LayoutParams / margin 会被覆盖。
- * 新增的胶囊 View 同样被 initFromLayout 自动纳管，只要在约束集里给它们加约束即可。
+ * 经 TransitionLayout 计算并摆位，直接改 LayoutParams/margin 会被覆盖。
+ * 因此重排卡片必须改 ConstraintSet，新增的胶囊 View 同样被 initFromLayout 自动纳管。
  *
- * 特征定位：仅使用未混淆的框架类名与方法名（MediaViewController#loadLayoutConstraints、
- * MediaControlPanel#bindPlayer、MediaCarouselController#getMediaCardHeight），
- * 控件一律走 Resources.getIdentifier 按资源名取 id，不硬编码数值 id。
+ * 特征定位：仅使用未混淆的框架类名与方法名，控件走 Resources.getIdentifier 取 id。
  */
 object MediaCardCompactHook : FeatureHook {
 
@@ -213,9 +209,8 @@ object MediaCardCompactHook : FeatureHook {
 
     /**
      * TransitionLayout 对 TextView 会按 widgetState.width 做 clipBounds 裁剪，
-     * 时间文本用 WRAP_CONTENT 时动画中间态宽度小于文本测量宽度，会把右侧秒位裁掉。
-     * 这里在 applyCurrentState() 之后把媒体卡片两个时间 TextView 的裁剪清掉：
-     * 文本始终完整显示，同时保留 WRAP_CONTENT，不让进度条额外变短。
+     * 动画中间态宽度小于文本测量宽度时，右侧秒位会被裁掉。
+     * 此处清掉裁剪，文本始终完整显示。
      */
     private fun hookTransitionTimeClip(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
@@ -452,12 +447,7 @@ object MediaCardCompactHook : FeatureHook {
         return maxOf(dp(ctx, TIME_W), measured)
     }
 
-    /**
-     * 去掉进度条上的拖动圆点。
-     * 不能置 null：MediaControlPanel.setProgressBarStyle() 每次绑定都会
-     * getThumb().setTint(...)，null 会直接 NPE 掉整个 bindPlayer。
-     * 换成透明 ColorDrawable，既看不见又保留拖动手感（SRC_IN 着色不会让 alpha=0 变可见）。
-     */
+    /** 隐藏进度条拖动圆点：不能置 null（bindPlayer 会 getThumb().setTint()，NPE），换成透明 ColorDrawable 保留拖动手感。 */
     private fun hideSeekThumb(holder: Any) {
         val seek = try {
             XposedHelpers.callMethod(holder, "getSeekBar") as? SeekBar
@@ -476,8 +466,7 @@ object MediaCardCompactHook : FeatureHook {
     }
 
     /**
-     * 方案 B：向卡片注入两个纯背景 View 当胶囊。
-     * 插到索引 0/1 使其位于按钮之下；不设点击监听，触摸仍由上层按钮接收。
+     * 向卡片注入两个纯背景 View 当胶囊。插到索引 0/1 使其位于按钮之下。
      */
     private fun ensurePillViews(player: View): IntArray? {
         if (player !is ViewGroup) return null
@@ -506,12 +495,8 @@ object MediaCardCompactHook : FeatureHook {
     }
 
     /**
-     * 计算按钮排列顺序与左组数量。
-     *
-     * 卡片底部按钮的槽位与语义无关：有 semanticActions 时用
-     * actionPlayPause/actionPrev/actionNext + action0/action1，
-     * 走通知动作时 5 个动作按 App 自己的顺序塞进 action0..action4。
-     * 所以按 contentDescription 认出上一曲/播放/下一曲，其余归左组。
+     * 计算按钮排列顺序。卡片底部按钮槽位与语义无关，按 contentDescription
+     * 认出上一曲/播放/下一曲，其余归左组。
      */
     private fun computeButtonOrder(ctx: Context, holder: Any, set: Any): Pair<List<Int>, Int> {
         val names = listOf(
@@ -756,8 +741,7 @@ object MediaCardCompactHook : FeatureHook {
 
     /**
      * 按当前深浅色模式与“通知卡片模糊”参数给胶囊套背景。
-     * tag 记录已应用的模式 + 模糊参数；参数变化会触发重新套用，
-     * 避免重复 new 出模糊 drawable。
+     * tag 记录已应用的模式+参数，避免重复 new 出模糊 drawable。
      */
     internal fun refreshPillBackgrounds(player: View) {
         if (player !is ViewGroup) return
