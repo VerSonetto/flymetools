@@ -2,6 +2,7 @@ package com.karen.flymetool.hook.feature.systemui
 
 import android.app.WallpaperManager
 import android.content.BroadcastReceiver
+import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -28,7 +29,10 @@ import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import org.json.JSONObject
 import java.io.File
+import java.lang.ref.WeakReference
 import java.util.WeakHashMap
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 /**
  * 让经典时钟使用与原生四款景深时钟一致的抠图方式。
@@ -53,9 +57,22 @@ object ClassicClockDepthOverlayHook : FeatureHook {
     private val watchedClocks = WeakHashMap<View, Unit>()
     /** AOD 会复用锁屏的 DateClockSection；息屏态绝不向该树注入挖空 View。 */
     private val dozingClocks = WeakHashMap<View, Unit>()
+    /**
+     * 预解码的抠图缓存。锁屏 view 树首次挂载时 decode 一次即可，
+     * 后续 wallpaper 未变、bitmap 未失效就直接命中，避免进锁屏瞬间的卡顿。
+     */
+    private val bitmapCache = ConcurrentHashMap<String, Bitmap>()
+    /**
+     * 抠图专用单线程解码器：保证解码与文件 IO 互斥，
+     * 不与主线程抢锁屏 view 树的构建节奏。
+     */
+    private val decodeExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "FlymeToolClassicDofDecode").apply { isDaemon = true }
+    }
     private val mainHandler = Handler(Looper.getMainLooper())
     private var configObserver: ContentObserver? = null
     private var wallpaperChangedReceiver: BroadcastReceiver? = null
+    private var observedContentResolver: ContentResolver? = null
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, EDITOR_PACKAGE, FEATURE_KEY)) return
@@ -70,8 +87,9 @@ object ClassicClockDepthOverlayHook : FeatureHook {
                         val host = param.args.firstOrNull() as? ViewGroup ?: return
                         val clock = findClassicClock(host) ?: return
                         watchedClocks[clock] = Unit
-                        installConfigObserver(clock)
-                        installWallpaperChangedReceiver(clock.context.applicationContext)
+                        // 主动尝试一次预热：handle() 阶段已注册的 ContentObserver 此刻已就绪，
+                        // 锁屏 view 树一旦建好就能立即挂抠图，不再等下一次 addViews。
+                        primeBitmapFromConfig(clock.context.applicationContext)
                         clock.post { installOrClear(host, clock) }
                     }
                 },
@@ -81,6 +99,9 @@ object ClassicClockDepthOverlayHook : FeatureHook {
             Logger.e(TAG, "挂载经典时钟景深挖空层失败", e)
         }
         hookDozingState(lpparam.classLoader)
+        // SystemUI 进程起来就注册 ContentObserver + 提前预热当前壁纸的抠图到内存，
+        // 重启后第一次进锁屏时不再走磁盘 IO，避免景深延迟一帧出现。
+        primeBitmapFromConfig(null)
     }
 
     /**
@@ -104,7 +125,9 @@ object ClassicClockDepthOverlayHook : FeatureHook {
                         } else {
                             dozingClocks.remove(clock)
                             val host = clock.parent as? ViewGroup ?: return
-                            clock.post { installOrClear(host, clock) }
+                            // AOD→锁屏过渡会连续触发多次 dozing 翻转。延迟一帧让 view 树
+                            // 完成重建再判断，避免景深挖空层跟着 AOD 一起闪烁一帧。
+                            clock.postDelayed({ installOrClear(host, clock) }, 80L)
                         }
                     }
                 },
@@ -123,6 +146,9 @@ object ClassicClockDepthOverlayHook : FeatureHook {
 
     private fun installOrClear(host: ViewGroup, clock: View) {
         try {
+            // 一进 view 树就注册 observer，让后续任何 Settings.Secure 变化立即生效。
+            installConfigObserver(clock.context.applicationContext)
+            installWallpaperChangedReceiver(clock.context.applicationContext)
             if (dozingClocks.containsKey(clock)) {
                 removeCutout(clock)
                 return
@@ -134,7 +160,7 @@ object ClassicClockDepthOverlayHook : FeatureHook {
             }
             val expectedWallpaperId = config.optInt("wallpaper_id", -1)
             val currentWallpaperId = currentLockscreenWallpaperId(clock.context)
-            if (expectedWallpaperId <= 0 || expectedWallpaperId != currentWallpaperId) {
+            if (expectedWallpaperId < 0 || expectedWallpaperId != currentWallpaperId) {
                 removeCutout(clock)
                 Logger.w(TAG, "景深抠图与当前锁屏壁纸不匹配，已跳过旧抠图")
                 return
@@ -148,18 +174,84 @@ object ClassicClockDepthOverlayHook : FeatureHook {
             ) {
                 return
             }
-            removeCutout(clock)
-            val image = File(path)
-            if (!image.isFile || !image.canRead()) {
-                Logger.w(TAG, "景深抠图不可读: $path")
+            val cached = bitmapCache[path]
+            if (cached != null && !cached.isRecycled) {
+                attachCutout(host, clock, cached, currentWallpaperId, path)
                 return
             }
-            val bitmap = BitmapFactory.decodeFile(path)
-            if (bitmap == null) {
-                Logger.w(TAG, "无法解码景深抠图: $path")
-                return
+            // 缓存未命中：后台线程 decode，期间锁屏已显示也无需等待。
+            // decode 完成后切回主线程挂载，下一帧 onDraw 即出图。
+            val pendingHost = WeakReference(host)
+            val pendingClock = WeakReference(clock)
+            decodeExecutor.execute {
+                val bitmap = try {
+                    if (!File(path).isFile || !File(path).canRead()) {
+                        Logger.w(TAG, "景深抠图不可读: $path")
+                        null
+                    } else {
+                        BitmapFactory.decodeFile(path)?.also { bitmapCache[path] = it }
+                    }
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "解码景深抠图失败: $path", e)
+                    null
+                }
+                if (bitmap == null) return@execute
+                mainHandler.post {
+                    val h = pendingHost.get() ?: return@post
+                    val c = pendingClock.get() ?: return@post
+                    if (dozingClocks.containsKey(c)) return@post
+                    if (cutouts[c]?.let { it.maskPath == path && it.wallpaperId == currentWallpaperId } == true) {
+                        return@post
+                    }
+                    attachCutout(h, c, bitmap, currentWallpaperId, path)
+                }
             }
+        } catch (e: Throwable) {
+            Logger.e(TAG, "更新经典时钟景深挖空层失败", e)
+        }
+    }
 
+    /**
+     * handle() 阶段提前预热当前生效的抠图到内存缓存。
+     * 锁屏 view 树首次 addViews 触发时大概率已 decode 完毕，直接命中缓存。
+     */
+    private fun primeBitmapFromConfig(context: Context?) {
+        try {
+            val resolver = context?.contentResolver ?: run {
+                // 进程首次 handle() 阶段 context 还没就绪：等下一次 addViews 触发即可，
+                // 那时 installOrClear 会调用 installConfigObserver 注册 observer，
+                // 并在缓存未命中时走后台 decode——这条快路径只是锦上添花。
+                return
+            }
+            val config = readConfigViaResolver(resolver) ?: return
+            if (!config.optBoolean("enabled")) return
+            val path = config.optString("mask_path").takeIf { it.isNotBlank() } ?: return
+            if (bitmapCache[path]?.takeIf { !it.isRecycled } != null) return
+            decodeExecutor.execute {
+                try {
+                    if (!File(path).isFile || !File(path).canRead()) return@execute
+                    val bitmap = BitmapFactory.decodeFile(path) ?: return@execute
+                    bitmapCache[path] = bitmap
+                    // 锁屏 view 树若已就绪，立即把已 watch 的 clock 全部刷新一次。
+                    mainHandler.post { refreshWatchedClocks() }
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "预热经典时钟景深抠图失败", e)
+                }
+            }
+        } catch (e: Throwable) {
+            Logger.w(TAG, "提前预热抠图失败: ${e.javaClass.simpleName}")
+        }
+    }
+
+    private fun attachCutout(
+        host: ViewGroup,
+        clock: View,
+        bitmap: Bitmap,
+        currentWallpaperId: Int,
+        path: String,
+    ) {
+        try {
+            removeCutout(clock)
             val cutout = ClassicDofCutoutView(host.context, host, clock, bitmap)
             // 锁屏蓝图在下拉通知中心时会用 ConstraintSet 克隆宿主；其所有直接子 View
             // 都必须带 id，否则 clone 会直接抛异常并导致 SystemUI 崩溃。
@@ -178,7 +270,7 @@ object ClassicClockDepthOverlayHook : FeatureHook {
             host.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> cutout.invalidate() }
             Logger.d(TAG) { "已更新经典时钟景深挖空层" }
         } catch (e: Throwable) {
-            Logger.e(TAG, "更新经典时钟景深挖空层失败", e)
+            Logger.e(TAG, "挂载经典时钟景深挖空层失败", e)
         }
     }
 
@@ -191,20 +283,30 @@ object ClassicClockDepthOverlayHook : FeatureHook {
         }
     }
 
-    /** 点击编辑器按钮后立即刷新已创建的经典时钟。 */
-    private fun installConfigObserver(clock: View) {
-        if (configObserver != null) return
+    /** 配置变更立即刷新已创建的所有经典时钟。 */
+    private fun installConfigObserver(context: Context) {
+        val resolver = context.contentResolver
+        if (configObserver != null && observedContentResolver === resolver) return
         try {
-            configObserver = object : ContentObserver(mainHandler) {
+            // 同一进程内切换宿主 Context 时，先解绑旧的 observer。
+            configObserver?.let { observedContentResolver?.unregisterContentObserver(it) }
+            val observer = object : ContentObserver(mainHandler) {
                 override fun onChange(selfChange: Boolean) {
+                    // 配置一旦变更，缓存里可能指向旧 mask_path，主动失效。
+                    val resolver = context.applicationContext.contentResolver
+                    val current = readConfigViaResolver(resolver)
+                    evictStaleBitmaps(current?.optString("mask_path")?.takeIf { it.isNotBlank() })
+                    primeBitmapFromConfig(context.applicationContext)
                     refreshWatchedClocks()
                 }
             }
-            clock.context.contentResolver.registerContentObserver(
+            resolver.registerContentObserver(
                 Settings.Secure.getUriFor(SETTING_KEY),
                 false,
-                configObserver!!,
+                observer,
             )
+            configObserver = observer
+            observedContentResolver = resolver
         } catch (e: Throwable) {
             Logger.e(TAG, "监听经典时钟景深配置失败", e)
         }
@@ -253,8 +355,23 @@ object ClassicClockDepthOverlayHook : FeatureHook {
         }
     }
 
-    private fun readConfig(view: View): JSONObject? = try {
-        Settings.Secure.getString(view.context.contentResolver, SETTING_KEY)
+    /** 壁纸变更或配置变更时主动把已废弃的抠图 bitmap 从缓存里淘汰。 */
+    private fun evictStaleBitmaps(currentPath: String?) {
+        if (currentPath == null) {
+            bitmapCache.values.forEach { if (!it.isRecycled) it.recycle() }
+            bitmapCache.clear()
+            return
+        }
+        val stale = bitmapCache.keys.filter { it != currentPath }
+        stale.forEach { path ->
+            bitmapCache.remove(path)?.takeIf { !it.isRecycled }?.recycle()
+        }
+    }
+
+    private fun readConfig(view: View): JSONObject? = readConfigViaResolver(view.context.contentResolver)
+
+    private fun readConfigViaResolver(resolver: ContentResolver): JSONObject? = try {
+        Settings.Secure.getString(resolver, SETTING_KEY)
             ?.let(::JSONObject)
     } catch (e: Throwable) {
         Logger.w(TAG, "读取经典时钟景深配置失败: ${e.javaClass.simpleName}")
@@ -262,9 +379,11 @@ object ClassicClockDepthOverlayHook : FeatureHook {
     }
 
     private fun currentLockscreenWallpaperId(context: Context): Int = try {
-        WallpaperManager.getInstance(context).getWallpaperId(WallpaperManager.FLAG_LOCK)
+        val wallpaperManager = context.getSystemService(WallpaperManager::class.java)
+            ?: return -1
+        wallpaperManager.getWallpaperId(WallpaperManager.FLAG_LOCK)
     } catch (e: Throwable) {
-        Logger.w(TAG, "读取当前锁屏壁纸 ID 失败: ${e.javaClass.simpleName}")
+        Logger.e(TAG, "读取当前锁屏壁纸 ID 失败", e)
         -1
     }
 
