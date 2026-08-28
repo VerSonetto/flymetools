@@ -177,7 +177,7 @@ object ClassicClockDepthHook : FeatureHook {
                 val source = queryCurrentLockscreenImage(context)
                     ?: throw IllegalStateException("未找到当前已应用的锁屏壁纸")
                 val wallpaperId = currentLockscreenWallpaperId(context)
-                if (wallpaperId <= 0) throw IllegalStateException("无法读取当前锁屏壁纸 ID")
+                if (wallpaperId < 0) throw IllegalStateException("无法读取当前锁屏壁纸 ID")
                 val mask = createMask(context, source.imagePath, wallpaperId.toString())
                     ?: throw IllegalStateException("当前照片不支持景深效果")
                 if (!isWallpaperSourceStable(context, generation, wallpaperId, source)) {
@@ -439,7 +439,7 @@ object ClassicClockDepthHook : FeatureHook {
                 val config = readConfig(context) ?: return@execute
                 if (!config.optBoolean("enabled")) return@execute
                 val wallpaperId = currentLockscreenWallpaperId(context)
-                if (wallpaperId <= 0 || wallpaperId == config.optInt("wallpaper_id", -1)) return@execute
+                if (wallpaperId < 0 || wallpaperId == config.optInt("wallpaper_id", -1)) return@execute
 
                 val pendingSource = config.optString("source_image_path").takeIf { it.isNotBlank() }
                 // 先清配置，SystemUI 将立即去除当前旧挖空层；随后再删除磁盘缓存。
@@ -474,7 +474,7 @@ object ClassicClockDepthHook : FeatureHook {
                     val wallpaperId = currentLockscreenWallpaperId(context)
                     val hasBoundSource = config.optString("source_image_path").isNotBlank()
                     if (
-                        wallpaperId <= 0 ||
+                        wallpaperId < 0 ||
                         (hasBoundSource && config.optInt("wallpaper_id", -1) == wallpaperId)
                     ) {
                         return@execute
@@ -672,8 +672,11 @@ object ClassicClockDepthHook : FeatureHook {
     }
 
     private fun currentLockscreenWallpaperId(context: Context): Int = try {
-        WallpaperManager.getInstance(context).getWallpaperId(WallpaperManager.FLAG_LOCK)
-    } catch (_: Throwable) {
+        val wallpaperManager = context.getSystemService(WallpaperManager::class.java)
+            ?: return -1
+        wallpaperManager.getWallpaperId(WallpaperManager.FLAG_LOCK)
+    } catch (e: Throwable) {
+        Logger.e(TAG, "读取当前锁屏壁纸 ID 失败", e)
         -1
     }
 
