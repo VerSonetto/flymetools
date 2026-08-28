@@ -1,9 +1,11 @@
 package com.karen.flymetool.hook.feature.systemuieditor
 
+import android.app.Activity
 import android.app.WallpaperManager
 import android.content.BroadcastReceiver
 import android.content.ContentValues
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.IntentFilter
 import android.database.sqlite.SQLiteDatabase
@@ -16,6 +18,8 @@ import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import android.graphics.drawable.Drawable
+import android.media.ExifInterface
+import android.net.Uri
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
@@ -39,13 +43,16 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.WeakHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.abs
 
 /**
  * 为经典时钟所使用的 legacy 锁屏壁纸工具栏补上景深入口。
  *
  * 目标布局由公开资源名定位。景深结果沿用编辑器内置的 MattingHelper，输出在锁屏壁纸
  * 同目录，供 SystemUI 的经典时钟前景层读取；不依赖编辑器的混淆 ViewModel 或方法名。
+ * 另提供「蒙版」按钮调用系统媒体选择器，导入用户自抠的前景图，与模型结果共用配置。
  */
 object ClassicClockDepthHook : FeatureHook {
 
@@ -55,6 +62,9 @@ object ClassicClockDepthHook : FeatureHook {
     private const val SETTING_KEY = "flymetool_classic_clock_dof_data"
     private const val BUTTON_TAG = "flymetool:classic-clock-dof"
     private const val BUTTON_ICON_TAG = "flymetool:classic-clock-dof-icon"
+    private const val MASK_BUTTON_TAG = "flymetool:classic-clock-dof-mask"
+    private const val MASK_FILE_PREFIX = "flymetool_classic_dof_"
+    private const val PICK_MASK_REQUEST_CODE = 0x4644
     private const val ACTION_WALLPAPER_CHANGED = "android.intent.action.WALLPAPER_CHANGED"
     private const val PENDING_SOURCE_IMAGE_PATH = "pending_source_image_path"
     private const val MATTING_HELPER = "com.meizu.algorithm.wallpapermatting.MattingHelper"
@@ -69,6 +79,28 @@ object ClassicClockDepthHook : FeatureHook {
     /** 每次壁纸变更都淘汰此前排队的抠图任务，避免连续应用时旧任务覆盖新结果。 */
     private val wallpaperTaskGeneration = AtomicLong()
     private var wallpaperChangedReceiver: BroadcastReceiver? = null
+    private val depthButtons = WeakHashMap<LinearLayout, TextView>()
+    private val resultHookedClasses = WeakHashMap<Class<*>, Unit>()
+    /** 基类与具体实现类的回调可能各触发一次，用该标志保证一次选择只导入一次。 */
+    private val importPending = AtomicBoolean(false)
+    private val pickResultHook = object : XC_MethodHook() {
+        override fun afterHookedMethod(param: MethodHookParam) {
+            val requestCode = param.args.firstOrNull() as? Int ?: return
+            if (requestCode != PICK_MASK_REQUEST_CODE) return
+            if (param.args.getOrNull(1) as? Int != Activity.RESULT_OK) return
+            val intent = param.args.getOrNull(2) as? Intent ?: return
+            val uri = intent.data ?: return
+            val context = (param.thisObject as? Activity)?.applicationContext ?: return
+            if (!importPending.compareAndSet(false, true)) return
+            executor.execute {
+                try {
+                    importCustomMask(context, uri)
+                } finally {
+                    importPending.set(false)
+                }
+            }
+        }
+    }
 
     override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
         if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
@@ -91,6 +123,19 @@ object ClassicClockDepthHook : FeatureHook {
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载经典时钟景深按钮失败", e)
         }
+        try {
+            XposedHelpers.findAndHookMethod(
+                Activity::class.java,
+                "onActivityResult",
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                Intent::class.java,
+                pickResultHook,
+            )
+            Logger.i(TAG, "已挂载蒙版选择结果回调")
+        } catch (e: Throwable) {
+            Logger.e(TAG, "挂载蒙版选择结果回调失败", e)
+        }
     }
 
     private fun isLegacyButtonLayout(context: Context, layoutId: Int): Boolean = try {
@@ -105,43 +150,21 @@ object ClassicClockDepthHook : FeatureHook {
             if (container.findViewWithTag<View>(BUTTON_TAG) != null) return
 
             val context = container.context
-            val button = LinearLayout(context).apply {
-                tag = BUTTON_TAG
-                orientation = LinearLayout.VERTICAL
-                gravity = android.view.Gravity.CENTER
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    1f,
-                )
-            }
-            val iconSize = dimension(context, "editor_bottom_button_size", 48)
-            val iconMargin = dimension(context, "editor_button_margin_horizontal_normal", 18)
-            val icon = ImageView(context).apply {
-                tag = BUTTON_ICON_TAG
-                background = drawable(context, "editor_btn_bg_selector")
-                setImageDrawable(drawable(context, "ic_depth_of_field"))
-                setColorFilter(Color.WHITE)
-                scaleType = ImageView.ScaleType.CENTER_INSIDE
-                layoutParams = LinearLayout.LayoutParams(iconSize, iconSize).apply {
-                    marginStart = iconMargin
-                    marginEnd = iconMargin
-                }
-            }
-            val label = TextView(context).apply {
-                text = string(context, "depth_of_field", "景深")
-                setTextColor(Color.WHITE)
-                textSize = 12f
-                maxLines = 1
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = dimension(context, "editor_button_label_margin_top", 4) }
-            }
-            button.addView(icon)
-            button.addView(label)
+            val (button, label) = createToolbarButton(
+                context,
+                BUTTON_TAG,
+                string(context, "depth_of_field", "景深"),
+            )
             button.setOnClickListener { toggleDepth(context, button, label) }
             container.addView(button)
+            depthButtons[button] = label
+            // 编辑器 Activity 可能重写 onActivityResult 且不调 super，按特征补挂具体类。
+            findActivity(context)?.let(::hookConcreteActivityResult)
+
+            val (maskButton, _) = createToolbarButton(context, MASK_BUTTON_TAG, "蒙版")
+            maskButton.setOnClickListener { pickCustomMask(context) }
+            container.addView(maskButton)
+
             previewRoots[root.rootView] = Unit
             updateButtonState(context, button, label)
             // 经典样式不属于编辑器原生景深的四种样式。遗留的 is_dof_enabled 会让
@@ -153,6 +176,49 @@ object ClassicClockDepthHook : FeatureHook {
         } catch (e: Throwable) {
             Logger.e(TAG, "添加经典时钟景深按钮失败", e)
         }
+    }
+
+    private fun createToolbarButton(
+        context: Context,
+        buttonTag: String,
+        labelText: String,
+    ): Pair<LinearLayout, TextView> {
+        val button = LinearLayout(context).apply {
+            tag = buttonTag
+            orientation = LinearLayout.VERTICAL
+            gravity = android.view.Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f,
+            )
+        }
+        val iconSize = dimension(context, "editor_bottom_button_size", 48)
+        val iconMargin = dimension(context, "editor_button_margin_horizontal_normal", 18)
+        val icon = ImageView(context).apply {
+            tag = "$buttonTag-icon"
+            background = drawable(context, "editor_btn_bg_selector")
+            setImageDrawable(drawable(context, "ic_depth_of_field"))
+            setColorFilter(Color.WHITE)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            layoutParams = LinearLayout.LayoutParams(iconSize, iconSize).apply {
+                marginStart = iconMargin
+                marginEnd = iconMargin
+            }
+        }
+        val label = TextView(context).apply {
+            text = labelText
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            maxLines = 1
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dimension(context, "editor_button_label_margin_top", 4) }
+        }
+        button.addView(icon)
+        button.addView(label)
+        return button to label
     }
 
     private fun toggleDepth(context: Context, button: View, label: TextView) {
@@ -203,6 +269,171 @@ object ClassicClockDepthHook : FeatureHook {
         }
     }
 
+    private fun findActivity(context: Context): Activity? {
+        var current = context
+        while (current !is Activity) {
+            current = (current as? ContextWrapper)?.baseContext ?: return null
+        }
+        return current
+    }
+
+    private fun hookConcreteActivityResult(activity: Activity) {
+        val clazz = activity.javaClass
+        if (resultHookedClasses.containsKey(clazz)) return
+        resultHookedClasses[clazz] = Unit
+        try {
+            XposedBridge.hookAllMethods(clazz, "onActivityResult", pickResultHook)
+        } catch (e: Throwable) {
+            Logger.e(TAG, "挂载蒙版选择回调失败", e)
+        }
+    }
+
+    /** 调系统媒体选择器挑选自定义蒙版，结果经 onActivityResult 回到 pickResultHook。 */
+    private fun pickCustomMask(context: Context) {
+        val activity = findActivity(context) ?: run {
+            toast(context, "无法打开图片选择器")
+            return
+        }
+        try {
+            val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "image/*"
+            }
+            activity.startActivityForResult(intent, PICK_MASK_REQUEST_CODE)
+        } catch (e: Throwable) {
+            Logger.e(TAG, "打开蒙版选择器失败", e)
+            toast(context, "未找到可用的图片选择器")
+        }
+    }
+
+    /**
+     * 导入用户自备的蒙版 PNG：校验透明通道与壁纸比例后缩放落盘，写入与模型抠图
+     * 相同的配置结构，SystemUI 侧无需任何改动即可生效。
+     */
+    private fun importCustomMask(context: Context, uri: Uri) {
+        try {
+            // 使仍在排队或执行中的模型抠图任务失效，避免旧结果覆盖用户选择。
+            wallpaperTaskGeneration.incrementAndGet()
+            val wallpaperId = currentLockscreenWallpaperId(context)
+            if (wallpaperId < 0) throw IllegalStateException("无法读取当前锁屏壁纸 ID")
+            val source = queryCurrentLockscreenImage(context)
+                ?: throw IllegalStateException("未找到当前已应用的锁屏壁纸")
+            val wallpaperRatio = imageAspectRatio(source.imagePath)
+                ?: throw IllegalStateException("无法读取当前锁屏壁纸尺寸")
+            // 用户可能基于原图制作蒙版：编辑器应用时对原图居中裁剪，渲染端对蒙版做同样的
+            // 居中裁剪变换，因此蒙版与原图同比例时主体同样对齐，一并放行。
+            val acceptableRatios = listOfNotNull(
+                wallpaperRatio,
+                source.sourceImagePath?.let { imageAspectRatio(it) },
+            ).filter { it > 0f }
+            val decoded = decodeCustomMask(context, uri)
+                ?: throw IllegalStateException("无法读取所选图片")
+            var mask: Bitmap? = null
+            try {
+                if (!decoded.hasAlpha()) throw IllegalStateException("蒙版需为带透明背景的 PNG 图片")
+                val maskRatio = decoded.width.toFloat() / decoded.height
+                if (acceptableRatios.none { abs(maskRatio - it) / it <= 0.02f }) {
+                    Logger.w(
+                        TAG,
+                        "蒙版比例不符: 蒙版=$maskRatio 可用=${acceptableRatios.joinToString(",")} 参照=${source.imagePath}",
+                    )
+                    throw IllegalStateException("蒙版比例需与锁屏壁纸或其原图一致")
+                }
+                mask = scaleBitmapToFitScreen(context, decoded)
+                val output = File(
+                    sharedOutputDirectory(),
+                    "${MASK_FILE_PREFIX}custom_$wallpaperId.png",
+                )
+                FileOutputStream(output).use { stream ->
+                    if (!mask.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
+                        throw IllegalStateException("无法写入自定义蒙版")
+                    }
+                }
+                output.setReadable(true, false)
+                output.parentFile?.setReadable(true, false)
+                deleteStaleMask(readConfig(context)?.optString("mask_path"), output.absolutePath)
+                saveConfig(
+                    context,
+                    true,
+                    source.groupId,
+                    output.absolutePath,
+                    wallpaperId,
+                    source.imagePath,
+                    null,
+                    true,
+                )
+                clearLegacyDofFlag(context, source.groupId)
+                onMain {
+                    toast(context, "已应用自定义景深蒙版")
+                    refreshDepthButtons(context)
+                    refreshAllEditorPreviews()
+                }
+                Logger.i(TAG, "已导入自定义景深蒙版")
+            } finally {
+                if (decoded !== mask && !decoded.isRecycled) decoded.recycle()
+                if (mask != null && !mask.isRecycled) mask.recycle()
+            }
+        } catch (e: Throwable) {
+            Logger.e(TAG, "导入自定义景深蒙版失败", e)
+            onMain { toast(context, e.message ?: "导入自定义景深蒙版失败") }
+        }
+    }
+
+    private fun decodeCustomMask(context: Context, uri: Uri): Bitmap? = try {
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+    } catch (e: Throwable) {
+        Logger.e(TAG, "读取所选蒙版失败", e)
+        null
+    }
+
+    private fun imageAspectRatio(path: String): Float? = try {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, options)
+        if (options.outWidth > 0 && options.outHeight > 0) {
+            // BitmapFactory 不解析 EXIF 方向：竖拍照片以横向像素存储，须按旋转标记换回，
+            // 否则与 PS 等已烘焙方向的导出图比较时比例正好倒置。
+            val rotated = when (readExifOrientation(path)) {
+                ExifInterface.ORIENTATION_ROTATE_90,
+                ExifInterface.ORIENTATION_ROTATE_270,
+                ExifInterface.ORIENTATION_TRANSPOSE,
+                ExifInterface.ORIENTATION_TRANSVERSE,
+                -> true
+                else -> false
+            }
+            val width = if (rotated) options.outHeight else options.outWidth
+            val height = if (rotated) options.outWidth else options.outHeight
+            width.toFloat() / height
+        } else {
+            null
+        }
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun readExifOrientation(path: String): Int = try {
+        ExifInterface(path).getAttributeInt(
+            ExifInterface.TAG_ORIENTATION,
+            ExifInterface.ORIENTATION_NORMAL,
+        )
+    } catch (_: Throwable) {
+        ExifInterface.ORIENTATION_UNDEFINED
+    }
+
+    /** 换新蒙版后淘汰旧文件，避免共享目录残留无用的抠图。 */
+    private fun deleteStaleMask(previousPath: String?, currentPath: String) {
+        if (previousPath.isNullOrBlank() || previousPath == currentPath) return
+        val file = File(previousPath)
+        if (!file.isFile || !file.name.startsWith(MASK_FILE_PREFIX)) return
+        if (!file.delete()) Logger.w(TAG, "删除旧景深蒙版失败: $file")
+    }
+
+    private fun refreshDepthButtons(context: Context) {
+        depthButtons.keys.toList().forEach { button ->
+            val label = depthButtons[button] ?: return@forEach
+            updateButtonState(context, button, label)
+        }
+    }
+
     /**
      * 锁屏预览图就是编辑器已经处理完成、并写入 WallpaperManager 的成品。
      * 原始图可能还会经过裁剪、滤镜等步骤，不能直接拿来与锁屏底图对齐。
@@ -231,7 +462,7 @@ object ClassicClockDepthHook : FeatureHook {
                 val imagePath = previewPath?.takeIf { File(it).isFile }
                     ?: sourcePath?.takeIf { File(it).isFile }
                     ?: return null
-                return WallpaperSource(groupId, imagePath)
+                return WallpaperSource(groupId, imagePath, sourcePath?.takeIf { File(it).isFile })
             }
         }
     }
@@ -248,7 +479,7 @@ object ClassicClockDepthHook : FeatureHook {
                 val outputDirectory = sharedOutputDirectory()
                 val output = File(
                     outputDirectory,
-                    "flymetool_classic_dof_$cacheKey.png",
+                    "${MASK_FILE_PREFIX}$cacheKey.png",
                 )
                 FileOutputStream(output).use { stream ->
                     if (!mask.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
@@ -273,22 +504,26 @@ object ClassicClockDepthHook : FeatureHook {
     private fun loadMattingSource(context: Context, imagePath: String): Bitmap {
         val decoded = BitmapFactory.decodeFile(imagePath)
             ?: throw IllegalStateException("无法读取锁屏壁纸: $imagePath")
-        try {
-            val metrics = context.resources.displayMetrics
-            val scale = minOf(
-                1f,
-                metrics.widthPixels.toFloat() / decoded.width,
-                metrics.heightPixels.toFloat() / decoded.height,
-            )
-            if (scale >= 1f) return decoded
-            val width = (decoded.width * scale).toInt().coerceAtLeast(1)
-            val height = (decoded.height * scale).toInt().coerceAtLeast(1)
-            return Bitmap.createScaledBitmap(decoded, width, height, true).also { resized ->
-                if (resized !== decoded) decoded.recycle()
-            }
+        return try {
+            scaleBitmapToFitScreen(context, decoded)
         } catch (e: Throwable) {
             if (!decoded.isRecycled) decoded.recycle()
             throw e
+        }
+    }
+
+    private fun scaleBitmapToFitScreen(context: Context, decoded: Bitmap): Bitmap {
+        val metrics = context.resources.displayMetrics
+        val scale = minOf(
+            1f,
+            metrics.widthPixels.toFloat() / decoded.width,
+            metrics.heightPixels.toFloat() / decoded.height,
+        )
+        if (scale >= 1f) return decoded
+        val width = (decoded.width * scale).toInt().coerceAtLeast(1)
+        val height = (decoded.height * scale).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(decoded, width, height, true).also { resized ->
+            if (resized !== decoded) decoded.recycle()
         }
     }
 
@@ -366,6 +601,7 @@ object ClassicClockDepthHook : FeatureHook {
         wallpaperId: Int = -1,
         sourceImagePath: String? = null,
         pendingSourceImagePath: String? = null,
+        custom: Boolean = false,
     ) {
         val config = JSONObject().apply {
             put("enabled", enabled)
@@ -374,6 +610,7 @@ object ClassicClockDepthHook : FeatureHook {
             put("wallpaper_id", wallpaperId)
             put("source_image_path", sourceImagePath)
             put(PENDING_SOURCE_IMAGE_PATH, pendingSourceImagePath)
+            put("custom", custom)
         }
         if (!Settings.Secure.putString(context.contentResolver, SETTING_KEY, config.toString())) {
             throw IllegalStateException("无法保存景深状态")
@@ -441,6 +678,13 @@ object ClassicClockDepthHook : FeatureHook {
                 val wallpaperId = currentLockscreenWallpaperId(context)
                 if (wallpaperId < 0 || wallpaperId == config.optInt("wallpaper_id", -1)) return@execute
 
+                if (config.optBoolean("custom")) {
+                    // 同图重新应用时壁纸 ID 会变但蒙版仍有效：交给延迟任务按源图重新绑定，
+                    // 真换了图才关闭。期间 SystemUI 的 ID 校验会先移除旧挖空层，不会残留。
+                    scheduleWallpaperRegeneration(context, 700, generation, 0, retryWhenUnchanged = true)
+                    Logger.i(TAG, "锁屏壁纸已变更，稍后尝试重新绑定自定义蒙版")
+                    return@execute
+                }
                 val pendingSource = config.optString("source_image_path").takeIf { it.isNotBlank() }
                 // 先清配置，SystemUI 将立即去除当前旧挖空层；随后再删除磁盘缓存。
                 saveConfig(context, true, null, null, -1, null, pendingSource)
@@ -479,6 +723,12 @@ object ClassicClockDepthHook : FeatureHook {
                     ) {
                         return@execute
                     }
+                    // 进程重启等场景会错过广播清配置。自定义蒙版按源图判断：仍是同一张图
+                    // （如重新应用）就重新绑定到新壁纸 ID；换了图则关闭，等待重新选择。
+                    if (config.optBoolean("custom")) {
+                        rebindOrCloseCustomMask(context, config, source, wallpaperId)
+                        return@execute
+                    }
                     // 只有数据库已切到新锁屏成品时才生成。否则广播可能早于数据库提交，
                     // 不能把上一次图片错误绑定到新的壁纸 ID。
                     val pendingSource = config.optString(PENDING_SOURCE_IMAGE_PATH)
@@ -512,6 +762,64 @@ object ClassicClockDepthHook : FeatureHook {
         }, delayMillis)
     }
 
+    /**
+     * 重新应用同一张壁纸时壁纸 ID 会变，自定义蒙版按源图与比例校验后重新绑定新 ID；
+     * 已换图（源图路径或比例不符）则关闭景深，等待用户重新选择蒙版。
+     */
+    private fun rebindOrCloseCustomMask(
+        context: Context,
+        config: JSONObject,
+        source: WallpaperSource,
+        wallpaperId: Int,
+    ) {
+        val maskPath = config.optString("mask_path")
+        val boundSourcePath = config.optString("source_image_path")
+        val stillSameImage =
+            boundSourcePath.isNotBlank() &&
+                boundSourcePath == source.imagePath &&
+                maskRatioMatchesSource(maskPath, source)
+        Logger.d(TAG) {
+            "重新绑定检查: 绑定=$boundSourcePath 当前=${source.imagePath} " +
+                "蒙版=${imageAspectRatio(maskPath)} 成品=${imageAspectRatio(source.imagePath)} " +
+                "原图=${source.sourceImagePath?.let { imageAspectRatio(it) }} 蒙版存在=${File(maskPath).isFile}"
+        }
+        if (stillSameImage) {
+            saveConfig(
+                context,
+                true,
+                source.groupId,
+                maskPath,
+                wallpaperId,
+                boundSourcePath,
+                null,
+                true,
+            )
+            onMain { refreshAllEditorPreviews() }
+            Logger.i(TAG, "已将自定义蒙版重新绑定到当前锁屏壁纸")
+            return
+        }
+        saveConfig(context, false, null, null)
+        onMain {
+            refreshDepthButtons(context)
+            refreshAllEditorPreviews()
+        }
+        Logger.i(TAG, "锁屏壁纸已更换，已关闭自定义景深蒙版")
+    }
+
+    /**
+     * 蒙版经屏幕缩放但比例不变。与导入校验保持同一标准：匹配成品图或原图比例都算
+     * 同源（编辑器应用时会对原图居中裁剪，两种画布的主体位置都与渲染端对齐）。
+     */
+    private fun maskRatioMatchesSource(maskPath: String, source: WallpaperSource): Boolean {
+        if (!File(maskPath).isFile) return false
+        val maskRatio = imageAspectRatio(maskPath) ?: return false
+        val acceptableRatios = listOfNotNull(
+            imageAspectRatio(source.imagePath),
+            source.sourceImagePath?.let { imageAspectRatio(it) },
+        ).filter { it > 0f }
+        return acceptableRatios.any { abs(maskRatio - it) / it <= 0.02f }
+    }
+
     /** 抠图耗时期间，壁纸 ID、应用记录或任务代际任一变化都拒绝写入结果。 */
     private fun isWallpaperSourceStable(
         context: Context,
@@ -527,10 +835,10 @@ object ClassicClockDepthHook : FeatureHook {
         previewRoots.keys.toList().forEach(::updateEditorPreview)
     }
 
-    /** 仅删除本功能在共享目录生成的文件，壁纸源图和编辑器资产不在此范围。 */
+    /** 仅删除模型生成的蒙版文件；用户的自定义蒙版保留，供重新绑定使用。 */
     private fun clearOwnedMaskCache() {
         sharedOutputDirectory().listFiles()
-            ?.filter { it.isFile && it.name.startsWith("flymetool_classic_dof_") }
+            ?.filter { it.isFile && it.name.startsWith(MASK_FILE_PREFIX) && !it.name.contains("_custom_") }
             ?.forEach { file ->
                 if (!file.delete()) Logger.w(TAG, "删除旧景深缓存失败: ${file.name}")
             }
@@ -680,5 +988,9 @@ object ClassicClockDepthHook : FeatureHook {
         -1
     }
 
-    private data class WallpaperSource(val groupId: String, val imagePath: String)
+    private data class WallpaperSource(
+        val groupId: String,
+        val imagePath: String,
+        val sourceImagePath: String?,
+    )
 }
