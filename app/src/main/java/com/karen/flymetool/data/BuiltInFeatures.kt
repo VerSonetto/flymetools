@@ -198,4 +198,8 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         HookFeature("custom_search_engine", "自定义搜索引擎",
             description = "在 Flyme 搜索的“搜索引擎”设置中插入自定义搜索引擎，内置必应和谷歌，可自由添加其它搜索引擎"),
     ),
+    "com.meizu.media.camera" to listOf(
+        HookFeature("camera_filter_memory", "相机滤镜记忆",
+            description = "记住上一次选择的滤镜，重启相机后自动恢复，无需每次重新选择；选择「原图」同样会被记住"),
+    ),
 )

@@ -59,6 +59,10 @@
     {
       "package": "com.meizu.net.search",
       "name": "搜索"
+    },
+    {
+      "package": "com.meizu.media.camera",
+      "name": "相机"
     }
   ]
 }
