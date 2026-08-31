@@ -20,6 +20,7 @@ import com.karen.flymetool.hook.base.Reflect
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.IdentityHashMap
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -140,13 +141,22 @@ object IosDepthStackRecentsHook : FeatureHook {
         hookDismissAll(ctx, recentsClass)
         hookReset(ctx, recentsClass, hooks)
         hookDismissGestureUnlock(ctx)
-        // 诊断：quickswitch 重排打点
+        // quickswitch 重排：复位错位修正状态并强制重建，保证每轮 running 重排后
+        // 都能重新进入 anchoredRunning/quickswitchStray 修正（防止滑动期 running 卡邻卡化）。
         findMethod(recentsClass, "moveRunningTaskToExpectedPosition", Void.TYPE)?.let { m ->
             Reflect.hookMethod(ctx.api, m) { chain ->
                 Logger.i(TAG, "MOVE-RUNNING before t=${SystemClock.uptimeMillis()}")
                 val result = chain.proceed()
                 val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
                 Logger.i(TAG, "MOVE-RUNNING after children=${recents.childCount} order=[${(0 until recents.childCount).joinToString { i -> taskIdentity(ctx, recents.getChildAt(i)) }}]")
+                stateFor(recents).apply {
+                    quickswitchStray = false
+                    strayHandled = false
+                    strayAnchorSettled = false
+                    cachedPages = null
+                    cachedPagesChildCount = -1
+                }
+                requestStackApply(recents, rebuildPages = true)
                 result
             }
         }
@@ -541,6 +551,8 @@ object IosDepthStackRecentsHook : FeatureHook {
     // === 主循环 ===
 
     private fun applyStack(ctx: HookContext, recents: ViewGroup, hooks: ResolvedHooks, allowPageRebuild: Boolean) {
+        // 堆叠激活：桌面卡完全隐藏（native 翻页不参与，退出堆叠由 resetAllTransforms 恢复）。
+        setDesktopTasksVisible(recents, false)
         val state = stateFor(recents)
         if (state.applying) return
         state.applying = true
@@ -1264,6 +1276,8 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     private fun resetAllTransforms(ctx: HookContext, recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks) {
+        // 退出堆叠：桌面卡恢复可见
+        setDesktopTasksVisible(recents, true)
         // 清空模式随 reset 一并复位，防下次进 overview 误屏蔽单卡删除。
         state.multiDismissActive = false
         state.lastDismissMoveTime = 0L
@@ -1439,6 +1453,28 @@ object IosDepthStackRecentsHook : FeatureHook {
     private fun isLauncherTask(task: View, hooks: ResolvedHooks): Boolean {
         val component = try { hooks.taskComponent?.invoke(task) as? ComponentName } catch (_: Throwable) { null }
         return component?.packageName == TARGET_PACKAGE
+    }
+
+    /** 桌面进程卡片（DesktopTaskView）特征：getType() == TaskViewType.DESKTOP；结果缓存防混淆依赖类名。 */
+    private val taskTypeMethodCache = ConcurrentHashMap<Class<*>, Method?>()
+
+    private fun isDesktopTaskView(task: View): Boolean = try {
+        val m = taskTypeMethodCache.computeIfAbsent(task.javaClass) { c ->
+            runCatching { c.getMethod("getType") }.getOrNull()
+        } ?: return false
+        (m.invoke(task) as? Enum<*>)?.name == "DESKTOP"
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** 桌面卡完全隐藏；退出/复位时恢复。INVISIBLE 保留布局尺寸，不影响原生分页计算。 */
+    private fun setDesktopTasksVisible(recents: ViewGroup, visible: Boolean) {
+        for (i in 0 until recents.childCount) {
+            val child = recents.getChildAt(i) ?: continue
+            if (isDesktopTaskView(child)) {
+                child.visibility = if (visible) View.VISIBLE else View.INVISIBLE
+            }
+        }
     }
 
     private fun calculateScrollPosition(pages: List<TaskPage>, primaryScroll: Float): Float {

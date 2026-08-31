@@ -14,6 +14,7 @@ import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.Reflect
 import java.lang.reflect.Method
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 
 
@@ -58,6 +59,28 @@ object IosStackedRecentsHook : FeatureHook {
     private var applyScaleMethod: Method? = null
     private var adjacentPageOffsetProperty: FloatProperty<Any>? = null
     private var adjacentPageScaleProperty: FloatProperty<Any>? = null
+
+    /** 桌面进程卡片（DesktopTaskView）不参与堆叠：getType() 反射结果缓存，防混淆依赖类名。 */
+    private val taskTypeMethodCache = ConcurrentHashMap<Class<*>, Method?>()
+
+    private fun isDesktopTaskView(task: View): Boolean = try {
+        val m = taskTypeMethodCache.computeIfAbsent(task.javaClass) { c ->
+            runCatching { c.getMethod("getType") }.getOrNull()
+        } ?: return false
+        (m.invoke(task) as? Enum<*>)?.name == "DESKTOP"
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** 堆叠模式下桌面卡完全隐藏；退出堆叠恢复可见。INVISIBLE 保留布局尺寸，不影响原生分页计算。 */
+    private fun setDesktopTasksVisible(recents: ViewGroup, visible: Boolean) {
+        for (i in 0 until recents.childCount) {
+            val child = recents.getChildAt(i) ?: continue
+            if (isDesktopTaskView(child)) {
+                child.visibility = if (visible) View.VISIBLE else View.INVISIBLE
+            }
+        }
+    }
 
     override fun handle(ctx: HookContext) {
         if (ctx.packageName != "com.meizu.flyme.launcher") return
@@ -113,6 +136,8 @@ object IosStackedRecentsHook : FeatureHook {
             if (target.parameterTypes.singleOrNull() != floatType) continue
             Reflect.hookMethod(ctx.api, target) { chain ->
                 val task = chain.getThisObject() as View
+                // 桌面卡不参与堆叠偏移，保持原生翻页行为
+                if (isDesktopTaskView(task)) return@hookMethod chain.proceed()
                 val nativeValue = chain.getArg(0) as Float
                 if (task.getTag(TAG_REAPPLYING_OFFSET) != true) {
                     task.setTag(nativeTag, nativeValue)
@@ -151,9 +176,11 @@ object IosStackedRecentsHook : FeatureHook {
         )) {
             val method = findFloatMethod(taskCl, name) ?: continue
             Reflect.hookMethod(ctx.api, method) { chain ->
-                (chain.getThisObject() as View).setTag(tag, chain.getArg(0) as Float)
-                val result = chain.proceed()
                 val task = chain.getThisObject() as View
+                // 桌面卡不参与堆叠 dismiss 变换
+                if (isDesktopTaskView(task)) return@hookMethod chain.proceed()
+                task.setTag(tag, chain.getArg(0) as Float)
+                val result = chain.proceed()
                 (task.parent as? ViewGroup)?.let { requestStackRefresh(ctx, it, taskCl) }
                 result
             }
@@ -351,6 +378,8 @@ object IosStackedRecentsHook : FeatureHook {
         for (i in 0 until recents.childCount) {
             val task = recents.getChildAt(i) ?: continue
             if (!taskCl.isInstance(task) || task === runningTask) continue
+            // 桌面卡不参与堆叠缩放稳定
+            if (isDesktopTaskView(task)) continue
             task.pivotX = task.width / 2f
             task.pivotY = task.height / 2f
             if (task.getTag(TAG_ACTIVE) == true) {
@@ -408,6 +437,8 @@ object IosStackedRecentsHook : FeatureHook {
                 clearStack(recents, taskCl)
                 return
             }
+            // 堆叠激活：桌面卡完全隐藏
+            setDesktopTasksVisible(recents, false)
             if (recents.childCount == 0) return
             val first = Reflect.callMethod(ctx.api, recents, "getPageAt", 0) as? View ?: return
             if (first.measuredWidth == 0) return
@@ -421,6 +452,8 @@ object IosStackedRecentsHook : FeatureHook {
             for (i in 0 until recents.childCount) {
                 val task = recents.getChildAt(i) ?: continue
                 if (!taskCl.isInstance(task)) continue
+                // 桌面卡不参与堆叠（原生翻页自己处理，逐帧检查一次开销极小）
+                if (isDesktopTaskView(task)) continue
                 inspectPlaceholderOnce(ctx, recents, task)
                 val isRunning = task === runningTask
                 val depth = if (recents.getTag(TAG_REMOTE_TARGETS) == true && !isRunning) {
@@ -555,9 +588,13 @@ object IosStackedRecentsHook : FeatureHook {
     }
 
     private fun clearStack(recents: ViewGroup, taskCl: Class<*>) {
+        // 退出堆叠：桌面卡恢复可见
+        setDesktopTasksVisible(recents, true)
         for (i in 0 until recents.childCount) {
             val task = recents.getChildAt(i) ?: continue
             if (!taskCl.isInstance(task) || task.getTag(TAG_ACTIVE) != true) continue
+            // 桌面卡未参与堆叠，无需清理
+            if (isDesktopTaskView(task)) continue
             task.setTag(TAG_ACTIVE, false)
             task.setTag(TAG_SCALE, null)
             task.rotationY = 0f
