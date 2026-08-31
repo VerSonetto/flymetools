@@ -12,13 +12,11 @@ import android.os.Vibrator
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
+import io.github.libxposed.api.XposedInterface
 import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.hypot
@@ -55,9 +53,15 @@ object MBackDoubleClickHook : FeatureHook {
     private var action: String = DEFAULT_ACTION
 
     private var prefsCachedAt = 0L
-    private var loadParam: XC_LoadPackage.LoadPackageParam? = null
+    private var loadParam: HookContext? = null
     private var classLoader: ClassLoader? = null
     private var touchMethod: Method? = null
+
+    /** 供属性 Runnable（releaseFirstUpRunnable）在运行期取框架接口 */
+    @Volatile
+    private var loadedApi: XposedInterface? = null
+
+    private fun requireApi(): XposedInterface = checkNotNull(loadedApi)
 
     private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
 
@@ -87,31 +91,32 @@ object MBackDoubleClickHook : FeatureHook {
     private val releaseFirstUpRunnable = Runnable {
         if (phase != Phase.WAIT_SECOND) return@Runnable
         Logger.d(TAG) { "单击确认，放行暂扣的 UP" }
-        releasePendingUp()
+        releasePendingUp(requireApi())
     }
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
+        if (ctx.packageName != "com.android.systemui") return
         if (!hooked.compareAndSet(false, true)) return
 
-        loadParam = lpparam
-        classLoader = lpparam.classLoader
+        loadParam = ctx
+        classLoader = ctx.classLoader
+        loadedApi = ctx.api
         refreshPrefs(force = true)
 
         try {
-            val viewClass = XposedHelpers.findClass(VIEW_CLASS, lpparam.classLoader)
+            val viewClass = Reflect.findClass(VIEW_CLASS, ctx.classLoader)
             val method = viewClass.getDeclaredMethod("onTouchEvent", MotionEvent::class.java)
             touchMethod = method
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val view = param.thisObject as? View ?: return
-                    val event = param.args[0] as? MotionEvent ?: return
-                    if (onTouch(view, event)) {
-                        param.result = true
-                    }
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val view = chain.getThisObject() as? View ?: return@hookMethod chain.proceed()
+                val event = chain.getArg(0) as? MotionEvent ?: return@hookMethod chain.proceed()
+                if (onTouch(ctx.api, view, event)) {
+                    true
+                } else {
+                    chain.proceed()
                 }
-            })
+            }
             Logger.i(TAG, "已挂载 $VIEW_CLASS.onTouchEvent，动作=$action，窗口=${DOUBLE_TAP_WINDOW_MS}ms")
         } catch (e: Throwable) {
             hooked.set(false)
@@ -124,13 +129,13 @@ object MBackDoubleClickHook : FeatureHook {
         val now = SystemClock.uptimeMillis()
         if (!force && now - prefsCachedAt < PREFS_TTL_MS) return
         prefsCachedAt = now
-        action = XposedPrefs.getFeatureString(
-            lp, "com.android.systemui", FEATURE_KEY, DEFAULT_ACTION
+        action = lp.featureString(
+            FEATURE_KEY, DEFAULT_ACTION
         ).ifBlank { DEFAULT_ACTION }
     }
 
     /** @return true = 已消费，跳过系统 onTouchEvent */
-    private fun onTouch(view: View, event: MotionEvent): Boolean {
+    private fun onTouch(api: XposedInterface, view: View, event: MotionEvent): Boolean {
         refreshPrefs()
         ensureMetrics(view)
 
@@ -142,7 +147,7 @@ object MBackDoubleClickHook : FeatureHook {
                     SystemClock.elapsedRealtime() - firstUpElapsed <= DOUBLE_TAP_WINDOW_MS
                 ) {
                     mainHandler.removeCallbacks(releaseFirstUpRunnable)
-                    abortFirstGesture(view)
+                    abortFirstGesture(api, view)
                     recycle(pendingUp)
                     pendingUp = null
 
@@ -158,7 +163,7 @@ object MBackDoubleClickHook : FeatureHook {
 
                 // 新序列：清理残留，DOWN 立刻放行
                 if (phase != Phase.IDLE) {
-                    clearWaitingState(abort = true, view = view)
+                    clearWaitingState(api, abort = true, view = view)
                 }
 
                 phase = Phase.FIRST_TRACKING
@@ -218,8 +223,8 @@ object MBackDoubleClickHook : FeatureHook {
                         firstUpElapsed = 0L
                         if (ok) {
                             Logger.i(TAG, "双击触发 action=$action")
-                            cancelSystemSideEffects(view)
-                            performAction(view.context.applicationContext ?: view.context)
+                            cancelSystemSideEffects(api, view)
+                            performAction(api, view.context.applicationContext ?: view.context)
                             playHaptic(view.context)
                         } else {
                             Logger.d(TAG) { "第二击抬起已偏离，忽略" }
@@ -228,7 +233,7 @@ object MBackDoubleClickHook : FeatureHook {
                     }
                     Phase.WAIT_SECOND -> {
                         // 异常：等待期间又来了 UP，放行暂扣并让当前事件走系统
-                        releasePendingUp()
+                        releasePendingUp(api)
                         return false
                     }
                     else -> return false
@@ -242,7 +247,7 @@ object MBackDoubleClickHook : FeatureHook {
                         return false
                     }
                     Phase.WAIT_SECOND -> {
-                        clearWaitingState(abort = false, view = view)
+                        clearWaitingState(api, abort = false, view = view)
                         return true
                     }
                     Phase.SECOND_TRACKING -> {
@@ -278,7 +283,7 @@ object MBackDoubleClickHook : FeatureHook {
         return false
     }
 
-    private fun releasePendingUp() {
+    private fun releasePendingUp(api: XposedInterface) {
         mainHandler.removeCallbacks(releaseFirstUpRunnable)
         val view = targetView
         val method = touchMethod
@@ -291,7 +296,7 @@ object MBackDoubleClickHook : FeatureHook {
             return
         }
         try {
-            invokeOriginal(method, view, up)
+            invokeOriginal(api, method, view, up)
             Logger.d(TAG) { "暂扣 UP 已放行" }
         } catch (e: Throwable) {
             Logger.e(TAG, "放行 UP 失败", e)
@@ -301,7 +306,7 @@ object MBackDoubleClickHook : FeatureHook {
     }
 
     /** 第二击到来：取消系统侧仍处按下/待点击的第一击 */
-    private fun abortFirstGesture(view: View) {
+    private fun abortFirstGesture(api: XposedInterface, view: View) {
         val method = touchMethod ?: return
         try {
             val now = SystemClock.uptimeMillis()
@@ -320,23 +325,23 @@ object MBackDoubleClickHook : FeatureHook {
                 cancel.setLocation(downX - loc[0], downY - loc[1])
             } catch (_: Throwable) {
             }
-            invokeOriginal(method, view, cancel)
+            invokeOriginal(api, method, view, cancel)
             cancel.recycle()
         } catch (e: Throwable) {
             Logger.w(TAG, "发送 CANCEL 失败: ${e.message}")
         }
-        cancelSystemSideEffects(view)
+        cancelSystemSideEffects(api, view)
         try {
             view.isPressed = false
         } catch (_: Throwable) {
         }
     }
 
-    private fun clearWaitingState(abort: Boolean, view: View?) {
+    private fun clearWaitingState(api: XposedInterface, abort: Boolean, view: View?) {
         mainHandler.removeCallbacks(releaseFirstUpRunnable)
         if (abort && view != null && phase == Phase.WAIT_SECOND) {
             // 有未放行 UP：补 CANCEL 结束系统按下态
-            abortFirstGesture(view)
+            abortFirstGesture(api, view)
         }
         recycle(pendingUp)
         pendingUp = null
@@ -345,8 +350,16 @@ object MBackDoubleClickHook : FeatureHook {
         movedOffTap = false
     }
 
-    private fun invokeOriginal(method: Method, view: View, event: MotionEvent) {
-        XposedBridge.invokeOriginalMethod(method, view, arrayOf(event))
+    /** 重新调用原始 onTouchEvent（跳过本模块 hook，等同 invokeOriginalMethod）。 */
+    private fun invokeOriginal(api: XposedInterface, method: Method, view: View, event: MotionEvent) {
+        try {
+            api.getInvoker(method).invoke(view, event)
+        } catch (_: Throwable) {
+            try {
+                method.invoke(view, event)
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     private fun recycle(event: MotionEvent?) {
@@ -357,32 +370,32 @@ object MBackDoubleClickHook : FeatureHook {
         }
     }
 
-    private fun cancelSystemSideEffects(view: View) {
+    private fun cancelSystemSideEffects(api: XposedInterface, view: View) {
         try {
-            val helper = XposedHelpers.findClass(LONG_TOUCH_HELPER, classLoader)
-            XposedHelpers.callStaticMethod(helper, "cancelAnyPendingLongTouch")
+            val helper = Reflect.findClass(LONG_TOUCH_HELPER, classLoader)
+            Reflect.callStaticMethod(api, helper, "cancelAnyPendingLongTouch")
         } catch (_: Throwable) {
         }
         try {
-            val controller = XposedHelpers.getObjectField(view, "mMBackButtonController")
-            val handler = XposedHelpers.getObjectField(controller, "mHandler") as? Handler
+            val controller = Reflect.getObjectField(view, "mMBackButtonController") ?: return
+            val handler = Reflect.getObjectField(controller, "mHandler") as? Handler
             handler?.removeCallbacksAndMessages(null)
-            XposedHelpers.setBooleanField(controller, "mTouchEventDown", false)
-            XposedHelpers.setBooleanField(controller, "mIsLongClick", false)
-            XposedHelpers.setIntField(controller, "mTouchFlag", 0)
+            Reflect.setBooleanField(controller, "mTouchEventDown", false)
+            Reflect.setBooleanField(controller, "mIsLongClick", false)
+            Reflect.setIntField(controller, "mTouchFlag", 0)
         } catch (_: Throwable) {
         }
     }
 
-    private fun performAction(context: Context) {
+    private fun performAction(api: XposedInterface, context: Context) {
         when (action) {
-            ACTION_FLASHLIGHT -> toggleFlashlight(context)
-            ACTION_SCREENSHOT -> takeScreenshot(context)
-            ACTION_SLEEP -> goToSleep(context)
+            ACTION_FLASHLIGHT -> toggleFlashlight(api, context)
+            ACTION_SCREENSHOT -> takeScreenshot(api, context)
+            ACTION_SLEEP -> goToSleep(api, context)
             ACTION_MUTE -> toggleMute(context)
             else -> {
                 Logger.w(TAG, "未知动作 $action，回退手电筒")
-                toggleFlashlight(context)
+                toggleFlashlight(api, context)
             }
         }
     }
@@ -409,11 +422,11 @@ object MBackDoubleClickHook : FeatureHook {
         }
     }
 
-    private fun goToSleep(context: Context) {
+    private fun goToSleep(api: XposedInterface, context: Context) {
         mainHandler.post {
             try {
                 val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-                XposedHelpers.callMethod(pm, "goToSleep", SystemClock.uptimeMillis())
+                Reflect.callMethod(api, pm, "goToSleep", SystemClock.uptimeMillis())
                 Logger.i(TAG, "已息屏 (PowerManager.goToSleep)")
             } catch (e: Throwable) {
                 Logger.e(TAG, "息屏失败", e)
@@ -421,14 +434,14 @@ object MBackDoubleClickHook : FeatureHook {
         }
     }
 
-    private fun takeScreenshot(context: Context) {
+    private fun takeScreenshot(api: XposedInterface, context: Context) {
         mainHandler.post {
             try {
-                val helperClass = XposedHelpers.findClass(
+                val helperClass = Reflect.findClass(
                     "com.android.internal.util.ScreenshotHelper",
                     classLoader ?: context.classLoader
                 )
-                val helper = XposedHelpers.newInstance(helperClass, context)
+                val helper = Reflect.newInstance(api, helperClass, context)
                 val method = helperClass.getMethod(
                     "takeScreenshot",
                     Int::class.javaPrimitiveType,
@@ -439,18 +452,18 @@ object MBackDoubleClickHook : FeatureHook {
                 Logger.i(TAG, "已触发截图 (ScreenshotHelper)")
             } catch (e: Throwable) {
                 Logger.w(TAG, "ScreenshotHelper 失败: ${e.message}，尝试按键注入")
-                injectSysrqKey()
+                injectSysrqKey(api)
             }
         }
     }
 
-    private fun injectSysrqKey() {
+    private fun injectSysrqKey(api: XposedInterface) {
         try {
-            val inputManagerClass = XposedHelpers.findClass(
+            val inputManagerClass = Reflect.findClass(
                 "android.hardware.input.InputManager",
                 classLoader
             )
-            val im = XposedHelpers.callStaticMethod(inputManagerClass, "getInstance")
+            val im = Reflect.callStaticMethod(api, inputManagerClass, "getInstance")
             val now = SystemClock.uptimeMillis()
             val down = android.view.KeyEvent(
                 now, now, android.view.KeyEvent.ACTION_DOWN,
@@ -460,45 +473,45 @@ object MBackDoubleClickHook : FeatureHook {
                 now, now + 10, android.view.KeyEvent.ACTION_UP,
                 android.view.KeyEvent.KEYCODE_SYSRQ, 0
             )
-            XposedHelpers.callMethod(im, "injectInputEvent", down, 0)
-            XposedHelpers.callMethod(im, "injectInputEvent", up, 0)
+            Reflect.callMethod(api, im, "injectInputEvent", down, 0)
+            Reflect.callMethod(api, im, "injectInputEvent", up, 0)
             Logger.i(TAG, "已触发截图 (KEYCODE_SYSRQ)")
         } catch (e: Throwable) {
             Logger.e(TAG, "截图失败", e)
         }
     }
 
-    private fun toggleFlashlight(context: Context) {
-        if (toggleFlashlightViaDependency()) return
+    private fun toggleFlashlight(api: XposedInterface, context: Context) {
+        if (toggleFlashlightViaDependency(api)) return
         toggleFlashlightViaCameraManager(context)
     }
 
-    private fun toggleFlashlightViaDependency(): Boolean {
+    private fun toggleFlashlightViaDependency(api: XposedInterface): Boolean {
         val cl = classLoader ?: return false
         return try {
-            val dependencyClass = XposedHelpers.findClass(
+            val dependencyClass = Reflect.findClass(
                 "com.android.systemui.Dependency", cl
             )
-            val flashlightClass = XposedHelpers.findClass(
+            val flashlightClass = Reflect.findClass(
                 "com.android.systemui.statusbar.policy.FlashlightController", cl
             )
-            val controller = XposedHelpers.callStaticMethod(
-                dependencyClass, "get", flashlightClass
+            val controller = Reflect.callStaticMethod(
+                api, dependencyClass, "get", flashlightClass
             ) ?: return false
 
             try {
-                XposedHelpers.callMethod(controller, "reverseFlashLight")
+                Reflect.callMethod(api, controller, "reverseFlashLight")
                 Logger.i(TAG, "手电筒已切换 (reverseFlashLight)")
                 return true
             } catch (_: Throwable) {
             }
 
             val enabled = try {
-                XposedHelpers.callMethod(controller, "isEnabled") as Boolean
+                Reflect.callMethod(api, controller, "isEnabled") as Boolean
             } catch (_: Throwable) {
                 false
             }
-            XposedHelpers.callMethod(controller, "setFlashlight", !enabled)
+            Reflect.callMethod(api, controller, "setFlashlight", !enabled)
             Logger.i(TAG, "手电筒已切换 (setFlashlight ${!enabled})")
             true
         } catch (e: Throwable) {

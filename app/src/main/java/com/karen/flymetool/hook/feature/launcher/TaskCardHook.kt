@@ -3,13 +3,10 @@ package com.karen.flymetool.hook.feature.launcher
 import android.content.Context
 import android.content.res.Resources
 import android.util.TypedValue
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 
 object TaskCardHook : FeatureHook {
 
@@ -17,31 +14,31 @@ object TaskCardHook : FeatureHook {
     private const val TASK_CORNER_RADIUS_CLASS = "com.android.quickstep.util.TaskCornerRadius"
     private const val BASE_DEPTH_CONTROLLER_CLASS = "com.android.quickstep.util.BaseDepthController"
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (lpparam.packageName != "com.meizu.flyme.launcher") return
+    override fun handle(ctx: HookContext) {
+        if (ctx.packageName != "com.meizu.flyme.launcher") return
 
-        val radiusEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, "task_card_radius")
-        val blurEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, "task_blur_intensity")
+        val radiusEnabled = ctx.featureEnabled("task_card_radius")
+        val blurEnabled = ctx.featureEnabled("task_blur_intensity")
         if (!radiusEnabled && !blurEnabled) return
 
         val radiusDp = if (radiusEnabled) {
-            XposedPrefs.getFeatureValue(lpparam, packageName, "task_card_radius", 24)
+            ctx.featureValue("task_card_radius", 24)
         } else -1
         val blurIntensity = if (blurEnabled) {
-            XposedPrefs.getFeatureValue(lpparam, packageName, "task_blur_intensity", 50)
+            ctx.featureValue("task_blur_intensity", 50)
         } else -1
 
-        mount(lpparam, radiusDp, blurIntensity)
+        mount(ctx, radiusDp, blurIntensity)
     }
 
-    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int, blurIntensity: Int) {
-        hookTaskCornerRadius(lpparam, radiusDp)
+    private fun mount(ctx: HookContext, radiusDp: Int, blurIntensity: Int) {
+        hookTaskCornerRadius(ctx, radiusDp)
         if (blurIntensity >= 0) {
-            hookBlurIntensity(lpparam, blurIntensity)
+            hookBlurIntensity(ctx, blurIntensity)
         }
     }
 
-    private fun hookTaskCornerRadius(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int) {
+    private fun hookTaskCornerRadius(ctx: HookContext, radiusDp: Int) {
         if (radiusDp < 0) return
         try {
             val radiusPx = TypedValue.applyDimension(
@@ -50,18 +47,17 @@ object TaskCardHook : FeatureHook {
                 Resources.getSystem().displayMetrics
             )
 
-            val clazz = XposedHelpers.findClass(TASK_CORNER_RADIUS_CLASS, lpparam.classLoader)
+            val clazz = Reflect.findClass(TASK_CORNER_RADIUS_CLASS, ctx.classLoader)
 
             for (method in clazz.declaredMethods) {
                 if (method.returnType == Float::class.javaPrimitiveType
                     && method.parameterTypes.size == 1
                     && method.parameterTypes[0] == Context::class.java) {
 
-                    XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            param.result = radiusPx
-                        }
-                    })
+                    Reflect.hookMethod(ctx.api, method) { chain ->
+                        chain.proceed()
+                        radiusPx
+                    }
                     Logger.i(TAG, "任务卡片圆角 Hook 完成: ${method.name} -> ${radiusPx}px")
                     return
                 }
@@ -73,30 +69,29 @@ object TaskCardHook : FeatureHook {
         }
     }
 
-    private fun hookBlurIntensity(lpparam: XC_LoadPackage.LoadPackageParam, intensity: Int) {
+    private fun hookBlurIntensity(ctx: HookContext, intensity: Int) {
         try {
-            val bdcClass = XposedHelpers.findClass(BASE_DEPTH_CONTROLLER_CLASS, lpparam.classLoader)
-            val transClass = XposedHelpers.findClass("android.view.SurfaceControl\$Transaction", lpparam.classLoader)
-            val scClass = XposedHelpers.findClass("android.view.SurfaceControl", lpparam.classLoader)
+            val bdcClass = Reflect.findClass(BASE_DEPTH_CONTROLLER_CLASS, ctx.classLoader)
+            val transClass = Reflect.findClass("android.view.SurfaceControl\$Transaction", ctx.classLoader)
+            val scClass = Reflect.findClass("android.view.SurfaceControl", ctx.classLoader)
 
             // 从 BaseDepthController 实例读取原始 mMaxBlurRadius 作为缩放基准
             var maxBlur = 180
-            XposedBridge.hookAllConstructors(bdcClass, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    maxBlur = XposedHelpers.getIntField(param.thisObject, "mMaxBlurRadius")
-                }
-            })
+            Reflect.hookAllConstructors(ctx.api, bdcClass) { chain ->
+                val result = chain.proceed()
+                maxBlur = Reflect.getIntField(chain.getThisObject(), "mMaxBlurRadius")
+                result
+            }
 
-            XposedHelpers.findAndHookMethod(transClass, "setBackgroundBlurRadius",
+            Reflect.hookMethodOn(ctx.api, transClass, "setBackgroundBlurRadius",
                 scClass, Int::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val radius = param.args[1] as? Int ?: return
-                        if (radius <= 0) return
-                        val scale = intensity.toFloat() / maxBlur.toFloat()
-                        param.args[1] = (radius * scale).toInt().coerceAtLeast(0)
-                    }
-                })
+            ) { chain ->
+                val radius = chain.getArg(1) as? Int ?: return@hookMethodOn chain.proceed()
+                if (radius <= 0) return@hookMethodOn chain.proceed()
+                val scale = intensity.toFloat() / maxBlur.toFloat()
+                val newRadius = (radius * scale).toInt().coerceAtLeast(0)
+                chain.proceed(arrayOf(chain.getArg(0), newRadius))
+            }
             Logger.i(TAG, "背景模糊强度 Hook 完成: $intensity (基准=$maxBlur)")
         } catch (e: Throwable) {
             Logger.e(TAG, "背景模糊强度 Hook 失败", e)

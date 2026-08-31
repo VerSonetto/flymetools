@@ -1,7 +1,7 @@
 package com.karen.flymetool.hook.entry
 
 import com.karen.flymetool.hook.base.FeatureHook
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.HookContext
 
 object LauncherEntry : HookEntry {
     override val targetPackage = "com.meizu.flyme.launcher"
@@ -14,7 +14,7 @@ object LauncherEntry : HookEntry {
         "FolderBlurHook" to { com.karen.flymetool.hook.feature.launcher.FolderBlurHook },
     )
 
-    override fun initHooks(lpparam: XC_LoadPackage.LoadPackageParam) {
-        safeInitHooks(targetPackage, lpparam, hookFactories)
+    override fun initHooks(ctx: HookContext) {
+        safeInitHooks(ctx, hookFactories)
     }
 }

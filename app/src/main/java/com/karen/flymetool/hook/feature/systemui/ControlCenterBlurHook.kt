@@ -1,13 +1,10 @@
 package com.karen.flymetool.hook.feature.systemui
 
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.util.FlymeVersionUtils
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 
 /**
  * 控制中心背景模糊强度（Flyme 12）。
@@ -36,14 +33,12 @@ object ControlCenterBlurHook : FeatureHook {
     private const val NOTIFICATION_PANEL_CLASS =
         "com.android.systemui.shade.NotificationPanelViewController"
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (ctx.packageName != "com.android.systemui") return
         if (!FlymeVersionUtils.isFlyme12()) return
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
 
-        val intensity = XposedPrefs.getFeatureValue(
-            lpparam,
-            packageName,
+        val intensity = ctx.featureValue(
             FEATURE_KEY,
             100
         ).coerceIn(0, 100)
@@ -53,8 +48,8 @@ object ControlCenterBlurHook : FeatureHook {
         }
 
         val scale = intensity / 100f
-        hookSetBlurRadius(lpparam, CENTER_CONTROLLER_CLASS, scale, "控制中心")
-        hookSetBlurRadius(lpparam, NOTIFICATION_PANEL_CLASS, scale, "通知面板")
+        hookSetBlurRadius(ctx, CENTER_CONTROLLER_CLASS, scale, "控制中心")
+        hookSetBlurRadius(ctx, NOTIFICATION_PANEL_CLASS, scale, "通知面板")
     }
 
     /**
@@ -62,13 +57,13 @@ object ControlCenterBlurHook : FeatureHook {
      * 控制中心与经典通知下拉共用同一因子链路。
      */
     private fun hookSetBlurRadius(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         className: String,
         scale: Float,
         label: String
     ) {
         try {
-            val clazz = XposedHelpers.findClass(className, lpparam.classLoader)
+            val clazz = Reflect.findClass(className, ctx.classLoader)
             val target = clazz.declaredMethods.singleOrNull { method ->
                 !method.isSynthetic &&
                     method.name == "setBlurRadius" &&
@@ -80,13 +75,13 @@ object ControlCenterBlurHook : FeatureHook {
                 "未找到唯一的 setBlurRadius(float): $className"
             )
 
-            XposedBridge.hookMethod(target, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val original = (param.args[0] as? Number)?.toFloat() ?: return
-                    if (original <= 0f) return
-                    param.args[0] = original * scale
-                }
-            })
+            Reflect.hookMethod(ctx.api, target) { chain ->
+                val array = chain.getArgs().toMutableList()
+                val original = (array[0] as? Number)?.toFloat() ?: return@hookMethod chain.proceed()
+                if (original <= 0f) return@hookMethod chain.proceed()
+                array[0] = original * scale
+                chain.proceed(array.toTypedArray())
+            }
 
             Logger.i(TAG, "${label}模糊强度 Hook 完成: ${(scale * 100).toInt()}%")
         } catch (e: Throwable) {

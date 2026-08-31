@@ -4,75 +4,73 @@ import android.content.res.Resources
 import android.util.TypedValue
 import android.view.View
 import android.view.ViewOutlineProvider
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.util.FlymeVersionUtils
 
 object MediaCardRadiusHook : FeatureHook {
 
     private const val TAG = "MediaCardRadius"
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "media_card_radius")) return
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("media_card_radius")) return
+        if (ctx.packageName != "com.android.systemui") return
 
-        val radiusDp = XposedPrefs.getFeatureValue(lpparam, packageName, "media_card_radius", 14)
+        val radiusDp = ctx.featureValue("media_card_radius", 14)
 
         when {
-            FlymeVersionUtils.isFlyme12() -> hookFlyme12(lpparam, radiusDp)
-            FlymeVersionUtils.isFlyme11() -> hookFlyme11(lpparam, radiusDp)
-            FlymeVersionUtils.isFlyme10() -> hookFlyme10(lpparam, radiusDp)
+            FlymeVersionUtils.isFlyme12() -> hookFlyme12(ctx, radiusDp)
+            FlymeVersionUtils.isFlyme11() -> hookFlyme11(ctx, radiusDp)
+            FlymeVersionUtils.isFlyme10() -> hookFlyme10(ctx, radiusDp)
         }
     }
 
-    private fun hookFlyme10(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int) {
-        hookLayout(lpparam, radiusDp, "com.flyme.systemui.media.MediaCarouseTransitionLayout")
+    private fun hookFlyme10(ctx: HookContext, radiusDp: Int) {
+        hookLayout(ctx, radiusDp, "com.flyme.systemui.media.MediaCarouseTransitionLayout")
     }
 
-    private fun hookFlyme11(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int) {
-        hookLayout(lpparam, radiusDp, "com.flyme.systemui.media.MediaCarouseTransitionLayout")
+    private fun hookFlyme11(ctx: HookContext, radiusDp: Int) {
+        hookLayout(ctx, radiusDp, "com.flyme.systemui.media.MediaCarouseTransitionLayout")
     }
 
-    private fun hookFlyme12(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int) {
-        hookLayout(lpparam, radiusDp, "com.flyme.systemui.media.controls.ui.view.MediaCarouseTransitionLayout")
+    private fun hookFlyme12(ctx: HookContext, radiusDp: Int) {
+        hookLayout(ctx, radiusDp, "com.flyme.systemui.media.controls.ui.view.MediaCarouseTransitionLayout")
     }
 
-    private fun hookLayout(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int, classPath: String) {
+    private fun hookLayout(ctx: HookContext, radiusDp: Int, classPath: String) {
         try {
-            val clazz = XposedHelpers.findClass(classPath, lpparam.classLoader)
+            val clazz = Reflect.findClass(classPath, ctx.classLoader)
             val radiusPx = TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP,
                 radiusDp.toFloat(),
                 Resources.getSystem().displayMetrics
             )
 
-            XposedHelpers.findAndHookConstructor(
+            Reflect.hookConstructorOn(
+                ctx.api,
                 clazz,
                 android.content.Context::class.java,
                 android.util.AttributeSet::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val view = param.thisObject as? View ?: return
-                        applyRadius(view, radiusPx)
-                    }
-                }
-            )
+            ) { chain ->
+                val result = chain.proceed()
+                val view = chain.getThisObject() as? View ?: return@hookConstructorOn result
+                applyRadius(view, radiusPx)
+                result
+            }
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "onConfigurationChanged",
                 android.content.res.Configuration::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val view = param.thisObject as? View ?: return
-                        applyRadius(view, radiusPx)
-                    }
-                }
-            )
+            ) { chain ->
+                val result = chain.proceed()
+                val view = chain.getThisObject() as? View ?: return@hookMethodOn result
+                applyRadius(view, radiusPx)
+                result
+            }
 
             Logger.i(TAG, "已挂载 $classPath，圆角=${radiusDp}dp")
         } catch (e: Throwable) {

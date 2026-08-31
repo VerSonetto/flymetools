@@ -12,12 +12,10 @@ import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.util.FlymeVersionUtils
 
 object AODNotificationHook : FeatureHook {
@@ -38,7 +36,6 @@ object AODNotificationHook : FeatureHook {
     private var containerLayout: LinearLayout? = null
     private var iconView: ImageView? = null
     private var notificationTextView: TextView? = null
-    private var packageName: String = ""
 
     @Volatile
     private var cachedNotification: NotificationData? = null
@@ -59,48 +56,47 @@ object AODNotificationHook : FeatureHook {
         }
     }
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        this.packageName = packageName
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "aod_notification")) return
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("aod_notification")) return
+        if (ctx.packageName != "com.android.systemui") return
 
-        hookAODBasicView(lpparam)
+        hookAODBasicView(ctx)
 
         when {
             FlymeVersionUtils.isFlyme12() -> {
-                hookHeadsUpManager(lpparam)
-                hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_NEW)
+                hookHeadsUpManager(ctx)
+                hookAdvertTickerView(ctx, ADVERT_TICKER_VIEW_NEW)
             }
             else -> {
-                hookAlertingManager(lpparam)
-                hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_OLD)
+                hookAlertingManager(ctx)
+                hookAdvertTickerView(ctx, ADVERT_TICKER_VIEW_OLD)
             }
         }
     }
 
-    private fun hookAODBasicView(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookAODBasicView(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(AOD_BASIC_VIEW, lpparam.classLoader)
+            val clazz = Reflect.findClass(AOD_BASIC_VIEW, ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "onFinishInflate",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val basicView = param.thisObject as LinearLayout
-                        val context = basicView.context
+            ) { chain ->
+                val result = chain.proceed()
+                val basicView = chain.getThisObject() as LinearLayout
+                val context = basicView.context
 
-                        containerLayout = createContainerLayout(context, lpparam, packageName)
-                        basicView.addView(containerLayout)
+                containerLayout = createContainerLayout(context, ctx)
+                basicView.addView(containerLayout)
 
-                        cachedNotification?.let { data ->
-                            updateNotificationDisplay(data)
-                        }
-
-                        Logger.i(TAG, "已向 AODBasicView 添加通知容器")
-                    }
+                cachedNotification?.let { data ->
+                    updateNotificationDisplay(data)
                 }
-            )
+
+                Logger.i(TAG, "已向 AODBasicView 添加通知容器")
+                result
+            }
 
             Logger.i(TAG, "已挂载 AODBasicView")
         } catch (e: Throwable) {
@@ -108,35 +104,35 @@ object AODNotificationHook : FeatureHook {
         }
     }
 
-    private fun hookAlertingManager(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookAlertingManager(ctx: HookContext) {
         try {
-            val managerClass = XposedHelpers.findClass(ALERTING_MANAGER, lpparam.classLoader)
-            val entryClass = XposedHelpers.findClass(NOTIFICATION_ENTRY, lpparam.classLoader)
+            val managerClass = Reflect.findClass(ALERTING_MANAGER, ctx.classLoader)
+            val entryClass = Reflect.findClass(NOTIFICATION_ENTRY, ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 managerClass,
                 "showNotification",
                 entryClass,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val entry = param.args[0] ?: return
-                        processNotificationEntry(entry)
-                    }
-                }
-            )
+            ) { chain ->
+                val result = chain.proceed()
+                val entry = chain.getArg(0) ?: return@hookMethodOn result
+                processNotificationEntry(ctx, entry)
+                result
+            }
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 managerClass,
                 "removeAlertEntry",
                 String::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        cachedNotification = null
-                        clearNotificationDisplay()
-                        Logger.i(TAG, "已清除通知（Flyme 10）")
-                    }
-                }
-            )
+            ) { chain ->
+                val result = chain.proceed()
+                cachedNotification = null
+                clearNotificationDisplay()
+                Logger.i(TAG, "已清除通知（Flyme 10）")
+                result
+            }
 
             Logger.i(TAG, "已挂载 Flyme 10: AlertingNotificationManager")
         } catch (e: Throwable) {
@@ -144,38 +140,38 @@ object AODNotificationHook : FeatureHook {
         }
     }
 
-    private fun hookHeadsUpManager(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookHeadsUpManager(ctx: HookContext) {
         try {
-            val managerClass = XposedHelpers.findClass(HEADS_UP_MANAGER_IMPL, lpparam.classLoader)
-            val entryClass = XposedHelpers.findClass(NOTIFICATION_ENTRY, lpparam.classLoader)
+            val managerClass = Reflect.findClass(HEADS_UP_MANAGER_IMPL, ctx.classLoader)
+            val entryClass = Reflect.findClass(NOTIFICATION_ENTRY, ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 managerClass,
                 "showNotification",
                 entryClass,
                 Boolean::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val entry = param.args[0] ?: return
-                        processNotificationEntry(entry)
-                    }
-                }
-            )
+            ) { chain ->
+                val result = chain.proceed()
+                val entry = chain.getArg(0) ?: return@hookMethodOn result
+                processNotificationEntry(ctx, entry)
+                result
+            }
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 managerClass,
                 "removeNotification",
                 String::class.java,
                 Boolean::class.java,
                 String::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        cachedNotification = null
-                        clearNotificationDisplay()
-                        Logger.i(TAG, "已清除通知（Flyme 12）")
-                    }
-                }
-            )
+            ) { chain ->
+                val result = chain.proceed()
+                cachedNotification = null
+                clearNotificationDisplay()
+                Logger.i(TAG, "已清除通知（Flyme 12）")
+                result
+            }
 
             Logger.i(TAG, "已挂载 Flyme 12: HeadsUpManagerImpl")
         } catch (e: Throwable) {
@@ -183,9 +179,9 @@ object AODNotificationHook : FeatureHook {
         }
     }
 
-    private fun processNotificationEntry(entry: Any) {
-        val sbn = XposedHelpers.callMethod(entry, "getSbn") ?: return
-        val notification = XposedHelpers.callMethod(sbn, "getNotification") as? Notification ?: return
+    private fun processNotificationEntry(ctx: HookContext, entry: Any) {
+        val sbn = Reflect.callMethod(ctx.api, entry, "getSbn") ?: return
+        val notification = Reflect.callMethod(ctx.api, sbn, "getNotification") as? Notification ?: return
 
         val extras = notification.extras ?: return
         val title = extras.getCharSequence(Notification.EXTRA_TITLE, "") ?: ""
@@ -198,47 +194,47 @@ object AODNotificationHook : FeatureHook {
         }
     }
 
-    private fun hookAdvertTickerView(lpparam: XC_LoadPackage.LoadPackageParam, className: String) {
+    private fun hookAdvertTickerView(ctx: HookContext, className: String) {
         try {
-            val clazz = XposedHelpers.findClass(className, lpparam.classLoader)
+            val clazz = Reflect.findClass(className, ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "addNotification",
-                "android.service.notification.StatusBarNotification",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val sbn = param.args[0] ?: return
-                        val notification = XposedHelpers.callMethod(sbn, "getNotification") as? Notification ?: return
+                Reflect.findClass("android.service.notification.StatusBarNotification", ctx.classLoader),
+            ) { chain ->
+                val result = chain.proceed()
+                val sbn = chain.getArg(0) ?: return@hookMethodOn result
+                val notification = Reflect.callMethod(ctx.api, sbn, "getNotification") as? Notification ?: return@hookMethodOn result
 
-                        if (XposedHelpers.callMethod(notification, "isMediaNotification") as Boolean) {
-                            return
-                        }
-
-                        val tickerText = XposedHelpers.getObjectField(notification, "tickerText") as? CharSequence ?: return
-                        val icon = notification.smallIcon
-
-                        if (tickerText.isNotEmpty()) {
-                            cachedNotification = NotificationData(icon, "", tickerText)
-                            updateNotificationDisplay(cachedNotification!!)
-                            Logger.i(TAG, "收到 ticker 通知: $tickerText")
-                        }
-                    }
+                if (Reflect.callMethod(ctx.api, notification, "isMediaNotification") as Boolean) {
+                    return@hookMethodOn result
                 }
-            )
 
-            XposedHelpers.findAndHookMethod(
+                val tickerText = Reflect.getObjectField(notification, "tickerText") as? CharSequence ?: return@hookMethodOn result
+                val icon = notification.smallIcon
+
+                if (tickerText.isNotEmpty()) {
+                    cachedNotification = NotificationData(icon, "", tickerText)
+                    updateNotificationDisplay(cachedNotification!!)
+                    Logger.i(TAG, "收到 ticker 通知: $tickerText")
+                }
+                result
+            }
+
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "removeNotification",
                 String::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        cachedNotification = null
-                        clearNotificationDisplay()
-                        Logger.i(TAG, "已清除 ticker 通知")
-                    }
-                }
-            )
+            ) { chain ->
+                val result = chain.proceed()
+                cachedNotification = null
+                clearNotificationDisplay()
+                Logger.i(TAG, "已清除 ticker 通知")
+                result
+            }
 
             Logger.i(TAG, "已挂载 AdvertTickerView: $className")
         } catch (e: Throwable) {
@@ -248,12 +244,11 @@ object AODNotificationHook : FeatureHook {
 
     private fun createContainerLayout(
         context: Context,
-        lpparam: XC_LoadPackage.LoadPackageParam,
-        packageName: String
+        ctx: HookContext
     ): LinearLayout {
-        val maxLines = XposedPrefs.getFeatureValue(lpparam, packageName, "aod_notification", DEFAULT_MAX_LINES)
-        val textSizeSp = XposedPrefs.getFeatureExtraValue(
-            lpparam, packageName, "aod_notification", TEXT_SIZE_SUFFIX, DEFAULT_TEXT_SIZE_SP
+        val maxLines = ctx.featureValue("aod_notification", DEFAULT_MAX_LINES)
+        val textSizeSp = ctx.featureExtraValue(
+            "aod_notification", TEXT_SIZE_SUFFIX, DEFAULT_TEXT_SIZE_SP
         ).coerceIn(8, 28).toFloat()
 
         return LinearLayout(context).apply {

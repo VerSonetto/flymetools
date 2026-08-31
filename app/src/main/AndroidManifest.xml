@@ -31,25 +31,9 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.FlymeTool">
 
-        <meta-data
-            android:name="xposedmodule"
-            android:value="true" />
-        <meta-data
-            android:name="xposeddescription"
-            android:value="Flyme Tool" />
-        <meta-data
-            android:name="xposedminversion"
-            android:value="93" />
-        <meta-data
-            android:name="xposedscope"
-            android:resource="@array/xposed_scope" />
-
         <!--
-          LSPosed 启动顺序（AppHelper.getSettingsIntent）:
-          1) MAIN + de.robv.android.xposed.category.MODULE_SETTINGS
-          2) MAIN + CATEGORY_INFO
-          3) MAIN + CATEGORY_LAUNCHER
-          桌面图标只靠 LauncherAlias(LAUNCHER)，关掉 alias 后仍能从 LSPosed 进 MODULE_SETTINGS。
+          Modern API（101）：模块声明全部移到 META-INF/xposed/（java_init.list / module.prop / scope.list），
+          不再使用经典 metadata。此处仅保留 LSPosed 进入设置页所需的 MODULE_SETTINGS activity。
         -->
         <activity
             android:name=".MainActivity"

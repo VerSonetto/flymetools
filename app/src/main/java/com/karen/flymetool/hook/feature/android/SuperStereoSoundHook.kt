@@ -2,12 +2,10 @@ package com.karen.flymetool.hook.feature.android
 
 import android.content.ContentResolver
 import android.provider.Settings
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.util.FlymeVersionUtils
 
 object SuperStereoSoundHook : FeatureHook {
@@ -18,9 +16,9 @@ object SuperStereoSoundHook : FeatureHook {
     private var mainSwitchEnabled = false
     private var contentResolver: ContentResolver? = null
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "force_super_stereo")) return
-        if (lpparam.packageName != "android") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("force_super_stereo")) return
+        if (ctx.packageName != "android") return
 
         // 该功能仅适配 Flyme 10（原 android 作用域也仅对 Flyme 10 开放），
         // 放开作用域后需在运行时兜底，避免 Flyme 11/12 误挂载。
@@ -29,60 +27,59 @@ object SuperStereoSoundHook : FeatureHook {
             return
         }
 
-        val classLoader = lpparam.classLoader
-        hookSettingsSystem(classLoader)
-        hookAudioSystem(classLoader)
+        hookSettingsSystem(ctx)
+        hookAudioSystem(ctx)
     }
 
-    private fun hookSettingsSystem(classLoader: ClassLoader) {
+    private fun hookSettingsSystem(ctx: HookContext) {
         try {
-            val settingsSystemClass = XposedHelpers.findClass("android.provider.Settings.System", classLoader)
+            val settingsSystemClass = Reflect.findClass("android.provider.Settings.System", ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 settingsSystemClass,
                 "putIntForUser",
                 ContentResolver::class.java,
                 String::class.java,
                 Int::class.java,
                 Int::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val key = param.args[1] as? String ?: return
-                        if (key == SETTING_KEY) {
-                            val value = param.args[2] as Int
-                            mainSwitchEnabled = value == 1
-                            Logger.d(TAG) { "主开关已通过 Settings 更新: $mainSwitchEnabled" }
-                        }
-                    }
+            ) { chain ->
+                val key = chain.getArg(1) as? String ?: return@hookMethodOn chain.proceed()
+                if (key == SETTING_KEY) {
+                    val value = chain.getArg(2) as Int
+                    mainSwitchEnabled = value == 1
+                    Logger.d(TAG) { "主开关已通过 Settings 更新: $mainSwitchEnabled" }
                 }
-            )
+                return@hookMethodOn chain.proceed()
+            }
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 settingsSystemClass,
                 "getIntForUser",
                 ContentResolver::class.java,
                 String::class.java,
                 Int::class.java,
                 Int::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val key = param.args[1] as? String ?: return
-                        if (key == SETTING_KEY) {
-                            val resolver = param.args[0] as ContentResolver
-                            if (contentResolver == null) {
-                                contentResolver = resolver
-                                try {
-                                    val currentValue = Settings.System.getInt(resolver, SETTING_KEY, 0)
-                                    mainSwitchEnabled = currentValue == 1
-                                    Logger.i(TAG, "初始主开关状态: $mainSwitchEnabled")
-                                } catch (t: Throwable) {
-                                    Logger.e(TAG, "读取初始状态失败", t)
-                                }
-                            }
+            ) { chain ->
+                val result = chain.proceed()
+
+                val key = chain.getArg(1) as? String ?: return@hookMethodOn result
+                if (key == SETTING_KEY) {
+                    val resolver = chain.getArg(0) as ContentResolver
+                    if (contentResolver == null) {
+                        contentResolver = resolver
+                        try {
+                            val currentValue = Settings.System.getInt(resolver, SETTING_KEY, 0)
+                            mainSwitchEnabled = currentValue == 1
+                            Logger.i(TAG, "初始主开关状态: $mainSwitchEnabled")
+                        } catch (t: Throwable) {
+                            Logger.e(TAG, "读取初始状态失败", t)
                         }
                     }
                 }
-            )
+                return@hookMethodOn result
+            }
 
             Logger.i(TAG, "已挂载 Settings.System")
 
@@ -91,31 +88,26 @@ object SuperStereoSoundHook : FeatureHook {
         }
     }
 
-    private fun hookAudioSystem(classLoader: ClassLoader) {
+    private fun hookAudioSystem(ctx: HookContext) {
         try {
-            val audioSystemClass = XposedHelpers.findClass("android.media.AudioSystem", classLoader)
+            val audioSystemClass = Reflect.findClass("android.media.AudioSystem", ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(
-                audioSystemClass,
-                "setParameters",
-                String::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val keyValue = param.args[0] as? String ?: return
+            Reflect.hookMethodOn(ctx.api, audioSystemClass, "setParameters", String::class.java) { chain ->
+                val keyValue = chain.getArg(0) as? String ?: return@hookMethodOn chain.proceed()
 
-                        if (keyValue.contains(TARGET_PARAM) && mainSwitchEnabled) {
-                            val newValue = keyValue.replace(
-                                "$TARGET_PARAM=false",
-                                "$TARGET_PARAM=true"
-                            )
-                            if (newValue != keyValue) {
-                                param.args[0] = newValue
-                                Logger.i(TAG, "已强制 stereo_sound_game_mode=true")
-                            }
-                        }
+                if (keyValue.contains(TARGET_PARAM) && mainSwitchEnabled) {
+                    val newValue = keyValue.replace(
+                        "$TARGET_PARAM=false",
+                        "$TARGET_PARAM=true"
+                    )
+                    if (newValue != keyValue) {
+                        Logger.i(TAG, "已强制 stereo_sound_game_mode=true")
+                        val newArgs = chain.getArgs().toMutableList().apply { set(0, newValue) }.toTypedArray()
+                        return@hookMethodOn chain.proceed(newArgs)
                     }
                 }
-            )
+                return@hookMethodOn chain.proceed()
+            }
 
             Logger.i(TAG, "SuperStereoSoundHook 初始化完成")
 

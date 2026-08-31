@@ -7,14 +7,12 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
 import android.util.LruCache
 import android.widget.ImageView
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.util.FlymeVersionUtils
+import io.github.libxposed.api.XposedInterface
 
 object AppIconNotificationHook : FeatureHook {
 
@@ -27,16 +25,16 @@ object AppIconNotificationHook : FeatureHook {
     /** 应用图标缓存：getApplicationIcon 是 binder + 位图解码，按包缓存避免每次图标更新重取 */
     private val appIconCache = LruCache<String, Drawable>(64)
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "app_icon_notification")) return
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("app_icon_notification")) return
+        if (ctx.packageName != "com.android.systemui") return
 
         Logger.i(TAG, "开始挂载 StatusBarIconView 与 Ticker")
 
         try {
-            hookFlymeNotificationIconUtils(lpparam)
-            hookStatusBarIconView(lpparam)
-            hookMarqueeTicker(lpparam)
+            hookFlymeNotificationIconUtils(ctx)
+            hookStatusBarIconView(ctx)
+            hookMarqueeTicker(ctx)
 
             Logger.i(TAG, "全部 Hook 挂载完成")
         } catch (e: Throwable) {
@@ -44,115 +42,120 @@ object AppIconNotificationHook : FeatureHook {
         }
     }
 
-    private fun hookStatusBarIconView(lpparam: XC_LoadPackage.LoadPackageParam) {
-        val iconViewClass = XposedHelpers.findClass(
+    private fun hookStatusBarIconView(ctx: HookContext) {
+        val iconViewClass = Reflect.findClass(
             "com.android.systemui.statusbar.StatusBarIconView",
-            lpparam.classLoader
+            ctx.classLoader
         )
 
-        XposedHelpers.findAndHookMethod(
+        Reflect.hookMethodOn(
+            ctx.api,
             iconViewClass,
             "getIcon",
-            "com.android.internal.statusbar.StatusBarIcon",
-            object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val thisObject = param.thisObject
-                    val sbn = XposedHelpers.getObjectField(thisObject, "mNotification") ?: return
+            Reflect.findClass("com.android.internal.statusbar.StatusBarIcon", ctx.classLoader),
+        ) { chain ->
+            val result = chain.proceed()
+            val thisObject = chain.getThisObject()
+            val sbn = Reflect.getObjectField(thisObject, "mNotification") ?: return@hookMethodOn result
 
-                    val context = XposedHelpers.callMethod(thisObject, "getContext") as android.content.Context
-                    val pkgName = resolveAppPackage(sbn) ?: return
+            val context = Reflect.callMethod(ctx.api, thisObject, "getContext") as android.content.Context
+            val pkgName = resolveAppPackage(ctx.api, sbn) ?: return@hookMethodOn result
 
-                    if (pkgName == "com.android.systemui" || pkgName == "android") {
-                        return
-                    }
+            if (pkgName == "com.android.systemui" || pkgName == "android") {
+                return@hookMethodOn result
+            }
 
+            try {
+                val appIcon = getAppIcon(context, pkgName)
+                if (appIcon != null) {
+                    val density = context.resources.displayMetrics.density
+                    val iconSizePx = (ICON_DRAWING_SIZE_DP * density).toInt()
+                    val icon = iconFromDrawable(appIcon, iconSizePx)
+                    val statusBarIcon = chain.getArg(0)
+                    Reflect.setObjectField(statusBarIcon, "icon", icon)
+                    val newResult = icon.loadDrawable(context)
+
+                    appIconPackages.add(pkgName)
+                    Reflect.setBooleanField(thisObject, "mShowsConversation", true)
+                    newResult
+                } else {
+                    result
+                }
+            } catch (e: Exception) {
+                Logger.once(TAG, "app_icon_$pkgName", "获取应用图标失败 pkg=$pkgName")
+                result
+            }
+        }
+
+        Reflect.hookMethodOn(ctx.api, iconViewClass, "updateIconColor") { chain ->
+            val thisObject = chain.getThisObject()
+            val sbn = Reflect.getObjectField(thisObject, "mNotification") ?: return@hookMethodOn chain.proceed()
+
+            val pkgName = resolveAppPackage(ctx.api, sbn)
+            if (pkgName != null && pkgName in appIconPackages) {
+                Reflect.callMethod(ctx.api, thisObject, "setColorFilter", null as Any?)
+                null
+            } else {
+                chain.proceed()
+            }
+        }
+    }
+
+    private fun hookMarqueeTicker(ctx: HookContext) {
+        val marqueeTickerClass = findMarqueeTickerClass(ctx) ?: return
+
+        try {
+
+            Reflect.hookMethodOn(
+                ctx.api,
+                marqueeTickerClass,
+                "addEntry",
+                Reflect.findClass("android.service.notification.StatusBarNotification", ctx.classLoader),
+            ) { chain ->
+                val sbn = chain.getArg(0)
+                val pkgName = resolveAppPackage(ctx.api, sbn)
+                if (pkgName != null && pkgName != "com.android.systemui" && pkgName != "android") {
                     try {
+                        val notification = Reflect.callMethod(ctx.api, sbn, "getNotification")
+                        val context = Reflect.getObjectField(chain.getThisObject(), "mContext") as android.content.Context
                         val appIcon = getAppIcon(context, pkgName)
                         if (appIcon != null) {
                             val density = context.resources.displayMetrics.density
                             val iconSizePx = (ICON_DRAWING_SIZE_DP * density).toInt()
-                            val icon = iconFromDrawable(appIcon, iconSizePx)
-                            val statusBarIcon = param.args[0]
-                            XposedHelpers.setObjectField(statusBarIcon, "icon", icon)
-                            param.result = icon.loadDrawable(context)
+                            val newIcon = iconFromDrawable(appIcon, iconSizePx)
 
-                            appIconPackages.add(pkgName)
-                            XposedHelpers.setBooleanField(thisObject, "mShowsConversation", true)
+                            Reflect.callMethod(ctx.api, notification, "setSmallIcon", newIcon)
                         }
-                    } catch (e: Exception) {
-                        Logger.once(TAG, "app_icon_$pkgName", "获取应用图标失败 pkg=$pkgName")
+                    } catch (_: Throwable) {
                     }
                 }
+
+                val result = chain.proceed()
+
+                try {
+                    val sw = Reflect.getObjectField(chain.getThisObject(), "mIconSwitcher") as? android.widget.ImageSwitcher
+                    clearIconView(sw)
+                    sw?.post { clearIconView(sw) }
+                } catch (_: Throwable) {
+                }
+
+                result
             }
-        )
 
-        XposedHelpers.findAndHookMethod(
-            iconViewClass,
-            "updateIconColor",
-            object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val thisObject = param.thisObject
-                    val sbn = XposedHelpers.getObjectField(thisObject, "mNotification") ?: return
-
-                    val pkgName = resolveAppPackage(sbn)
-                    if (pkgName != null && pkgName in appIconPackages) {
-                        XposedHelpers.callMethod(thisObject, "setColorFilter", null as Any?)
-                        param.result = null
-                    }
-                }
-            }
-        )
-    }
-
-    private fun hookMarqueeTicker(lpparam: XC_LoadPackage.LoadPackageParam) {
-        val marqueeTickerClass = findMarqueeTickerClass(lpparam) ?: return
-
-        try {
-
-            XposedHelpers.findAndHookMethod(
-                marqueeTickerClass,
-                "addEntry",
-                "android.service.notification.StatusBarNotification",
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val sbn = param.args[0]
-                        val pkgName = resolveAppPackage(sbn) ?: return
-
-                        if (pkgName == "com.android.systemui" || pkgName == "android") return
-
-                        val notification = XposedHelpers.callMethod(sbn, "getNotification")
-                        val context = XposedHelpers.getObjectField(param.thisObject, "mContext") as android.content.Context
-                        val appIcon = getAppIcon(context, pkgName) ?: return
-
-                        val density = context.resources.displayMetrics.density
-                        val iconSizePx = (ICON_DRAWING_SIZE_DP * density).toInt()
-                        val newIcon = iconFromDrawable(appIcon, iconSizePx)
-
-                        XposedHelpers.callMethod(notification, "setSmallIcon", newIcon)
-                    }
-
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val sw = XposedHelpers.getObjectField(param.thisObject, "mIconSwitcher") as? android.widget.ImageSwitcher
-                        clearIconView(sw)
-                        sw?.post { clearIconView(sw) }
-                    }
-                }
-            )
-
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 marqueeTickerClass,
                 "onDarkChanged",
                 ArrayList::class.java, Float::class.java, Int::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val sw = XposedHelpers.getObjectField(param.thisObject, "mIconSwitcher") as? android.widget.ImageSwitcher
-                        clearIconView(sw)
-                    }
-                }
-            )
+            ) { chain ->
+                val result = chain.proceed()
+                val sw = Reflect.getObjectField(chain.getThisObject(), "mIconSwitcher") as? android.widget.ImageSwitcher
+                clearIconView(sw)
+                result
+            }
 
             if (FlymeVersionUtils.isFlyme12()) {
-                hookTickerIconColorFilter(lpparam)
+                hookTickerIconColorFilter(ctx)
             }
 
             Logger.i(TAG, "已挂载 MarqueeTicker.addEntry 和 onDarkChanged")
@@ -161,12 +164,12 @@ object AppIconNotificationHook : FeatureHook {
         }
     }
 
-    private fun findMarqueeTickerClass(lpparam: XC_LoadPackage.LoadPackageParam): Class<*>? {
+    private fun findMarqueeTickerClass(ctx: HookContext): Class<*>? {
         try {
-            return XposedHelpers.findClass("com.flyme.systemui.statusbar.ticker.MarqueeTicker", lpparam.classLoader)
+            return Reflect.findClass("com.flyme.systemui.statusbar.ticker.MarqueeTicker", ctx.classLoader)
         } catch (_: Throwable) {}
         try {
-            return XposedHelpers.findClass("com.flyme.statusbar.ticker.MarqueeTicker", lpparam.classLoader)
+            return Reflect.findClass("com.flyme.statusbar.ticker.MarqueeTicker", ctx.classLoader)
         } catch (_: Throwable) {}
         Logger.w(TAG, "未找到 MarqueeTicker 类")
         return null
@@ -180,38 +183,33 @@ object AppIconNotificationHook : FeatureHook {
         view.drawable?.mutate()?.clearColorFilter()
     }
 
-    private fun hookTickerIconColorFilter(lpparam: XC_LoadPackage.LoadPackageParam) {
-        XposedBridge.hookAllMethods(
-            ImageView::class.java, "setColorFilter",
-            object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val iv = param.thisObject as? ImageView ?: return
-                    if (iv.parent !is android.widget.ImageSwitcher) return
-                    if (iv.parent == tickerSwitcher) {
-                        param.result = null
-                    }
-                }
+    private fun hookTickerIconColorFilter(ctx: HookContext) {
+        Reflect.hookAllMethods(ctx.api, ImageView::class.java, "setColorFilter", excluded = { false }) { chain ->
+            val iv = chain.getThisObject() as? ImageView ?: return@hookAllMethods chain.proceed()
+            if (iv.parent !is android.widget.ImageSwitcher) return@hookAllMethods chain.proceed()
+            if (iv.parent == tickerSwitcher) {
+                null
+            } else {
+                chain.proceed()
             }
-        )
+        }
     }
 
-    private fun hookFlymeNotificationIconUtils(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookFlymeNotificationIconUtils(ctx: HookContext) {
         try {
-            val flymeIconUtilsClass = XposedHelpers.findClass(
+            val flymeIconUtilsClass = Reflect.findClass(
                 "com.flyme.notification.utils.FlymeNotificationIconUtils",
-                lpparam.classLoader
+                ctx.classLoader
             )
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 flymeIconUtilsClass,
                 "resetNotificationSmallIconIfNeed",
-                "android.service.notification.StatusBarNotification",
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.result = null
-                    }
-                }
-            )
+                Reflect.findClass("android.service.notification.StatusBarNotification", ctx.classLoader),
+            ) { chain ->
+                null
+            }
 
             Logger.i(TAG, "已挂载 FlymeNotificationIconUtils.resetNotificationSmallIconIfNeed")
         } catch (e: Throwable) {
@@ -225,14 +223,14 @@ object AppIconNotificationHook : FeatureHook {
     }
 
     /** MEIZU Push 等代发通知：getPackageName=推送服务，getOrigPackageName=真应用 */
-    private fun resolveAppPackage(sbn: Any): String? {
+    private fun resolveAppPackage(api: XposedInterface, sbn: Any): String? {
         return try {
-            val orig = XposedHelpers.callMethod(sbn, "getOrigPackageName") as? String
+            val orig = Reflect.callMethod(api, sbn, "getOrigPackageName") as? String
             if (!orig.isNullOrEmpty()) orig
-            else XposedHelpers.callMethod(sbn, "getPackageName") as? String
+            else Reflect.callMethod(api, sbn, "getPackageName") as? String
         } catch (_: Throwable) {
             try {
-                XposedHelpers.callMethod(sbn, "getPackageName") as? String
+                Reflect.callMethod(api, sbn, "getPackageName") as? String
             } catch (_: Throwable) {
                 null
             }

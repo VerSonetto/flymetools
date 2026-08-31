@@ -1,13 +1,10 @@
 package com.karen.flymetool.hook.feature.systemui
 
 import android.os.VibrationEffect
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -33,72 +30,71 @@ object EdgeBackVibrateHook : FeatureHook {
 
     private val triggerHooked = AtomicBoolean(false)
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
+        if (ctx.packageName != "com.android.systemui") return
 
-        intensity = XposedPrefs.getFeatureValue(
-            lpparam, packageName, FEATURE_KEY, DEFAULT_INTENSITY
+        intensity = ctx.featureValue(
+            FEATURE_KEY, DEFAULT_INTENSITY
         ).coerceIn(0, 100)
 
-        hookForceEnableFlag(lpparam)
-        hookVibrationEffectGet()
+        hookForceEnableFlag(ctx)
+        hookVibrationEffectGet(ctx)
         Logger.i(TAG, "已加载，强度=$intensity")
     }
 
-    private fun hookForceEnableFlag(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookForceEnableFlag(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(HANDLER, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(
+            val clazz = Reflect.findClass(HANDLER, ctx.classLoader)
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "updateIsEnabledMZ",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            if (intensity > 0) {
-                                XposedHelpers.setBooleanField(
-                                    param.thisObject,
-                                    "mEdgeBackVibrateFeedBack",
-                                    true
-                                )
-                            }
-                        } catch (_: Throwable) {
-                        }
+            ) { chain ->
+                val result = chain.proceed()
+                try {
+                    if (intensity > 0) {
+                        Reflect.setBooleanField(
+                            chain.getThisObject(),
+                            "mEdgeBackVibrateFeedBack",
+                            true
+                        )
                     }
+                } catch (_: Throwable) {
                 }
-            )
+                result
+            }
             // 构造后从 mBackCallback 拿具体类，再 hook triggerBack 强制 flag（只挂一次）
             for (ctor in clazz.declaredConstructors) {
                 try {
-                    XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            if (!triggerHooked.compareAndSet(false, true)) return
-                            try {
-                                val handler = param.thisObject
-                                val cb = XposedHelpers.getObjectField(handler, "mBackCallback")
-                                    ?: return
-                                val m = cb.javaClass.getDeclaredMethod("triggerBack")
-                                XposedBridge.hookMethod(m, object : XC_MethodHook() {
-                                    override fun beforeHookedMethod(p: MethodHookParam) {
-                                        try {
-                                            val outer = XposedHelpers.getSurroundingThis(p.thisObject)
-                                                ?: handler
-                                            XposedHelpers.setBooleanField(
-                                                outer,
-                                                "mEdgeBackVibrateFeedBack",
-                                                intensity > 0
-                                            )
-                                        } catch (_: Throwable) {
-                                        }
-                                    }
-                                })
-                                Logger.i(TAG, "已挂载 ${cb.javaClass.name}.triggerBack flag")
-                            } catch (t: Throwable) {
-                                triggerHooked.set(false)
-                                Logger.e(TAG, "挂载 triggerBack flag 失败", t)
+                    Reflect.hookConstructorOn(ctx.api, clazz, *ctor.parameterTypes) { chain ->
+                        val result = chain.proceed()
+                        if (!triggerHooked.compareAndSet(false, true)) return@hookConstructorOn result
+                        try {
+                            val handler = chain.getThisObject()
+                            val cb = Reflect.getObjectField(handler, "mBackCallback")
+                                ?: return@hookConstructorOn result
+                            val m = cb.javaClass.getDeclaredMethod("triggerBack")
+                            Reflect.hookMethod(ctx.api, m) { chain2 ->
+                                try {
+                                    val outer = Reflect.getSurroundingThis(chain2.getThisObject())
+                                        ?: handler
+                                    Reflect.setBooleanField(
+                                        outer,
+                                        "mEdgeBackVibrateFeedBack",
+                                        intensity > 0
+                                    )
+                                } catch (_: Throwable) {
+                                }
+                                chain2.proceed()
                             }
+                            Logger.i(TAG, "已挂载 ${cb.javaClass.name}.triggerBack flag")
+                        } catch (t: Throwable) {
+                            triggerHooked.set(false)
+                            Logger.e(TAG, "挂载 triggerBack flag 失败", t)
                         }
-                    })
+                        result
+                    }
                 } catch (_: Throwable) {
                 }
             }
@@ -109,31 +105,29 @@ object EdgeBackVibrateHook : FeatureHook {
     }
 
     /** 直接改 get(31025) 的返回值，无需 hook 抽象 BackCallback */
-    private fun hookVibrationEffectGet() {
+    private fun hookVibrationEffectGet(ctx: HookContext) {
         try {
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 VibrationEffect::class.java,
                 "get",
                 Int::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val id = param.args[0] as? Int ?: return
-                        if (id != EDGE_BACK_EFFECT_ID) return
-                        try {
-                            if (intensity <= 0) {
-                                // 极弱脉冲，近似关闭
-                                param.result = VibrationEffect.createOneShot(1L, 1)
-                            } else {
-                                val amp = ((intensity * 255) / 100).coerceIn(1, 255)
-                                param.result =
-                                    VibrationEffect.createOneShot(VIBRATE_DURATION_MS, amp)
-                            }
-                        } catch (t: Throwable) {
-                            Logger.e(TAG, "替换振动效果失败", t)
-                        }
+            ) { chain ->
+                val id = chain.getArg(0) as? Int ?: return@hookMethodOn chain.proceed()
+                if (id != EDGE_BACK_EFFECT_ID) return@hookMethodOn chain.proceed()
+                try {
+                    if (intensity <= 0) {
+                        // 极弱脉冲，近似关闭
+                        return@hookMethodOn VibrationEffect.createOneShot(1L, 1)
+                    } else {
+                        val amp = ((intensity * 255) / 100).coerceIn(1, 255)
+                        return@hookMethodOn VibrationEffect.createOneShot(VIBRATE_DURATION_MS, amp)
                     }
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "替换振动效果失败", t)
+                    chain.proceed()
                 }
-            )
+            }
             Logger.i(TAG, "已挂载 VibrationEffect.get(31025)")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 VibrationEffect.get 失败", e)

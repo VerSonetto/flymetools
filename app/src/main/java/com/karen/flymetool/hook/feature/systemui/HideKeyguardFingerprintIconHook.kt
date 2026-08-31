@@ -1,12 +1,10 @@
 package com.karen.flymetool.hook.feature.systemui
 
 import android.view.View
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 
 /**
  * 隐藏锁屏指纹图标（UDFPS 图标 + DeviceEntry 指纹态）。
@@ -20,31 +18,27 @@ object HideKeyguardFingerprintIconHook : FeatureHook {
     private const val TAG = "HideKeyguardFpIcon"
     private const val FEATURE_KEY = "hide_keyguard_fingerprint_icon"
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
+        if (ctx.packageName != "com.android.systemui") return
 
-        blockShow(lpparam, AUTH_CONTROLLER)
-        blockShow(lpparam, UDFPS_CONTROLLER)
-        forceDismissOnShowBlocked(lpparam)
-        hideDeviceEntryFingerprint(lpparam)
+        blockShow(ctx, AUTH_CONTROLLER)
+        blockShow(ctx, UDFPS_CONTROLLER)
+        forceDismissOnShowBlocked(ctx)
+        hideDeviceEntryFingerprint(ctx)
 
         Logger.i(TAG, "已加载")
     }
 
     /** 拦截 showFingerprintIcon，禁止把图标再亮出来 */
-    private fun blockShow(lpparam: XC_LoadPackage.LoadPackageParam, className: String) {
+    private fun blockShow(ctx: HookContext, className: String) {
         try {
-            val clazz = XposedHelpers.findClass(className, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(
+            val clazz = Reflect.findClass(className, ctx.classLoader)
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "showFingerprintIcon",
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.result = null
-                    }
-                }
-            )
+            ) { null }
             Logger.i(TAG, "已拦截 $className.showFingerprintIcon")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 $className.showFingerprintIcon 失败", e)
@@ -52,36 +46,33 @@ object HideKeyguardFingerprintIconHook : FeatureHook {
     }
 
     /** 构造后清一次图标；shouldDismiss 恒 true 让系统更积极收起 */
-    private fun forceDismissOnShowBlocked(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun forceDismissOnShowBlocked(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(UDFPS_CONTROLLER, lpparam.classLoader)
-            val dismiss = object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
+            val clazz = Reflect.findClass(UDFPS_CONTROLLER, ctx.classLoader)
+            val dismiss: (io.github.libxposed.api.XposedInterface.Chain) -> Any? = { chain ->
+                val result = chain.proceed()
+                try {
+                    Reflect.callMethod(ctx.api, chain.getThisObject(), "dismissFpIconWithoutAnim")
+                } catch (_: Throwable) {
                     try {
-                        XposedHelpers.callMethod(param.thisObject, "dismissFpIconWithoutAnim")
+                        Reflect.callMethod(ctx.api, chain.getThisObject(), "dismissFingerprintIcon")
                     } catch (_: Throwable) {
-                        try {
-                            XposedHelpers.callMethod(param.thisObject, "dismissFingerprintIcon")
-                        } catch (_: Throwable) {
-                        }
                     }
                 }
+                result
             }
             for (ctor in clazz.declaredConstructors) {
                 try {
-                    XposedHelpers.findAndHookConstructor(clazz, *ctor.parameterTypes, dismiss)
+                    Reflect.hookConstructorOn(ctx.api, clazz, *ctor.parameterTypes) { chain -> dismiss(chain) }
                 } catch (_: Throwable) {
                 }
             }
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "shouldDismissFingerprintIcon",
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.result = true
-                    }
-                }
-            )
+            ) { true }
+
             Logger.i(TAG, "已挂载 UdfpsController dismiss + shouldDismiss")
         } catch (e: Throwable) {
             Logger.e(TAG, "forceDismiss 设置失败", e)
@@ -93,56 +84,59 @@ object HideKeyguardFingerprintIconHook : FeatureHook {
      * LOCK/UNLOCK 仍可显示；仅当 contentDescription 为指纹标签时也可 GONE 整个 view。
      * 更稳：getIconState(FINGERPRINT, *) 返回 StateSet.NOTHING，不画指纹帧。
      */
-    private fun hideDeviceEntryFingerprint(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hideDeviceEntryFingerprint(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(DEVICE_ENTRY_ICON, lpparam.classLoader)
-            val iconTypeCl = XposedHelpers.findClass(
+            val clazz = Reflect.findClass(DEVICE_ENTRY_ICON, ctx.classLoader)
+            val iconTypeCl = Reflect.findClass(
                 "$DEVICE_ENTRY_ICON\$IconType",
-                lpparam.classLoader
+                ctx.classLoader
             )
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "getIconState",
                 iconTypeCl,
                 Boolean::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        try {
-                            val type = param.args[0] ?: return
-                            if (type.toString().contains("FINGERPRINT")) {
-                                // 与 IconType.NONE 相同：不展示指纹帧
-                                param.result = android.util.StateSet.NOTHING
-                            }
-                        } catch (_: Throwable) {
-                        }
+            ) { chain ->
+                try {
+                    val type = chain.getArg(0) ?: return@hookMethodOn chain.proceed()
+                    if (type.toString().contains("FINGERPRINT")) {
+                        // 与 IconType.NONE 相同：不展示指纹帧
+                        return@hookMethodOn android.util.StateSet.NOTHING
                     }
+                    chain.proceed()
+                } catch (_: Throwable) {
+                    chain.proceed()
                 }
-            )
+            }
 
             // 整 view 被设为 VISIBLE 时，若当前是指纹图标描述，则压回 GONE（兜底）
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "setVisibility",
                 Int::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        try {
-                            val vis = param.args[0] as Int
-                            if (vis != View.VISIBLE && vis != View.INVISIBLE) return
-                            val view = param.thisObject as View
-                            val desc = view.contentDescription?.toString().orEmpty()
-                            // 指纹相关无障碍文案时隐藏（LOCK/UNLOCK 一般不含 fingerprint）
-                            if (desc.contains("fingerprint", ignoreCase = true) ||
-                                desc.contains("指纹")
-                            ) {
-                                param.args[0] = View.GONE
-                            }
-                        } catch (_: Throwable) {
-                        }
+            ) { chain ->
+                try {
+                    val vis = chain.getArg(0) as Int
+                    if (vis != View.VISIBLE && vis != View.INVISIBLE) return@hookMethodOn chain.proceed()
+                    val view = chain.getThisObject() as View
+                    val desc = view.contentDescription?.toString().orEmpty()
+                    // 指纹相关无障碍文案时隐藏（LOCK/UNLOCK 一般不含 fingerprint）
+                    if (desc.contains("fingerprint", ignoreCase = true) ||
+                        desc.contains("指纹")
+                    ) {
+                        val args = chain.getArgs().toTypedArray()
+                        args[0] = View.GONE
+                        chain.proceed(args)
+                    } else {
+                        chain.proceed()
                     }
+                } catch (_: Throwable) {
+                    chain.proceed()
                 }
-            )
+            }
 
             Logger.i(TAG, "已挂载 DeviceEntryIconView 指纹隐藏")
         } catch (e: Throwable) {

@@ -1,8 +1,8 @@
 package com.karen.flymetool.hook.entry
 
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 
 /**
  * Hook 入口接口
@@ -17,7 +17,7 @@ interface HookEntry {
     /**
      * 初始化该应用下的所有 Hook
      */
-    fun initHooks(lpparam: XC_LoadPackage.LoadPackageParam)
+    fun initHooks(ctx: HookContext)
 }
 
 /**
@@ -25,16 +25,15 @@ interface HookEntry {
  * 单个 Hook 的 object <clinit> 失败时只跳过该功能，不影响同作用域其它 Hook。
  */
 fun safeInitHooks(
-    targetPackage: String,
-    lpparam: XC_LoadPackage.LoadPackageParam,
+    ctx: HookContext,
     hookFactories: List<Pair<String, () -> FeatureHook>>
 ) {
     for ((name, factory) in hookFactories) {
         try {
             val hook = factory()
-            hook.handle(lpparam, targetPackage)
+            hook.handle(ctx)
         } catch (e: Throwable) {
-            Logger.e("HookEntry", "Hook $name 执行失败", e, "pkg" to targetPackage)
+            Logger.e("HookEntry", "Hook $name 执行失败", e, "pkg" to ctx.packageName)
         }
     }
 }

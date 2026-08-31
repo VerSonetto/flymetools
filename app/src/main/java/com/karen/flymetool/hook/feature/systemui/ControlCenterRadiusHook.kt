@@ -6,13 +6,10 @@ import android.graphics.drawable.RippleDrawable
 import android.util.TypedValue
 import android.view.View
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.util.FlymeVersionUtils
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 
 /**
  * 控制中心组件圆角。
@@ -43,12 +40,12 @@ object ControlCenterRadiusHook : FeatureHook {
     /** 目标资源 ID，-1 未解析。SystemUI 资源表进程内固定，首次解析后缓存全局有效 */
     private var targetDimenResId = -1
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (ctx.packageName != "com.android.systemui") return
         if (!FlymeVersionUtils.isFlyme12()) return
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
 
-        val radiusDp = XposedPrefs.getFeatureValue(lpparam, packageName, FEATURE_KEY, 22)
+        val radiusDp = ctx.featureValue(FEATURE_KEY, 22)
             .coerceIn(0, 50)
         val radiusPx = TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_DIP,
@@ -56,45 +53,45 @@ object ControlCenterRadiusHook : FeatureHook {
             Resources.getSystem().displayMetrics
         )
 
-        hookResourcesDimension(radiusPx)
-        hookSmoothCornerPathFallback(lpparam)
-        hookCustomSmoothCornerDrawable(lpparam, radiusPx)
-        hookSetViewSmoothCorner(lpparam, radiusPx)
-        hookTileBackgroundCreation(lpparam, radiusPx)
+        hookResourcesDimension(ctx, radiusPx)
+        hookSmoothCornerPathFallback(ctx)
+        hookCustomSmoothCornerDrawable(ctx, radiusPx)
+        hookSetViewSmoothCorner(ctx, radiusPx)
+        hookTileBackgroundCreation(ctx, radiusPx)
 
         Logger.i(TAG, "控制中心组件圆角 Hook 完成: ${radiusDp}dp")
     }
 
-    private fun hookResourcesDimension(radiusPx: Float) {
+    private fun hookResourcesDimension(ctx: HookContext, radiusPx: Float) {
         try {
             val radiusPxInt = radiusPx.toInt()
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 Resources::class.java,
                 "getDimensionPixelSize",
                 Int::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        if (isTargetDimen(param.thisObject as Resources, param.args[0] as Int)) {
-                            param.result = radiusPxInt
-                            Logger.once(TAG, "dim_px", "qs_corner_radius = ${radiusPxInt}px")
-                        }
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+                if (isTargetDimen(chain.getThisObject() as Resources, chain.getArg(0) as Int)) {
+                    Logger.once(TAG, "dim_px", "qs_corner_radius = ${radiusPxInt}px")
+                    return@hookMethodOn radiusPxInt
                 }
-            )
+                result
+            }
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 Resources::class.java,
                 "getDimension",
                 Int::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        if (isTargetDimen(param.thisObject as Resources, param.args[0] as Int)) {
-                            param.result = radiusPx
-                        }
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+                if (isTargetDimen(chain.getThisObject() as Resources, chain.getArg(0) as Int)) {
+                    return@hookMethodOn radiusPx
                 }
-            )
+                result
+            }
 
             Logger.i(TAG, "已挂载 Resources.getDimension*")
         } catch (e: Throwable) {
@@ -114,10 +111,11 @@ object ControlCenterRadiusHook : FeatureHook {
      * CustomSmoothCornerDrawable 在大圆角时仍走平滑贝塞尔路径，四边中点会露出方形外框接缝。
      * 系统原生逻辑：半径超过 smoothness 上限时应改用 RoundRect（useNativeRoundCorner=true）。
      */
-    private fun hookSmoothCornerPathFallback(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookSmoothCornerPathFallback(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(SMOOTH_CORNER_PATH_GENERATOR, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(
+            val clazz = Reflect.findClass(SMOOTH_CORNER_PATH_GENERATOR, ctx.classLoader)
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "genSmoothCornerPath",
                 Float::class.javaPrimitiveType,
@@ -127,36 +125,36 @@ object ControlCenterRadiusHook : FeatureHook {
                 Float::class.javaPrimitiveType,
                 Float::class.javaPrimitiveType,
                 Boolean::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        if (param.args[6] as Boolean) return
+            ) { chain ->
+                val args = chain.getArgs().toTypedArray()
+                if (args[6] as Boolean) return@hookMethodOn chain.proceed()
 
-                        val left = param.args[0] as Float
-                        val top = param.args[1] as Float
-                        val right = param.args[2] as Float
-                        val bottom = param.args[3] as Float
-                        val smoothness = param.args[4] as Float
-                        val radius = param.args[5] as Float
-                        val width = right - left
-                        val height = bottom - top
-                        if (width <= 0f || height <= 0f) return
+                val left = args[0] as Float
+                val top = args[1] as Float
+                val right = args[2] as Float
+                val bottom = args[3] as Float
+                val smoothness = args[4] as Float
+                val radius = args[5] as Float
+                val width = right - left
+                val height = bottom - top
+                if (width <= 0f || height <= 0f) return@hookMethodOn chain.proceed()
 
-                        val instance = XposedHelpers.getStaticObjectField(clazz, "INSTANCE")
-                        val limit = XposedHelpers.callMethod(
-                            instance,
-                            "getSmoothnessRadiusLimit",
-                            width,
-                            height,
-                            smoothness
-                        ) as Float
+                val instance = Reflect.getStaticObjectField(clazz, "INSTANCE")
+                val limit = Reflect.callMethod(
+                    ctx.api,
+                    instance,
+                    "getSmoothnessRadiusLimit",
+                    width,
+                    height,
+                    smoothness
+                ) as Float
 
-                        if (radius > limit) {
-                            param.args[6] = true
-                            Logger.once(TAG, "path_fallback", "大圆角回退 RoundRect: r=$radius limit=$limit")
-                        }
-                    }
+                if (radius > limit) {
+                    args[6] = true
+                    Logger.once(TAG, "path_fallback", "大圆角回退 RoundRect: r=$radius limit=$limit")
                 }
-            )
+                chain.proceed(args)
+            }
             Logger.i(TAG, "已挂载 SmoothCornerPathGenerator.genSmoothCornerPath")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 SmoothCornerPathGenerator 失败", e)
@@ -164,25 +162,25 @@ object ControlCenterRadiusHook : FeatureHook {
     }
 
     private fun hookCustomSmoothCornerDrawable(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         radiusPx: Float
     ) {
         try {
-            val clazz = XposedHelpers.findClass(
+            val clazz = Reflect.findClass(
                 CUSTOM_SMOOTH_CORNER_DRAWABLE,
-                lpparam.classLoader
+                ctx.classLoader
             )
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "setRadius",
                 Float::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.args[0] = radiusPx
-                        Logger.once(TAG, "smooth_set", "CustomSmoothCornerDrawable.setRadius")
-                    }
-                }
-            )
+            ) { chain ->
+                val args = chain.getArgs().toTypedArray()
+                args[0] = radiusPx
+                Logger.once(TAG, "smooth_set", "CustomSmoothCornerDrawable.setRadius")
+                chain.proceed(args)
+            }
             Logger.i(TAG, "已挂载 CustomSmoothCornerDrawable.setRadius")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 CustomSmoothCornerDrawable 失败", e)
@@ -190,11 +188,11 @@ object ControlCenterRadiusHook : FeatureHook {
     }
 
     private fun hookSetViewSmoothCorner(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         radiusPx: Float
     ) {
         try {
-            val clazz = XposedHelpers.findClass(SYSTEM_UI_COMMON_UTILS, lpparam.classLoader)
+            val clazz = Reflect.findClass(SYSTEM_UI_COMMON_UTILS, ctx.classLoader)
             val method = clazz.declaredMethods.singleOrNull { m ->
                 !m.isSynthetic &&
                     m.name == "setViewSmoothCorner" &&
@@ -203,12 +201,12 @@ object ControlCenterRadiusHook : FeatureHook {
                     )
             } ?: throw NoSuchMethodException("未找到 setViewSmoothCorner(View, float)")
 
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    param.args[1] = radiusPx
-                    Logger.once(TAG, "smooth_view", "setViewSmoothCorner 覆盖圆角")
-                }
-            })
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val args = chain.getArgs().toTypedArray()
+                args[1] = radiusPx
+                Logger.once(TAG, "smooth_view", "setViewSmoothCorner 覆盖圆角")
+                chain.proceed(args)
+            }
 
             Logger.i(TAG, "已挂载 SystemUICommonUtils.setViewSmoothCorner")
         } catch (e: Throwable) {
@@ -222,40 +220,42 @@ object ControlCenterRadiusHook : FeatureHook {
      * 创建背景时统一替换为 CustomSmoothCornerDrawable。
      */
     private fun hookTileBackgroundCreation(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         radiusPx: Float
     ) {
-        val hook = object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val ripple = param.result as? RippleDrawable ?: return
-                val tileView = param.thisObject as View
+        val block: (io.github.libxposed.api.XposedInterface.Chain) -> Any? = block@ { chain ->
+            val result = chain.proceed()
+            val ripple = result as? RippleDrawable
+            if (ripple != null) {
+                val tileView = chain.getThisObject() as View
                 val backgroundDrawable = replaceRippleTileLayers(
+                    ctx,
                     ripple,
                     tileView,
-                    lpparam.classLoader,
                     radiusPx
-                ) ?: return
-                XposedHelpers.setObjectField(param.thisObject, "backgroundDrawable", backgroundDrawable)
+                ) ?: return@block result
+                Reflect.setObjectField(chain.getThisObject(), "backgroundDrawable", backgroundDrawable)
             }
+            result
         }
 
         try {
-            XposedHelpers.findAndHookMethod(
-                XposedHelpers.findClass(FLYME_CUSTOM_QS_TILE_VIEW, lpparam.classLoader),
+            Reflect.hookMethodOn(
+                ctx.api,
+                Reflect.findClass(FLYME_CUSTOM_QS_TILE_VIEW, ctx.classLoader),
                 "createTileBackground",
-                hook
-            )
+            ) { chain -> block(chain) }
             Logger.i(TAG, "已挂载 FlymeCustomQSTileView.createTileBackground")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 FlymeCustomQSTileView.createTileBackground 失败", e)
         }
 
         try {
-            XposedHelpers.findAndHookMethod(
-                XposedHelpers.findClass(QS_TILE_VIEW_IMPL, lpparam.classLoader),
+            Reflect.hookMethodOn(
+                ctx.api,
+                Reflect.findClass(QS_TILE_VIEW_IMPL, ctx.classLoader),
                 "createTileBackground",
-                hook
-            )
+            ) { chain -> block(chain) }
             Logger.i(TAG, "已挂载 QSTileViewImpl.createTileBackground")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 QSTileViewImpl.createTileBackground 失败", e)
@@ -263,9 +263,9 @@ object ControlCenterRadiusHook : FeatureHook {
     }
 
     private fun replaceRippleTileLayers(
+        ctx: HookContext,
         ripple: RippleDrawable,
         tileView: View,
-        classLoader: ClassLoader,
         radiusPx: Float
     ): Drawable? {
         return try {
@@ -276,7 +276,7 @@ object ControlCenterRadiusHook : FeatureHook {
             )
             if (backgroundId == 0) return null
 
-            val background = newSmoothCornerDrawable(classLoader, radiusPx)
+            val background = newSmoothCornerDrawable(ctx, radiusPx)
             val mask = background.constantState?.newDrawable()?.mutate() ?: background.mutate()
             ripple.setDrawableByLayerId(backgroundId, background)
             ripple.setDrawableByLayerId(android.R.id.mask, mask)
@@ -287,10 +287,10 @@ object ControlCenterRadiusHook : FeatureHook {
         }
     }
 
-    private fun newSmoothCornerDrawable(classLoader: ClassLoader, radiusPx: Float): Drawable {
-        val clazz = XposedHelpers.findClass(CUSTOM_SMOOTH_CORNER_DRAWABLE, classLoader)
+    private fun newSmoothCornerDrawable(ctx: HookContext, radiusPx: Float): Drawable {
+        val clazz = Reflect.findClass(CUSTOM_SMOOTH_CORNER_DRAWABLE, ctx.classLoader)
         val drawable = clazz.getConstructor().newInstance() as Drawable
-        XposedHelpers.callMethod(drawable, "setRadius", radiusPx)
+        Reflect.callMethod(ctx.api, drawable, "setRadius", radiusPx)
         return drawable
     }
 }

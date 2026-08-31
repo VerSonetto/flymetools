@@ -1,13 +1,10 @@
 package com.karen.flymetool.hook.feature.systemui
 
 import android.view.View
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 
 /**
  * 隐藏状态栏系统图标。
@@ -77,12 +74,12 @@ object HideStatusBarIconHook : FeatureHook {
     val iconOptions: List<Pair<String, String>>
         get() = SLOT_LABELS.entries.map { it.key to it.value }
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_status_bar_icon")) return
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("hide_status_bar_icon")) return
+        if (ctx.packageName != "com.android.systemui") return
 
-        val hiddenKeys = XposedPrefs.getFeatureStringSet(
-            lpparam, packageName, "hide_status_bar_icon", emptySet()
+        val hiddenKeys = ctx.featureStringSet(
+            "hide_status_bar_icon", emptySet()
         )
         if (hiddenKeys.isEmpty()) return
 
@@ -92,100 +89,101 @@ object HideStatusBarIconHook : FeatureHook {
 
         Logger.i(TAG, "已加载 keys=$hiddenKeys hideWifi=$hideWifi hideMobile=$hideMobile")
 
-        resolveSlotsFromPolicy(lpparam, hiddenKeys)
-        hookController(lpparam)
-        if (hideWifi || hideMobile) hookPipelineViews(lpparam)
+        resolveSlotsFromPolicy(ctx, hiddenKeys)
+        hookController(ctx)
+        if (hideWifi || hideMobile) hookPipelineViews(ctx)
     }
 
     private fun resolveSlotsFromPolicy(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         hiddenKeys: Set<String>
     ) {
         val policyClass = findClass(
-            lpparam,
+            ctx.classLoader,
             "com.android.systemui.statusbar.phone.PhoneStatusBarPolicy"
         ) ?: return
 
         for (ctor in policyClass.declaredConstructors) {
-            XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val resolved = hiddenKeys.toMutableSet()
-                    for ((key, fieldName) in KEY_TO_FIELD) {
-                        if (key !in hiddenKeys) continue
-                        try {
-                            val v = XposedHelpers.getObjectField(param.thisObject, fieldName) as? String
-                            if (!v.isNullOrEmpty()) resolved.add(v)
-                        } catch (_: Throwable) {
-                        }
+            Reflect.hookConstructorOn(ctx.api, policyClass, *ctor.parameterTypes) { chain ->
+                val result = chain.proceed()
+                val resolved = hiddenKeys.toMutableSet()
+                for ((key, fieldName) in KEY_TO_FIELD) {
+                    if (key !in hiddenKeys) continue
+                    try {
+                        val v = Reflect.getObjectField(chain.getThisObject(), fieldName) as? String
+                        if (!v.isNullOrEmpty()) resolved.add(v)
+                    } catch (_: Throwable) {
                     }
-                    // StatusBarSignalPolicy 飞行模式 slot 字段
-                    if ("airplane" in hiddenKeys) {
-                        resolved.add("airplane")
-                    }
-                    if ("vpn" in hiddenKeys) resolved.add("vpn")
-                    if ("no_sims" in hiddenKeys) resolved.add("no_sims")
-                    if (hideWifi) {
-                        resolved.add("wifi")
-                        resolved.add("dual_wifi")
-                    }
-                    if (hideMobile) {
-                        resolved.add("mobile")
-                        resolved.add("phone_signal")
-                    }
-                    blockedSlots = resolved
-                    Logger.d(TAG) { "已解析 slots=$resolved" }
                 }
-            })
+                // StatusBarSignalPolicy 飞行模式 slot 字段
+                if ("airplane" in hiddenKeys) {
+                    resolved.add("airplane")
+                }
+                if ("vpn" in hiddenKeys) resolved.add("vpn")
+                if ("no_sims" in hiddenKeys) resolved.add("no_sims")
+                if (hideWifi) {
+                    resolved.add("wifi")
+                    resolved.add("dual_wifi")
+                }
+                if (hideMobile) {
+                    resolved.add("mobile")
+                    resolved.add("phone_signal")
+                }
+                blockedSlots = resolved
+                Logger.d(TAG) { "已解析 slots=$resolved" }
+                result
+            }
         }
 
         // 飞行模式 / VPN 等来自 StatusBarSignalPolicy
         val signalPolicy = findClass(
-            lpparam,
+            ctx.classLoader,
             "com.android.systemui.statusbar.phone.StatusBarSignalPolicy"
         )
         if (signalPolicy != null && ("airplane" in hiddenKeys || "vpn" in hiddenKeys || "ethernet" in hiddenKeys)) {
             for (ctor in signalPolicy.declaredConstructors) {
-                XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val extra = blockedSlots.toMutableSet()
-                        for (name in listOf("mSlotAirplane", "mSlotVpn", "mSlotEthernet", "mSlotNoSims")) {
-                            try {
-                                val v = XposedHelpers.getObjectField(param.thisObject, name) as? String
-                                if (!v.isNullOrEmpty()) {
-                                    when {
-                                        name.contains("Airplane") && "airplane" in hiddenKeys -> extra.add(v)
-                                        name.contains("Vpn") && "vpn" in hiddenKeys -> extra.add(v)
-                                        name.contains("Ethernet") && "ethernet" in hiddenKeys -> extra.add(v)
-                                        name.contains("NoSims") && "no_sims" in hiddenKeys -> extra.add(v)
-                                    }
+                Reflect.hookConstructorOn(ctx.api, signalPolicy, *ctor.parameterTypes) { chain ->
+                    val result = chain.proceed()
+                    val extra = blockedSlots.toMutableSet()
+                    for (name in listOf("mSlotAirplane", "mSlotVpn", "mSlotEthernet", "mSlotNoSims")) {
+                        try {
+                            val v = Reflect.getObjectField(chain.getThisObject(), name) as? String
+                            if (!v.isNullOrEmpty()) {
+                                when {
+                                    name.contains("Airplane") && "airplane" in hiddenKeys -> extra.add(v)
+                                    name.contains("Vpn") && "vpn" in hiddenKeys -> extra.add(v)
+                                    name.contains("Ethernet") && "ethernet" in hiddenKeys -> extra.add(v)
+                                    name.contains("NoSims") && "no_sims" in hiddenKeys -> extra.add(v)
                                 }
-                            } catch (_: Throwable) {
                             }
+                        } catch (_: Throwable) {
                         }
-                        blockedSlots = extra
                     }
-                })
+                    blockedSlots = extra
+                    result
+                }
             }
         }
     }
 
-    private fun hookController(lpparam: XC_LoadPackage.LoadPackageParam) {
-        val implClass = findControllerClass(lpparam) ?: run {
+    private fun hookController(ctx: HookContext) {
+        val implClass = findControllerClass(ctx) ?: run {
             Logger.w(TAG, "未找到 StatusBarIconControllerImpl")
             return
         }
 
-        hookSetIconVisibility(implClass)
+        hookSetIconVisibility(ctx, implClass)
 
         try {
-            XposedBridge.hookAllMethods(
+            Reflect.hookAllMethods(
+                ctx.api,
                 implClass,
                 "setIcon",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val slot = param.args.getOrNull(0) as? String ?: return
-                        if (shouldBlock(slot)) forceHide(param.thisObject, slot)
-                    }
+                block = { chain ->
+                    val result = chain.proceed()
+                    val slot = chain.getArgs().getOrNull(0) as? String
+                    if (slot != null && shouldBlock(slot)) forceHide(ctx, chain.getThisObject(), slot)
+                    result
                 }
             )
         } catch (e: Throwable) {
@@ -195,16 +193,12 @@ object HideStatusBarIconHook : FeatureHook {
         // 新 pipeline 注册移动图标时直接跳过
         if (hideMobile) {
             try {
-                XposedHelpers.findAndHookMethod(
+                Reflect.hookMethodOn(
+                    ctx.api,
                     implClass,
                     "setNewMobileIconSubIds",
                     List::class.java,
-                    object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            param.result = null
-                        }
-                    }
-                )
+                ) { null }
             } catch (e: Throwable) {
                 Logger.w(TAG, "setNewMobileIconSubIds 失败（可忽略）")
             }
@@ -212,29 +206,21 @@ object HideStatusBarIconHook : FeatureHook {
 
         if (hideWifi) {
             try {
-                XposedHelpers.findAndHookMethod(
+                Reflect.hookMethodOn(
+                    ctx.api,
                     implClass,
                     "setNewWifiIcon",
-                    object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            param.result = null
-                        }
-                    }
-                )
+                ) { null }
             } catch (_: Throwable) {
             }
             try {
-                XposedHelpers.findAndHookMethod(
+                Reflect.hookMethodOn(
+                    ctx.api,
                     implClass,
                     "setFlymeWifiIcon",
                     String::class.java,
-                    "com.flyme.systemui.statusbar.net.wifi.WifiIconState",
-                    object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            param.result = null
-                        }
-                    }
-                )
+                    Reflect.findClass("com.flyme.systemui.statusbar.net.wifi.WifiIconState", ctx.classLoader),
+                ) { null }
             } catch (_: Throwable) {
             }
         }
@@ -243,7 +229,7 @@ object HideStatusBarIconHook : FeatureHook {
     }
 
     /** 新 pipeline View 自己管可见性，强制 GONE */
-    private fun hookPipelineViews(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookPipelineViews(ctx: HookContext) {
         val viewClasses = mutableListOf<String>()
         if (hideMobile) {
             viewClasses += listOf(
@@ -259,79 +245,85 @@ object HideStatusBarIconHook : FeatureHook {
         }
 
         for (name in viewClasses) {
-            val clazz = findClass(lpparam, name) ?: continue
+            val clazz = findClass(ctx.classLoader, name) ?: continue
             try {
-                XposedBridge.hookAllConstructors(clazz, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val v = param.thisObject as? View ?: return
+                Reflect.hookAllConstructors(ctx.api, clazz) { chain ->
+                    val result = chain.proceed()
+                    val v = chain.getThisObject() as? View
+                    if (v != null) {
                         v.visibility = View.GONE
                         v.post { v.visibility = View.GONE }
                     }
-                })
+                    result
+                }
             } catch (_: Throwable) {
             }
             try {
-                XposedHelpers.findAndHookMethod(
+                Reflect.hookMethodOn(
+                    ctx.api,
                     clazz,
                     "setVisibility",
                     Int::class.javaPrimitiveType,
-                    object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            param.args[0] = View.GONE
-                        }
-                    }
-                )
+                ) { chain ->
+                    val args = chain.getArgs().toTypedArray()
+                    args[0] = View.GONE
+                    chain.proceed(args)
+                }
             } catch (_: Throwable) {
             }
             try {
-                XposedHelpers.findAndHookMethod(
+                Reflect.hookMethodOn(
+                    ctx.api,
                     clazz,
                     "setVisibleState",
                     Int::class.javaPrimitiveType,
                     Boolean::class.javaPrimitiveType,
-                    object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            // StatusBarIconView.STATE_HIDDEN = 2
-                            param.args[0] = 2
-                        }
-                    }
-                )
+                ) { chain ->
+                    // StatusBarIconView.STATE_HIDDEN = 2
+                    val args = chain.getArgs().toTypedArray()
+                    args[0] = 2
+                    chain.proceed(args)
+                }
             } catch (_: Throwable) {
             }
             Logger.i(TAG, "已挂载 pipeline view: $name")
         }
     }
 
-    private fun hookSetIconVisibility(implClass: Class<*>) {
-        val hook = object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                val slot = param.args[0] as? String ?: return
-                if (shouldBlock(slot)) param.args[1] = false
+    private fun hookSetIconVisibility(ctx: HookContext, implClass: Class<*>) {
+        val hook: (io.github.libxposed.api.XposedInterface.Chain) -> Any? = { chain ->
+            val slot = chain.getArg(0) as? String
+            if (slot != null && shouldBlock(slot)) {
+                val args = chain.getArgs().toTypedArray()
+                args[1] = false
+                chain.proceed(args)
+            } else {
+                chain.proceed()
             }
         }
         try {
-            XposedHelpers.findAndHookMethod(
-                implClass, "setIconVisibility",
-                String::class.java, Boolean::class.javaPrimitiveType, hook
-            )
+            Reflect.hookMethodOn(
+                ctx.api, implClass, "setIconVisibility",
+                String::class.java, Boolean::class.javaPrimitiveType
+            ) { chain -> hook(chain) }
         } catch (e: Throwable) {
             Logger.e(TAG, "setIconVisibility 挂载失败", e)
         }
         try {
-            XposedHelpers.findAndHookMethod(
-                implClass, "setIconVisibility",
-                String::class.java, Boolean::class.javaPrimitiveType, Int::class.javaPrimitiveType, hook
-            )
+            Reflect.hookMethodOn(
+                ctx.api, implClass, "setIconVisibility",
+                String::class.java, Boolean::class.javaPrimitiveType, Int::class.javaPrimitiveType
+            ) { chain -> hook(chain) }
         } catch (_: Throwable) {
         }
     }
 
-    private fun forceHide(controller: Any, slot: String) {
+    private fun forceHide(ctx: HookContext, controller: Any, slot: String) {
         try {
-            XposedHelpers.callMethod(controller, "setIconVisibility", slot, false)
+            Reflect.callMethod(ctx.api, controller, "setIconVisibility", slot, false)
         } catch (_: Throwable) {
             try {
-                XposedHelpers.callMethod(controller, "setIconVisibility", slot, false, 0)
+                Reflect.callMethod(ctx.api, controller, "setIconVisibility", slot, false, 0)
             } catch (_: Throwable) {
             }
         }
@@ -345,20 +337,23 @@ object HideStatusBarIconHook : FeatureHook {
         return blocked.any { slot.startsWith("${it}_") }
     }
 
-    private fun findControllerClass(lpparam: XC_LoadPackage.LoadPackageParam): Class<*>? {
+    private fun findControllerClass(ctx: HookContext): Class<*>? {
         for (name in listOf(
             "com.android.systemui.statusbar.phone.ui.StatusBarIconControllerImpl",
             "com.android.systemui.statusbar.phone.StatusBarIconControllerImpl",
         )) {
-            findClass(lpparam, name)?.let { return it }
+            findClass(ctx.classLoader, name)?.let { return it }
         }
         return try {
-            val dex = dalvik.system.DexFile(lpparam.appInfo.sourceDir)
+            val activityThread = Reflect.findClass("android.app.ActivityThread", null)
+            val app = Reflect.callStaticMethod(ctx.api, activityThread, "currentApplication") as? android.app.Application
+            val sourceDir = app?.applicationInfo?.sourceDir ?: return null
+            val dex = dalvik.system.DexFile(sourceDir)
             dex.entries().asSequence()
                 .filter { it.endsWith("StatusBarIconControllerImpl") }
                 .mapNotNull { cn ->
                     try {
-                        val c = XposedHelpers.findClass(cn, lpparam.classLoader)
+                        val c = Reflect.findClass(cn, ctx.classLoader)
                         c.getDeclaredMethod(
                             "setIconVisibility",
                             String::class.java,
@@ -376,9 +371,9 @@ object HideStatusBarIconHook : FeatureHook {
         }
     }
 
-    private fun findClass(lpparam: XC_LoadPackage.LoadPackageParam, name: String): Class<*>? {
+    private fun findClass(classLoader: ClassLoader, name: String): Class<*>? {
         return try {
-            XposedHelpers.findClass(name, lpparam.classLoader)
+            Reflect.findClass(name, classLoader)
         } catch (_: Throwable) {
             null
         }

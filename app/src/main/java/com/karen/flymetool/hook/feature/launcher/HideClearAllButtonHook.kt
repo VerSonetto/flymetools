@@ -2,12 +2,9 @@ package com.karen.flymetool.hook.feature.launcher
 
 import android.view.View
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.Reflect
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
@@ -39,14 +36,14 @@ object HideClearAllButtonHook : FeatureHook {
     /** AOSP 原生清空按钮字段名。 */
     private const val FIELD_AOSP_CLEAR_ALL = "mClearAllButton"
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (lpparam.packageName != TARGET_PACKAGE) return
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
+    override fun handle(ctx: HookContext) {
+        if (ctx.packageName != TARGET_PACKAGE) return
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
 
         try {
-            val recentsViewClass = XposedHelpers.findClass(RECENTS_VIEW_CLASS, lpparam.classLoader)
-            if (!hookInitExtraDecor(recentsViewClass)) {
-                fallbackHookInit(recentsViewClass)
+            val recentsViewClass = Reflect.findClass(RECENTS_VIEW_CLASS, ctx.classLoader)
+            if (!hookInitExtraDecor(ctx, recentsViewClass)) {
+                fallbackHookInit(ctx, recentsViewClass)
             }
             Logger.i(TAG, "已挂载：隐藏最近任务清空按钮")
         } catch (e: Throwable) {
@@ -58,17 +55,17 @@ object HideClearAllButtonHook : FeatureHook {
      * 主 hook：[initExtraDecor]，private void 无参，Flyme 12 定制方法。
      * @return true 表示成功挂载；false 表示找不到此方法，走 fallback。
      */
-    private fun hookInitExtraDecor(recentsViewClass: Class<*>): Boolean {
+    private fun hookInitExtraDecor(ctx: HookContext, recentsViewClass: Class<*>): Boolean {
         return try {
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 recentsViewClass,
                 "initExtraDecor",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        hideClearButtons(param.thisObject)
-                    }
-                }
-            )
+            ) { chain ->
+                val result = chain.proceed()
+                hideClearButtons(chain.getThisObject())
+                result
+            }
             Logger.d(TAG) { "已挂载 initExtraDecor" }
             true
         } catch (_: NoSuchMethodError) {
@@ -85,7 +82,7 @@ object HideClearAllButtonHook : FeatureHook {
      * DesktopRecentsTransitionController）。该方法体末尾调用 initExtraDecor，挂载点等价。
      * 通过反射按方法签名特征查找（名字 + 参数数 + void 返回值），不依赖具体参数类名字符串。
      */
-    private fun fallbackHookInit(recentsViewClass: Class<*>) {
+    private fun fallbackHookInit(ctx: HookContext, recentsViewClass: Class<*>) {
         try {
             val initMethod: Method? = recentsViewClass.declaredMethods.firstOrNull { method ->
                 method.name == "init" &&
@@ -98,11 +95,11 @@ object HideClearAllButtonHook : FeatureHook {
                 Logger.w(TAG, "fallback 找不到 init(三参) 方法，放弃挂载")
                 return
             }
-            XposedBridge.hookMethod(initMethod, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    hideClearButtons(param.thisObject)
-                }
-            })
+            Reflect.hookMethod(ctx.api, initMethod) { chain ->
+                val result = chain.proceed()
+                hideClearButtons(chain.getThisObject())
+                result
+            }
             Logger.i(TAG, "已挂载 init(${initMethod.parameterTypes.joinToString { it.simpleName }})")
         } catch (e: Throwable) {
             Logger.e(TAG, "fallback 挂载失败", e)
@@ -122,7 +119,7 @@ object HideClearAllButtonHook : FeatureHook {
 
     private fun hideView(recentsView: Any, fieldName: String) {
         try {
-            val view = XposedHelpers.getObjectField(recentsView, fieldName) as? View
+            val view = Reflect.getObjectField(recentsView, fieldName) as? View
             if (view != null) {
                 view.visibility = View.GONE
                 view.alpha = 0f

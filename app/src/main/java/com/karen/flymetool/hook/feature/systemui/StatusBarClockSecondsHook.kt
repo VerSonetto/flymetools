@@ -1,55 +1,51 @@
 package com.karen.flymetool.hook.feature.systemui
 
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 
 object StatusBarClockSecondsHook : FeatureHook {
 
     private const val CLOCK_CLASS = "com.android.systemui.statusbar.policy.Clock"
     private const val TAG = "StatusBarClockSeconds"
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "statusbar_clock_seconds")) return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("statusbar_clock_seconds")) return
 
         try {
-            val clockClass = XposedHelpers.findClass(CLOCK_CLASS, lpparam.classLoader)
+            val clockClass = Reflect.findClass(CLOCK_CLASS, ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(clockClass, "onTuningChanged", String::class.java, String::class.java, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    if ("clock_seconds" == param.args[0] as String) {
-                        param.args[1] = "1"
-                    }
+            Reflect.hookMethodOn(ctx.api, clockClass, "onTuningChanged", String::class.java, String::class.java) { chain ->
+                if ("clock_seconds" == chain.getArg(0) as String) {
+                    val args = chain.getArgs().toTypedArray()
+                    args[1] = "1"
+                    chain.proceed(args)
+                } else {
+                    chain.proceed()
                 }
-            })
+            }
         } catch (e: Throwable) {
             Logger.e(TAG, "主 Hook 失败，尝试回退方案", e)
-            tryFallbackHook(lpparam)
+            tryFallbackHook(ctx)
         }
     }
 
-    private fun tryFallbackHook(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun tryFallbackHook(ctx: HookContext) {
         try {
-            val clockClass = XposedHelpers.findClass(CLOCK_CLASS, lpparam.classLoader)
+            val clockClass = Reflect.findClass(CLOCK_CLASS, ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(clockClass, "onAttachedToWindow", object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    XposedHelpers.setBooleanField(param.thisObject, "mShowSeconds", true)
-                }
-            })
+            Reflect.hookMethodOn(ctx.api, clockClass, "onAttachedToWindow") { chain ->
+                Reflect.setBooleanField(chain.getThisObject(), "mShowSeconds", true)
+                chain.proceed()
+            }
 
-            XposedHelpers.findAndHookMethod(clockClass, "updateShowSeconds", object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    XposedHelpers.setBooleanField(param.thisObject, "mShowSeconds", true)
-                }
-
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    XposedHelpers.callMethod(param.thisObject, "updateClock")
-                }
-            })
+            Reflect.hookMethodOn(ctx.api, clockClass, "updateShowSeconds") { chain ->
+                Reflect.setBooleanField(chain.getThisObject(), "mShowSeconds", true)
+                val result = chain.proceed()
+                Reflect.callMethod(ctx.api, chain.getThisObject(), "updateClock")
+                result
+            }
         } catch (e: Throwable) {
             Logger.e(TAG, "回退 Hook 也失败", e)
         }

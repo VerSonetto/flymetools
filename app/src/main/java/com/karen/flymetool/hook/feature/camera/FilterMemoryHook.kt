@@ -3,13 +3,10 @@ package com.karen.flymetool.hook.feature.camera
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import java.io.File
 import java.lang.reflect.Field
 import java.lang.reflect.Method
@@ -72,19 +69,19 @@ object FilterMemoryHook : FeatureHook {
     @Volatile
     private var locateFailedLogged = false
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
-        if (lpparam.packageName != PACKAGE_NAME) return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
+        if (ctx.packageName != PACKAGE_NAME) return
 
-        hookRecord(lpparam)
-        hookRestore(lpparam)
+        hookRecord(ctx)
+        hookRestore(ctx)
     }
 
     // ---------------------------------------------------------------- 记录
 
-    private fun hookRecord(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookRecord(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(CLASS_FILTER_ADAPTER, lpparam.classLoader)
+            val clazz = Reflect.findClass(CLASS_FILTER_ADAPTER, ctx.classLoader)
             val method = clazz.declaredMethods.firstOrNull {
                 it.name == "setSelIndex" && it.parameterTypes.size == 1 &&
                     it.parameterTypes[0] == Int::class.javaPrimitiveType
@@ -93,20 +90,20 @@ object FilterMemoryHook : FeatureHook {
                 Logger.w(TAG, "未找到 FilterAdapter.setSelIndex，记录功能降级")
                 return
             }
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    try {
-                        val index = param.args[0] as? Int ?: return
-                        val name = resolveRenderType(param.thisObject, index) ?: return
-                        // 「我的滤镜」列表国内版首位是管理入口项（"null"），不是可选滤镜；
-                        // Mznone（原图）是有效选择，需要记录，否则选原图重启后旧滤镜会回来
-                        if (name == "null") return
-                        saveFilter(name)
-                    } catch (e: Throwable) {
-                        Logger.e(TAG, "记录滤镜失败", e)
-                    }
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val result = chain.proceed()
+                try {
+                    val index = chain.getArg(0) as? Int ?: return@hookMethod result
+                    val name = resolveRenderType(chain.getThisObject(), index) ?: return@hookMethod result
+                    // 「我的滤镜」列表国内版首位是管理入口项（"null"），不是可选滤镜；
+                    // Mznone（原图）是有效选择，需要记录，否则选原图重启后旧滤镜会回来
+                    if (name == "null") return@hookMethod result
+                    saveFilter(name)
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "记录滤镜失败", e)
                 }
-            })
+                result
+            }
             Logger.i(TAG, "滤镜记录 Hook 已挂载")
         } catch (e: Throwable) {
             Logger.e(TAG, "滤镜记录 Hook 挂载失败", e)
@@ -157,9 +154,9 @@ object FilterMemoryHook : FeatureHook {
 
     // ---------------------------------------------------------------- 恢复
 
-    private fun hookRestore(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookRestore(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(CLASS_CONTROLLER_IMPL, lpparam.classLoader)
+            val clazz = Reflect.findClass(CLASS_CONTROLLER_IMPL, ctx.classLoader)
             val method = clazz.declaredMethods.firstOrNull {
                 it.name == "restoreFilterEffect" && it.parameterTypes.size == 1 &&
                     it.parameterTypes[0] == Boolean::class.javaPrimitiveType
@@ -168,15 +165,15 @@ object FilterMemoryHook : FeatureHook {
                 Logger.w(TAG, "未找到 MzCamControllerImpl.restoreFilterEffect，恢复功能降级")
                 return
             }
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    try {
-                        applySavedFilter(param.thisObject)
-                    } catch (e: Throwable) {
-                        Logger.e(TAG, "恢复滤镜失败", e)
-                    }
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val result = chain.proceed()
+                try {
+                    applySavedFilter(chain.getThisObject())
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "恢复滤镜失败", e)
                 }
-            })
+                result
+            }
             Logger.i(TAG, "滤镜恢复 Hook 已挂载")
         } catch (e: Throwable) {
             Logger.e(TAG, "滤镜恢复 Hook 挂载失败", e)

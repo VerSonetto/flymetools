@@ -3,51 +3,51 @@ package com.karen.flymetool.hook.feature.share
 import android.app.Activity
 import android.app.Dialog
 import android.widget.Button
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 
 object AutoAcceptShareHook : FeatureHook {
 
     private const val TAG = "AutoAcceptShare"
     private const val BASE_ACTIVITY_CLASS = "com.meizu.share.base.BaseBluetoothPermissionActivity"
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "auto_accept_share")) return
-        if (lpparam.packageName != "com.meizu.share") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("auto_accept_share")) return
+        if (ctx.packageName != "com.meizu.share") return
 
-        hookOnResume(lpparam)
+        hookOnResume(ctx)
     }
 
-    private fun hookOnResume(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookOnResume(ctx: HookContext) {
         try {
-            val baseClass = XposedHelpers.findClass(BASE_ACTIVITY_CLASS, lpparam.classLoader)
+            val baseClass = Reflect.findClass(BASE_ACTIVITY_CLASS, ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(baseClass, "onResume", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val activity = param.thisObject as? Activity ?: return
+            Reflect.hookMethodOn(ctx.api, baseClass, "onResume") { chain ->
+                val result = chain.proceed()
 
-                    val className = activity.javaClass.name
-                    if (className != "com.meizu.share.mutual.MzShareIncomingConfirmActivity" &&
-                        className != "com.meizu.share.BluetoothOppIncomingFileConfirmActivity"
-                    ) {
-                        return
-                    }
+                val activity = chain.getThisObject() as? Activity ?: return@hookMethodOn result
 
-                    Logger.i(TAG, "收到确认弹窗 Activity: $className")
-
-                    activity.window.decorView.postDelayed({
-                        try {
-                            autoAccept(activity)
-                        } catch (e: Throwable) {
-                            Logger.e(TAG, "自动接受失败", e)
-                        }
-                    }, 0)
+                val className = activity.javaClass.name
+                if (className != "com.meizu.share.mutual.MzShareIncomingConfirmActivity" &&
+                    className != "com.meizu.share.BluetoothOppIncomingFileConfirmActivity"
+                ) {
+                    return@hookMethodOn result
                 }
-            })
+
+                Logger.i(TAG, "收到确认弹窗 Activity: $className")
+
+                activity.window.decorView.postDelayed({
+                    try {
+                        autoAccept(activity)
+                    } catch (e: Throwable) {
+                        Logger.e(TAG, "自动接受失败", e)
+                    }
+                }, 0)
+
+                return@hookMethodOn result
+            }
 
             Logger.i(TAG, "已挂载 BaseBluetoothPermissionActivity.onResume")
         } catch (e: Throwable) {

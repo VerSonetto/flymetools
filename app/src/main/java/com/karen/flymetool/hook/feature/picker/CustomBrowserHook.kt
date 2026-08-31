@@ -3,12 +3,9 @@ package com.karen.flymetool.hook.feature.picker
 import android.content.Intent
 import android.net.Uri
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.Reflect
 
 object CustomBrowserHook : FeatureHook {
 
@@ -19,44 +16,42 @@ object CustomBrowserHook : FeatureHook {
 
     private var customBrowserPackage: String = ""
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "custom_browser")) return
-        if (lpparam.packageName != PACKAGE_NAME) return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("custom_browser")) return
+        if (ctx.packageName != PACKAGE_NAME) return
 
-        customBrowserPackage = XposedPrefs.getFeatureString(lpparam, packageName, "custom_browser", "")
+        customBrowserPackage = ctx.featureString("custom_browser", "")
         Logger.i(TAG, "已加载自定义浏览器包: $customBrowserPackage")
 
-        hookIntentSetClassName(lpparam)
+        hookIntentSetClassName(ctx)
     }
 
-    private fun hookIntentSetClassName(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookIntentSetClassName(ctx: HookContext) {
         if (customBrowserPackage.isBlank()) {
             Logger.i(TAG, "未设置自定义浏览器，跳过 Hook")
             return
         }
 
-        val intentClass = XposedHelpers.findClass("android.content.Intent", lpparam.classLoader)
+        val intentClass = Reflect.findClass("android.content.Intent", ctx.classLoader)
 
-        XposedBridge.hookAllMethods(intentClass, "setClassName", object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                try {
-                    val packageName = param.args[0] as? String ?: return
-                    val className = param.args[1] as? String ?: return
+        Reflect.hookAllMethods(ctx.api, intentClass, "setClassName") { chain ->
+            try {
+                val packageName = chain.getArg(0) as? String ?: return@hookAllMethods chain.proceed()
+                val className = chain.getArg(1) as? String ?: return@hookAllMethods chain.proceed()
 
-                    if (packageName != DEFAULT_BROWSER_PACKAGE) return
-                    if (className != DEFAULT_BROWSER_ACTIVITY) return
+                if (packageName != DEFAULT_BROWSER_PACKAGE) return@hookAllMethods chain.proceed()
+                if (className != DEFAULT_BROWSER_ACTIVITY) return@hookAllMethods chain.proceed()
 
-                    val intent = param.thisObject as Intent
-                    ensureScheme(intent)
+                val intent = chain.getThisObject() as Intent
+                ensureScheme(intent)
 
-                    param.result = intent.setPackage(customBrowserPackage)
-
-                    Logger.i(TAG, "已替换 setClassName($DEFAULT_BROWSER_PACKAGE, $DEFAULT_BROWSER_ACTIVITY) -> setPackage($customBrowserPackage), url: ${intent.data}")
-                } catch (e: Throwable) {
-                    Logger.e(TAG, "setClassName Hook 异常", e)
-                }
+                Logger.i(TAG, "已替换 setClassName($DEFAULT_BROWSER_PACKAGE, $DEFAULT_BROWSER_ACTIVITY) -> setPackage($customBrowserPackage), url: ${intent.data}")
+                return@hookAllMethods intent.setPackage(customBrowserPackage)
+            } catch (e: Throwable) {
+                Logger.e(TAG, "setClassName Hook 异常", e)
             }
-        })
+            chain.proceed()
+        }
 
         Logger.i(TAG, "已挂载 Intent.setClassName")
     }

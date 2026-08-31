@@ -1,11 +1,10 @@
 package com.karen.flymetool.hook.feature.flymeupdate
 
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.Reflect
+import io.github.libxposed.api.XposedInterface
 
 object DisableUpdateCheckHook : FeatureHook {
 
@@ -20,53 +19,53 @@ object DisableUpdateCheckHook : FeatureHook {
 
     private const val FIRMWARE_CACHE_KEY = "key_check_new_upgrade_firmware_cache"
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "disable_update_check")) return
-        if (lpparam.packageName != TARGET_PACKAGE) return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("disable_update_check")) return
+        if (ctx.packageName != TARGET_PACKAGE) return
 
-        hookBasicRequestDeliverResponse(lpparam)
-        hookFirmwareCache()
+        hookBasicRequestDeliverResponse(ctx)
+        hookFirmwareCache(ctx.api)
     }
 
-    private fun hookBasicRequestDeliverResponse(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookBasicRequestDeliverResponse(ctx: HookContext) {
         try {
-            val basicRequestClass = XposedHelpers.findClass(
+            val basicRequestClass = Reflect.findClass(
                 "com.meizu.flyme.update.network.BasicRequest",
-                lpparam.classLoader
+                ctx.classLoader
             )
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 basicRequestClass,
                 "deliverResponse",
                 Any::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val request = param.thisObject ?: return
+            ) { chain ->
+                val request = chain.getThisObject() ?: return@hookMethodOn chain.proceed()
 
-                        val url = try {
-                            XposedHelpers.callMethod(request, "getUrl") as? String
-                        } catch (_: Throwable) {
-                            null
-                        } ?: return
+                val url = try {
+                    Reflect.callMethod(ctx.api, request, "getUrl") as? String
+                } catch (_: Throwable) {
+                    null
+                } ?: return@hookMethodOn chain.proceed()
 
-                        if (!isUpdateCheckUrl(url)) return
+                if (!isUpdateCheckUrl(url)) return@hookMethodOn chain.proceed()
 
-                        Logger.i(TAG, "劫持更新检查响应: $url")
+                Logger.i(TAG, "劫持更新检查响应: $url")
 
-                        val response = param.args[0] ?: return
+                val response = chain.getArg(0) ?: return@hookMethodOn chain.proceed()
 
-                        try {
-                            val code = XposedHelpers.callMethod(response, "getCode") as? Int
-                            if (code == 200) {
-                                XposedHelpers.callMethod(response, "setValue", null as Any?)
-                                Logger.i(TAG, "已清空响应值 -> 无更新")
-                            }
-                        } catch (e: Throwable) {
-                            Logger.e(TAG, "劫持响应值失败", e)
-                        }
+                try {
+                    val code = Reflect.callMethod(ctx.api, response, "getCode") as? Int
+                    if (code == 200) {
+                        Reflect.callMethod(ctx.api, response, "setValue", null as Any?)
+                        Logger.i(TAG, "已清空响应值 -> 无更新")
                     }
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "劫持响应值失败", e)
                 }
-            )
+
+                return@hookMethodOn chain.proceed()
+            }
 
             Logger.i(TAG, "已挂载 BasicRequest.deliverResponse")
         } catch (e: Throwable) {
@@ -78,25 +77,27 @@ object DisableUpdateCheckHook : FeatureHook {
         return BLOCKED_URL_PATTERNS.any { url.contains(it, ignoreCase = true) }
     }
 
-    private fun hookFirmwareCache() {
+    private fun hookFirmwareCache(api: XposedInterface) {
         try {
             val spImplClass = Class.forName("android.app.SharedPreferencesImpl")
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                api,
                 spImplClass,
                 "getString",
                 String::class.java,
                 String::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val key = param.args[0] as? String ?: return
-                        if (key == FIRMWARE_CACHE_KEY) {
-                            param.result = ""
-                            Logger.d(TAG) { "已清除固件升级缓存" }
-                        }
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+
+                val key = chain.getArg(0) as? String ?: return@hookMethodOn result
+                if (key == FIRMWARE_CACHE_KEY) {
+                    Logger.d(TAG) { "已清除固件升级缓存" }
+                    return@hookMethodOn ""
                 }
-            )
+
+                return@hookMethodOn result
+            }
 
             Logger.i(TAG, "已挂载固件缓存")
         } catch (e: Throwable) {

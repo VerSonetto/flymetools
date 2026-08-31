@@ -11,12 +11,10 @@ import android.view.Display
 import android.view.MotionEvent
 import android.view.View
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.Reflect
+import io.github.libxposed.api.XposedInterface
 import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
@@ -76,6 +74,12 @@ object StatusBarDoubleClickHook : FeatureHook {
     private var classLoader: ClassLoader? = null
     private var touchMethod: Method? = null
 
+    /** 供属性 Runnable（releaseFirstUpRunnable）在运行期取框架接口 */
+    @Volatile
+    private var loadedApi: XposedInterface? = null
+
+    private fun requireApi(): XposedInterface = checkNotNull(loadedApi)
+
     private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
 
     private enum class Phase {
@@ -120,32 +124,32 @@ object StatusBarDoubleClickHook : FeatureHook {
     private val releaseFirstUpRunnable = Runnable {
         if (phase != Phase.WAIT_SECOND) return@Runnable
         Logger.d(TAG) { "单击确认，放行暂扣的 UP" }
-        releasePendingUp()
+        releasePendingUp(requireApi())
     }
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (lpparam.packageName != "com.android.systemui") return
-        dblClickEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_DBL_KEY)
-        brightnessEnabled =
-            XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_BRIGHTNESS_KEY)
+    override fun handle(ctx: HookContext) {
+        if (ctx.packageName != "com.android.systemui") return
+        dblClickEnabled = ctx.featureEnabled(FEATURE_DBL_KEY)
+        brightnessEnabled = ctx.featureEnabled(FEATURE_BRIGHTNESS_KEY)
         if (!dblClickEnabled && !brightnessEnabled) return
         if (!hooked.compareAndSet(false, true)) return
 
-        classLoader = lpparam.classLoader
+        classLoader = ctx.classLoader
+        loadedApi = ctx.api
 
         try {
-            val viewClass = XposedHelpers.findClass(VIEW_CLASS, lpparam.classLoader)
+            val viewClass = Reflect.findClass(VIEW_CLASS, ctx.classLoader)
             val method = viewClass.getDeclaredMethod("dispatchTouchEvent", MotionEvent::class.java)
             touchMethod = method
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val view = param.thisObject as? View ?: return
-                    val event = param.args[0] as? MotionEvent ?: return
-                    if (onTouch(view, event)) {
-                        param.result = true
-                    }
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val view = chain.getThisObject() as? View ?: return@hookMethod chain.proceed()
+                val event = chain.getArg(0) as? MotionEvent ?: return@hookMethod chain.proceed()
+                if (onTouch(ctx.api, view, event)) {
+                    true
+                } else {
+                    chain.proceed()
                 }
-            })
+            }
             Logger.i(
                 TAG,
                 "已挂载 $VIEW_CLASS.dispatchTouchEvent 双击=$dblClickEnabled 亮度=$brightnessEnabled"
@@ -157,7 +161,7 @@ object StatusBarDoubleClickHook : FeatureHook {
     }
 
     /** @return true = 已消费，跳过系统 dispatchTouchEvent */
-    private fun onTouch(view: View, event: MotionEvent): Boolean {
+    private fun onTouch(api: XposedInterface, view: View, event: MotionEvent): Boolean {
         ensureMetrics(view)
 
         when (event.actionMasked) {
@@ -169,7 +173,7 @@ object StatusBarDoubleClickHook : FeatureHook {
                     SystemClock.elapsedRealtime() - firstUpElapsed <= DOUBLE_TAP_WINDOW_MS
                 ) {
                     mainHandler.removeCallbacks(releaseFirstUpRunnable)
-                    abortFirstGesture(view, event.rawX, event.rawY)
+                    abortFirstGesture(api, view, event.rawX, event.rawY)
                     recycle(pendingUp)
                     pendingUp = null
 
@@ -185,7 +189,7 @@ object StatusBarDoubleClickHook : FeatureHook {
 
                 // 新序列：清理残留，DOWN 立刻放行
                 if (phase != Phase.IDLE) {
-                    clearWaitingState(abort = true, view = view)
+                    clearWaitingState(api, abort = true, view = view)
                 }
 
                 phase = Phase.FIRST_TRACKING
@@ -202,7 +206,7 @@ object StatusBarDoubleClickHook : FeatureHook {
                 } catch (_: Throwable) {
                     Display.DEFAULT_DISPLAY
                 }
-                startBrightness = readBrightness(view)
+                startBrightness = readBrightness(api, view)
                 // 不 return true：DOWN 交给系统，下拉/按压零延迟
                 return false
             }
@@ -214,9 +218,9 @@ object StatusBarDoubleClickHook : FeatureHook {
                             if (decideDirection(event) && directionHorizontal) {
                                 Logger.d(BRIGHTNESS_TAG) { "进入亮度滑动" }
                                 // 终止系统侧可能的下拉手势
-                                abortFirstGesture(view, event.rawX, event.rawY)
+                                abortFirstGesture(api, view, event.rawX, event.rawY)
                                 phase = Phase.BRIGHTNESS_ACTIVE
-                                applyBrightness(view, event)
+                                applyBrightness(api, view, event)
                                 return true
                             }
                         }
@@ -225,7 +229,7 @@ object StatusBarDoubleClickHook : FeatureHook {
                         return false
                     }
                     Phase.BRIGHTNESS_ACTIVE -> {
-                        applyBrightness(view, event)
+                        applyBrightness(api, view, event)
                         return true
                     }
                     Phase.SECOND_TRACKING -> {
@@ -259,7 +263,7 @@ object StatusBarDoubleClickHook : FeatureHook {
                         return false
                     }
                     Phase.BRIGHTNESS_ACTIVE -> {
-                        commitBrightness(view)
+                        commitBrightness(api, view)
                         phase = Phase.IDLE
                         return true
                     }
@@ -269,7 +273,7 @@ object StatusBarDoubleClickHook : FeatureHook {
                         firstUpElapsed = 0L
                         if (ok && dblClickEnabled) {
                             Logger.i(TAG, "双击锁屏触发")
-                            performLockScreen(view)
+                            performLockScreen(api, view)
                             playHaptic(view.context)
                         } else {
                             Logger.d(TAG) { "第二击抬起已偏离，忽略" }
@@ -278,7 +282,7 @@ object StatusBarDoubleClickHook : FeatureHook {
                     }
                     Phase.WAIT_SECOND -> {
                         // 异常：等待期间又来了 UP，放行暂扣并让当前事件走系统
-                        releasePendingUp()
+                        releasePendingUp(api)
                         return false
                     }
                     else -> return false
@@ -292,7 +296,7 @@ object StatusBarDoubleClickHook : FeatureHook {
                         return false
                     }
                     Phase.WAIT_SECOND -> {
-                        clearWaitingState(abort = false, view = view)
+                        clearWaitingState(api, abort = false, view = view)
                         return true
                     }
                     Phase.SECOND_TRACKING -> {
@@ -369,7 +373,7 @@ object StatusBarDoubleClickHook : FeatureHook {
         return false
     }
 
-    private fun releasePendingUp() {
+    private fun releasePendingUp(api: XposedInterface) {
         mainHandler.removeCallbacks(releaseFirstUpRunnable)
         val view = targetView
         val method = touchMethod
@@ -382,7 +386,7 @@ object StatusBarDoubleClickHook : FeatureHook {
             return
         }
         try {
-            XposedBridge.invokeOriginalMethod(method, view, arrayOf(up))
+            invokeOriginal(api, method, view, up)
             Logger.d(TAG) { "暂扣 UP 已放行" }
         } catch (e: Throwable) {
             Logger.e(TAG, "放行 UP 失败", e)
@@ -392,7 +396,7 @@ object StatusBarDoubleClickHook : FeatureHook {
     }
 
     /** 终止系统侧仍处按下/待点击的首次手势：发送 ACTION_CANCEL */
-    private fun abortFirstGesture(view: View, x: Float, y: Float) {
+    private fun abortFirstGesture(api: XposedInterface, view: View, x: Float, y: Float) {
         val method = touchMethod ?: return
         try {
             val now = SystemClock.uptimeMillis()
@@ -403,7 +407,7 @@ object StatusBarDoubleClickHook : FeatureHook {
                 cancel.setLocation(x - loc[0], y - loc[1])
             } catch (_: Throwable) {
             }
-            XposedBridge.invokeOriginalMethod(method, view, arrayOf(cancel))
+            invokeOriginal(api, method, view, cancel)
             cancel.recycle()
         } catch (e: Throwable) {
             Logger.w(TAG, "发送 CANCEL 失败: ${e.message}")
@@ -414,16 +418,28 @@ object StatusBarDoubleClickHook : FeatureHook {
         }
     }
 
-    private fun clearWaitingState(abort: Boolean, view: View?) {
+    private fun clearWaitingState(api: XposedInterface, abort: Boolean, view: View?) {
         mainHandler.removeCallbacks(releaseFirstUpRunnable)
         if (abort && view != null && phase == Phase.WAIT_SECOND) {
-            abortFirstGesture(view, downX, downY)
+            abortFirstGesture(api, view, downX, downY)
         }
         recycle(pendingUp)
         pendingUp = null
         phase = Phase.IDLE
         firstUpElapsed = 0L
         movedOffTap = false
+    }
+
+    /** 重新调用原始 dispatchTouchEvent（跳过本模块 hook，等同 invokeOriginalMethod）。 */
+    private fun invokeOriginal(api: XposedInterface, method: Method, view: View, event: MotionEvent) {
+        try {
+            api.getInvoker(method).invoke(view, event)
+        } catch (_: Throwable) {
+            try {
+                method.invoke(view, event)
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     private fun recycle(event: MotionEvent?) {
@@ -434,7 +450,7 @@ object StatusBarDoubleClickHook : FeatureHook {
         }
     }
 
-    private fun readBrightness(view: View): Float {
+    private fun readBrightness(api: XposedInterface, view: View): Float {
         // 与 Flyme BrightnessController.getBrightnessInfo() 同源（反编译对照）：
         // context/DisplayManager 的默认显示才有真实亮度信息；view.display 在状态栏
         // 渲染于虚拟显示/截屏显示时 getBrightnessInfo() 返回 null → 读取失败。
@@ -450,12 +466,12 @@ object StatusBarDoubleClickHook : FeatureHook {
             Logger.w(BRIGHTNESS_TAG, "当前亮度读取失败: display 为 null")
             null
         } else try {
-            val info = XposedHelpers.callMethod(display, "getBrightnessInfo")
+            val info = Reflect.callMethod(api, display, "getBrightnessInfo")
             if (info == null) {
                 Logger.w(BRIGHTNESS_TAG, "当前亮度读取失败: getBrightnessInfo 返回 null")
                 null
             } else {
-                XposedHelpers.getFloatField(info, "brightness")
+                Reflect.getFloatField(info, "brightness")
             }
         } catch (e: Throwable) {
             Logger.w(BRIGHTNESS_TAG, "当前亮度读取失败: ${e.javaClass.simpleName}: ${e.message}")
@@ -484,7 +500,7 @@ object StatusBarDoubleClickHook : FeatureHook {
     }
 
     /** 滑动量 = ΔX / 状态栏宽，实时预览 */
-    private fun applyBrightness(view: View, event: MotionEvent) {
+    private fun applyBrightness(api: XposedInterface, view: View, event: MotionEvent) {
         try {
             val width = if (view.width > 0) view.width
             else view.resources.displayMetrics.widthPixels
@@ -493,7 +509,7 @@ object StatusBarDoubleClickHook : FeatureHook {
             currentBrightness = value
             val dm = view.context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
             // @SystemApi 隐藏方法，走反射
-            XposedHelpers.callMethod(dm, "setTemporaryBrightness", displayId, value)
+            Reflect.callMethod(api, dm, "setTemporaryBrightness", displayId, value)
             Logger.d(BRIGHTNESS_TAG) { "调亮度 w=$width downX=$downX rawX=${event.rawX} ratio=$ratio value=$value" }
         } catch (e: Throwable) {
             Logger.e(TAG, "实时调亮度失败", e)
@@ -501,22 +517,22 @@ object StatusBarDoubleClickHook : FeatureHook {
     }
 
     /** 松手持久化 */
-    private fun commitBrightness(view: View) {
+    private fun commitBrightness(api: XposedInterface, view: View) {
         try {
             val dm = view.context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-            XposedHelpers.callMethod(dm, "setBrightness", displayId, currentBrightness)
+            Reflect.callMethod(api, dm, "setBrightness", displayId, currentBrightness)
             Logger.i(BRIGHTNESS_TAG, "亮度已设置 ${(currentBrightness * 255).toInt()}/255")
         } catch (e: Throwable) {
             Logger.e(TAG, "持久化亮度失败", e)
         }
     }
 
-    private fun performLockScreen(view: View) {
+    private fun performLockScreen(api: XposedInterface, view: View) {
         val context = view.context.applicationContext ?: view.context
         mainHandler.post {
             try {
                 val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-                XposedHelpers.callMethod(pm, "goToSleep", SystemClock.uptimeMillis())
+                Reflect.callMethod(api, pm, "goToSleep", SystemClock.uptimeMillis())
                 Logger.i(TAG, "已息屏锁屏 (PowerManager.goToSleep)")
             } catch (e: Throwable) {
                 Logger.e(TAG, "息屏锁屏失败", e)

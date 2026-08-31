@@ -12,13 +12,11 @@ import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import kotlin.math.abs
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 
 object PowerDisplayHook : FeatureHook {
 
@@ -35,34 +33,34 @@ object PowerDisplayHook : FeatureHook {
     /** 息屏（含 AOD）时状态栏不可见，停止轮询，亮屏再恢复 */
     private var screenOn = true
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "power_display")) return
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("power_display")) return
+        if (ctx.packageName != "com.android.systemui") return
 
-        val interval = XposedPrefs.getFeatureValue(lpparam, packageName, "power_display", 1000)
-        mount(lpparam, interval)
+        val interval = ctx.featureValue("power_display", 1000)
+        mount(ctx, interval)
     }
 
-    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, interval: Int) {
+    private fun mount(ctx: HookContext, interval: Int) {
         refreshInterval = interval.toLong().coerceIn(500, 5000)
 
         try {
-            val clazz = XposedHelpers.findClass(PHONE_STATUS_BAR_VIEW, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(clazz, "onFinishInflate", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val statusBarView = param.thisObject as ViewGroup
-                    val context = statusBarView.context
+            val clazz = Reflect.findClass(PHONE_STATUS_BAR_VIEW, ctx.classLoader)
+            Reflect.hookMethodOn(ctx.api, clazz, "onFinishInflate") { chain ->
+                val result = chain.proceed()
+                val statusBarView = chain.getThisObject() as ViewGroup
+                val context = statusBarView.context
 
-                    powerTextView = createPowerTextView(context)
-                    val systemIconsId = context.resources.getIdentifier("system_icons", "id", "com.android.systemui")
-                    val systemIcons = statusBarView.findViewById<LinearLayout>(systemIconsId)
-                    systemIcons?.addView(powerTextView, 0)
+                powerTextView = createPowerTextView(context)
+                val systemIconsId = context.resources.getIdentifier("system_icons", "id", "com.android.systemui")
+                val systemIcons = statusBarView.findViewById<LinearLayout>(systemIconsId)
+                systemIcons?.addView(powerTextView, 0)
 
-                    registerDarkIconDispatcher(context, powerTextView, lpparam.classLoader)
+                registerDarkIconDispatcher(context, powerTextView, ctx)
 
-                    startPowerUpdate(context)
-                }
-            })
+                startPowerUpdate(context)
+                result
+            }
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载失败", e)
         }
@@ -84,14 +82,14 @@ object PowerDisplayHook : FeatureHook {
         }
     }
 
-    private fun registerDarkIconDispatcher(context: Context, textView: TextView?, classLoader: ClassLoader) {
+    private fun registerDarkIconDispatcher(context: Context, textView: TextView?, ctx: HookContext) {
         if (textView == null) return
         try {
-            val darkIconDispatcherClass = XposedHelpers.findClass(DARK_ICON_DISPATCHER, classLoader)
-            val darkReceiverInterface = XposedHelpers.findClass("$DARK_ICON_DISPATCHER\$DarkReceiver", classLoader)
+            val darkIconDispatcherClass = Reflect.findClass(DARK_ICON_DISPATCHER, ctx.classLoader)
+            val darkReceiverInterface = Reflect.findClass("$DARK_ICON_DISPATCHER\$DarkReceiver", ctx.classLoader)
 
             val darkReceiver = java.lang.reflect.Proxy.newProxyInstance(
-                classLoader,
+                ctx.classLoader,
                 arrayOf(darkReceiverInterface)
             ) { proxy, method, args ->
                 when (method.name) {
@@ -115,9 +113,9 @@ object PowerDisplayHook : FeatureHook {
                 }
             }
 
-            val dependencyClass = XposedHelpers.findClass("com.android.systemui.Dependency", classLoader)
-            val darkIconDispatcher = XposedHelpers.callStaticMethod(dependencyClass, "get", darkIconDispatcherClass)
-            XposedHelpers.callMethod(darkIconDispatcher, "addDarkReceiver", darkReceiver)
+            val dependencyClass = Reflect.findClass("com.android.systemui.Dependency", ctx.classLoader)
+            val darkIconDispatcher = Reflect.callStaticMethod(ctx.api, dependencyClass, "get", darkIconDispatcherClass)
+            Reflect.callMethod(ctx.api, darkIconDispatcher, "addDarkReceiver", darkReceiver)
         } catch (e: Throwable) {
             Logger.e(TAG, "注册 DarkIconDispatcher 失败", e)
             textView.setTextColor(0xFFFFFFFF.toInt())

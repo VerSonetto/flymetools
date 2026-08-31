@@ -1,12 +1,10 @@
 package com.karen.flymetool.hook.feature.systemui
 
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -74,42 +72,41 @@ object StatusBarClockHook : FeatureHook {
         val customFormat: String
     )
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (ctx.packageName != "com.android.systemui") return
 
-        val weekdayEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, KEY_WEEKDAY)
-        val periodEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, KEY_PERIOD)
+        val weekdayEnabled = ctx.featureEnabled(KEY_WEEKDAY)
+        val periodEnabled = ctx.featureEnabled(KEY_PERIOD)
         // 自定义格式有独立开关：开关关闭时即使残留字符串也不生效（曾漏读此开关导致关不掉）
-        val customFormatEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, KEY_CUSTOM_FORMAT)
+        val customFormatEnabled = ctx.featureEnabled(KEY_CUSTOM_FORMAT)
         if (!weekdayEnabled && !periodEnabled && !customFormatEnabled) return
 
         val config = ClockConfig(
             weekdayEnabled = weekdayEnabled,
-            weekdayFormat = XposedPrefs.getFeatureValue(lpparam, packageName, KEY_WEEKDAY, 0),
-            weekdayPosition = XposedPrefs.getFeatureValue(lpparam, packageName, KEY_WEEKDAY_POSITION, 0),
+            weekdayFormat = ctx.featureValue(KEY_WEEKDAY, 0),
+            weekdayPosition = ctx.featureValue(KEY_WEEKDAY_POSITION, 0),
             periodEnabled = periodEnabled,
-            periodScheme = XposedPrefs.getFeatureValue(lpparam, packageName, KEY_PERIOD, 1),
-            periodPosition = XposedPrefs.getFeatureValue(lpparam, packageName, KEY_PERIOD_POSITION, 0),
-            customSegments = if (periodEnabled) readCustomSegments(lpparam, packageName) else emptyList(),
+            periodScheme = ctx.featureValue(KEY_PERIOD, 1),
+            periodPosition = ctx.featureValue(KEY_PERIOD_POSITION, 0),
+            customSegments = if (periodEnabled) readCustomSegments(ctx) else emptyList(),
             customFormat = if (customFormatEnabled) {
-                XposedPrefs.getFeatureString(lpparam, packageName, KEY_CUSTOM_FORMAT, "").trim()
+                ctx.featureString(KEY_CUSTOM_FORMAT, "").trim()
             } else ""
         )
 
-        mountCompose(lpparam, config)
+        mountCompose(ctx, config)
 
         // 自定义格式含秒级 token 时自动强制秒刷新（复用系统秒刷新机制）
         if (config.customFormat.isNotEmpty() && containsSecondsToken(config.customFormat)) {
-            mountAutoSeconds(lpparam)
+            mountAutoSeconds(ctx)
         }
     }
 
     /** 读取完全自定义时段列表（JSON），解析失败或列表为空时回退六时段默认。 */
     private fun readCustomSegments(
-        lpparam: XC_LoadPackage.LoadPackageParam,
-        packageName: String
+        ctx: HookContext
     ): List<PeriodSegment> {
-        val raw = XposedPrefs.getFeatureString(lpparam, packageName, KEY_PERIOD_CUSTOM, "")
+        val raw = ctx.featureString(KEY_PERIOD_CUSTOM, "")
         if (raw.isBlank()) return DEFAULT_CUSTOM_SEGMENTS
         return try {
             val array = JSONArray(raw)
@@ -130,61 +127,48 @@ object StatusBarClockHook : FeatureHook {
     }
 
     /** 主挂载：改写 getSmallTime 的返回值，一次覆盖 updateClock 与 demo 刷新。 */
-    private fun mountCompose(lpparam: XC_LoadPackage.LoadPackageParam, config: ClockConfig) {
+    private fun mountCompose(ctx: HookContext, config: ClockConfig) {
         try {
-            val clazz = XposedHelpers.findClass(CLOCK_CLASS, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(
-                clazz,
-                "getSmallTime",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val original = param.result as? CharSequence ?: return
-                        param.result = composeClockText(original.toString(), config)
-                    }
-                }
-            )
+            val clazz = Reflect.findClass(CLOCK_CLASS, ctx.classLoader)
+            Reflect.hookMethodOn(ctx.api, clazz, "getSmallTime") { chain ->
+                val result = chain.proceed()
+                val original = result as? CharSequence ?: return@hookMethodOn result
+                composeClockText(original.toString(), config)
+            }
             Logger.i(TAG, "已挂载 Clock.getSmallTime")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 getSmallTime 失败，尝试 updateClock 回退", e)
-            mountUpdateClockFallback(lpparam, config)
+            mountUpdateClockFallback(ctx, config)
         }
     }
 
-    private fun mountUpdateClockFallback(lpparam: XC_LoadPackage.LoadPackageParam, config: ClockConfig) {
+    private fun mountUpdateClockFallback(ctx: HookContext, config: ClockConfig) {
         try {
-            val clazz = XposedHelpers.findClass(CLOCK_CLASS, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(
-                clazz,
-                "updateClock",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val clockView = param.thisObject as? TextView ?: return
-                        val originalText = clockView.text?.toString() ?: return
-                        clockView.text = composeClockText(originalText, config)
-                    }
-                }
-            )
+            val clazz = Reflect.findClass(CLOCK_CLASS, ctx.classLoader)
+            Reflect.hookMethodOn(ctx.api, clazz, "updateClock") { chain ->
+                val result = chain.proceed()
+                val clockView = chain.getThisObject() as? TextView ?: return@hookMethodOn result
+                val originalText = clockView.text?.toString() ?: return@hookMethodOn result
+                clockView.text = composeClockText(originalText, config)
+                result
+            }
             Logger.i(TAG, "已挂载 Clock.updateClock（回退）")
         } catch (e: Throwable) {
             Logger.e(TAG, "updateClock 回退也失败，尝试 onTimeChanged", e)
-            mountOnTimeChangedFallback(lpparam, config)
+            mountOnTimeChangedFallback(ctx, config)
         }
     }
 
-    private fun mountOnTimeChangedFallback(lpparam: XC_LoadPackage.LoadPackageParam, config: ClockConfig) {
+    private fun mountOnTimeChangedFallback(ctx: HookContext, config: ClockConfig) {
         try {
-            val clazz = XposedHelpers.findClass(CLOCK_CLASS, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(
-                clazz,
-                "onTimeChanged",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val clockView = param.thisObject as? TextView ?: return
-                        val originalText = clockView.text?.toString() ?: return
-                        clockView.text = composeClockText(originalText, config)
-                    }
-                }
-            )
+            val clazz = Reflect.findClass(CLOCK_CLASS, ctx.classLoader)
+            Reflect.hookMethodOn(ctx.api, clazz, "onTimeChanged") { chain ->
+                val result = chain.proceed()
+                val clockView = chain.getThisObject() as? TextView ?: return@hookMethodOn result
+                val originalText = clockView.text?.toString() ?: return@hookMethodOn result
+                clockView.text = composeClockText(originalText, config)
+                result
+            }
             Logger.i(TAG, "已挂载 Clock.onTimeChanged（回退）")
         } catch (e: Throwable) {
             Logger.e(TAG, "onTimeChanged 回退也失败", e)
@@ -192,29 +176,28 @@ object StatusBarClockHook : FeatureHook {
     }
 
     /** 自动秒：格式含秒级 token 时强制 mShowSeconds，保证每秒刷新。 */
-    private fun mountAutoSeconds(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun mountAutoSeconds(ctx: HookContext) {
         try {
-            val clockClass = XposedHelpers.findClass(CLOCK_CLASS, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(
-                clockClass, "onTuningChanged", String::class.java, String::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        if ("clock_seconds" == param.args[0] as String) {
-                            param.args[1] = "1"
-                        }
-                    }
+            val clockClass = Reflect.findClass(CLOCK_CLASS, ctx.classLoader)
+            Reflect.hookMethodOn(
+                ctx.api, clockClass, "onTuningChanged", String::class.java, String::class.java,
+            ) { chain ->
+                val array = chain.getArgs().toMutableList()
+                if (array[0] == "clock_seconds") {
+                    array[1] = "1"
                 }
-            )
+                chain.proceed(array.toTypedArray())
+            }
             Logger.i(TAG, "自动秒: 已挂载 onTuningChanged")
         } catch (e: Throwable) {
             Logger.e(TAG, "自动秒 onTuningChanged 失败", e)
             try {
-                val clockClass = XposedHelpers.findClass(CLOCK_CLASS, lpparam.classLoader)
-                XposedHelpers.findAndHookMethod(clockClass, "updateShowSeconds", object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        XposedHelpers.setBooleanField(param.thisObject, "mShowSeconds", true)
-                    }
-                })
+                val clockClass = Reflect.findClass(CLOCK_CLASS, ctx.classLoader)
+                Reflect.hookMethodOn(ctx.api, clockClass, "updateShowSeconds") { chain ->
+                    val result = chain.proceed()
+                    Reflect.setBooleanField(chain.getThisObject(), "mShowSeconds", true)
+                    result
+                }
                 Logger.i(TAG, "自动秒: 已挂载 updateShowSeconds")
             } catch (e2: Throwable) {
                 Logger.e(TAG, "自动秒 updateShowSeconds 也失败", e2)

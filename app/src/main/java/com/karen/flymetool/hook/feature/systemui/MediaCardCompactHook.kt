@@ -13,14 +13,12 @@ import android.view.ViewGroup
 import android.widget.SeekBar
 import android.widget.TextView
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.util.FlymeVersionUtils
 import com.karen.flymetool.util.NotificationCardBlurMath
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import io.github.libxposed.api.XposedInterface
 import java.util.WeakHashMap
 
 /**
@@ -114,7 +112,7 @@ object MediaCardCompactHook : FeatureHook {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private var loadParam: XC_LoadPackage.LoadPackageParam? = null
+    private var loadParam: HookContext? = null
 
     /** 供 [NotificationCardBlurHook] 判断某个 View 是否为紧凑布局注入的胶囊背景。 */
     internal fun isPillView(view: View): Boolean {
@@ -124,51 +122,49 @@ object MediaCardCompactHook : FeatureHook {
         return view.id == ids[0] || view.id == ids[1]
     }
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, KEY)) return
-        if (lpparam.packageName != SYSTEMUI) return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled(KEY)) return
+        if (ctx.packageName != SYSTEMUI) return
         if (!FlymeVersionUtils.isFlyme12()) {
             Logger.w(TAG, "仅适配 Flyme 12 的媒体卡片结构，已跳过")
             return
         }
-        loadParam = lpparam
+        loadParam = ctx
 
-        hookLayoutConstraints(lpparam)
-        hookBindPlayer(lpparam)
-        hookTransitionTimeClip(lpparam)
-        hookMusicWallpaperTransition(lpparam)
-        hookCardHeight(lpparam)
-        hookPillBlurAlpha(lpparam)
-        hookPillModeRefresh(lpparam)
+        hookLayoutConstraints(ctx)
+        hookBindPlayer(ctx)
+        hookTransitionTimeClip(ctx)
+        hookMusicWallpaperTransition(ctx)
+        hookCardHeight(ctx)
+        hookPillBlurAlpha(ctx)
+        hookPillModeRefresh(ctx)
     }
 
     /** 约束集载入后立刻重排一次（attach 时调用），避免首帧闪原版布局。 */
-    private fun hookLayoutConstraints(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookLayoutConstraints(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(CLS_VIEW_CONTROLLER, lpparam.classLoader)
-            val hooked = XposedBridge.hookAllMethods(
-                clazz,
-                "loadLayoutConstraints",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            // 壁纸大卡片期间约束集由壁纸版式接管，套紧凑约束会打崩展开态
-                            if (wallpaperState[param.thisObject] == true) return
-                            val ctx = XposedHelpers.getObjectField(param.thisObject, "context")
-                                as? Context ?: return
-                            val set = XposedHelpers.callMethod(param.thisObject, "getExpandedLayout")
-                                ?: return
-                            applyLayout(ctx, set, null, null)
-                            XposedHelpers.callMethod(param.thisObject, "refreshState")
-                        } catch (e: Throwable) {
-                            Logger.e(TAG, "重排约束集失败", e)
-                        }
-                    }
-                }
-            )
-            if (hooked.isEmpty()) {
+            val clazz = Reflect.findClass(CLS_VIEW_CONTROLLER, ctx.classLoader)
+            val methods = Reflect.findMethods(clazz, "loadLayoutConstraints")
+            if (methods.isEmpty()) {
                 Logger.w(TAG, "未找到 MediaViewController#loadLayoutConstraints，仅依赖 bindPlayer 兜底")
             } else {
+                Reflect.hookAllMethods(ctx.api, clazz, "loadLayoutConstraints", excluded = { false }) { chain ->
+                    val result = chain.proceed()
+                    try {
+                        // 壁纸大卡片期间约束集由壁纸版式接管，套紧凑约束会打崩展开态
+                        if (wallpaperState[chain.getThisObject()] == true) return@hookAllMethods result
+                        val context = Reflect.getObjectField(chain.getThisObject(), "context")
+                            as? Context ?: return@hookAllMethods result
+                        val set = Reflect.callMethod(ctx.api, chain.getThisObject(), "getExpandedLayout")
+                            ?: return@hookAllMethods result
+                        applyLayout(ctx.api, context, set, null, null)
+                        Reflect.callMethod(ctx.api, chain.getThisObject(), "refreshState")
+                        result
+                    } catch (e: Throwable) {
+                        Logger.e(TAG, "重排约束集失败", e)
+                        result
+                    }
+                }
                 Logger.i(TAG, "已挂载 MediaViewController#loadLayoutConstraints")
             }
         } catch (e: Throwable) {
@@ -181,25 +177,22 @@ object MediaCardCompactHook : FeatureHook {
      * bindPlayer 末尾会依次调用 setProgressBarStyle / setPlayerButtonStyle / setTextSize
      * 回写约束集与控件样式，所以必须在它之后再套一遍我们的版式。
      */
-    private fun hookBindPlayer(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookBindPlayer(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(CLS_CONTROL_PANEL, lpparam.classLoader)
-            val hooked = XposedBridge.hookAllMethods(
-                clazz,
-                "bindPlayer",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            restyle(param.thisObject)
-                        } catch (e: Throwable) {
-                            Logger.e(TAG, "绑定后重排失败", e)
-                        }
-                    }
-                }
-            )
-            if (hooked.isEmpty()) {
+            val clazz = Reflect.findClass(CLS_CONTROL_PANEL, ctx.classLoader)
+            val methods = Reflect.findMethods(clazz, "bindPlayer")
+            if (methods.isEmpty()) {
                 Logger.w(TAG, "未找到 MediaControlPanel#bindPlayer")
             } else {
+                Reflect.hookAllMethods(ctx.api, clazz, "bindPlayer", excluded = { false }) { chain ->
+                    val result = chain.proceed()
+                    try {
+                        restyle(ctx.api, chain.getThisObject())
+                    } catch (e: Throwable) {
+                        Logger.e(TAG, "绑定后重排失败", e)
+                    }
+                    result
+                }
                 Logger.i(TAG, "已挂载 MediaControlPanel#bindPlayer")
             }
         } catch (e: Throwable) {
@@ -212,36 +205,34 @@ object MediaCardCompactHook : FeatureHook {
      * 动画中间态宽度小于文本测量宽度时，右侧秒位会被裁掉。
      * 此处清掉裁剪，文本始终完整显示。
      */
-    private fun hookTransitionTimeClip(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookTransitionTimeClip(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(CLS_TRANSITION_LAYOUT, lpparam.classLoader)
-            val hooked = XposedBridge.hookAllMethods(
-                clazz,
-                "applyCurrentState",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val layout = param.thisObject as? ViewGroup ?: return
-                            val ctx = layout.context ?: return
-                            val rootId = id(ctx, "qs_media_controls")
-                            if (rootId != 0 && layout.id != rootId) return
-                            val elapsed = id(ctx, "media_scrubbing_elapsed_time")
-                            val total = id(ctx, "media_scrubbing_total_time")
-                            if (elapsed == 0 && total == 0) return
-                            if (elapsed != 0) {
-                                (layout.findViewById<View>(elapsed) as? TextView)?.clipBounds = null
-                            }
-                            if (total != 0) {
-                                (layout.findViewById<View>(total) as? TextView)?.clipBounds = null
-                            }
-                        } catch (_: Throwable) {
-                        }
-                    }
-                }
-            )
-            if (hooked.isEmpty()) {
+            val clazz = Reflect.findClass(CLS_TRANSITION_LAYOUT, ctx.classLoader)
+            val methods = Reflect.findMethods(clazz, "applyCurrentState")
+            if (methods.isEmpty()) {
                 Logger.w(TAG, "未找到 TransitionLayout#applyCurrentState，时间文本可能仍会动画裁字")
             } else {
+                Reflect.hookAllMethods(ctx.api, clazz, "applyCurrentState", excluded = { false }) { chain ->
+                    val result = chain.proceed()
+                    try {
+                        val layout = chain.getThisObject() as? ViewGroup ?: return@hookAllMethods result
+                        val context = layout.context ?: return@hookAllMethods result
+                        val rootId = id(context, "qs_media_controls")
+                        if (rootId != 0 && layout.id != rootId) return@hookAllMethods result
+                        val elapsed = id(context, "media_scrubbing_elapsed_time")
+                        val total = id(context, "media_scrubbing_total_time")
+                        if (elapsed == 0 && total == 0) return@hookAllMethods result
+                        if (elapsed != 0) {
+                            (layout.findViewById<View>(elapsed) as? TextView)?.clipBounds = null
+                        }
+                        if (total != 0) {
+                            (layout.findViewById<View>(total) as? TextView)?.clipBounds = null
+                        }
+                        result
+                    } catch (_: Throwable) {
+                        result
+                    }
+                }
                 Logger.i(TAG, "已挂载 TransitionLayout#applyCurrentState 时间文本防裁剪")
             }
         } catch (e: Throwable) {
@@ -259,37 +250,35 @@ object MediaCardCompactHook : FeatureHook {
      * 故在 refreshMusicWallpaperState 收到 toOpen=false 后补套：动画路径等收起动画结束后补
      * （对齐系统自身 settle 时机 +300ms）；无动画路径当帧补。
      */
-    private fun hookMusicWallpaperTransition(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookMusicWallpaperTransition(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(CLS_CONTROL_PANEL, lpparam.classLoader)
-            val hooked = XposedBridge.hookAllMethods(
-                clazz,
-                "refreshMusicWallpaperState",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val panel = param.thisObject ?: return
-                            val inWallpaper = try {
-                                XposedHelpers.getBooleanField(panel, "mIsUseMediaBackground")
-                            } catch (_: Throwable) {
-                                return
-                            }
-                            markWallpaper(panel, inWallpaper)
-                            if (inWallpaper) {
-                                pendingReapply.remove(panel)?.let { mainHandler.removeCallbacks(it) }
-                            } else {
-                                // 第 5 参 z5 = animate
-                                val animate = param.args.getOrNull(4) as? Boolean ?: true
-                                scheduleCompactReapply(panel, animate)
-                            }
-                        } catch (_: Throwable) {
-                        }
-                    }
-                }
-            )
-            if (hooked.isEmpty()) {
+            val clazz = Reflect.findClass(CLS_CONTROL_PANEL, ctx.classLoader)
+            val methods = Reflect.findMethods(clazz, "refreshMusicWallpaperState")
+            if (methods.isEmpty()) {
                 Logger.w(TAG, "未找到 MediaControlPanel#refreshMusicWallpaperState，退出壁纸后紧凑版式可能错位")
             } else {
+                Reflect.hookAllMethods(ctx.api, clazz, "refreshMusicWallpaperState", excluded = { false }) { chain ->
+                    val result = chain.proceed()
+                    try {
+                        val panel = chain.getThisObject() ?: return@hookAllMethods result
+                        val inWallpaper = try {
+                            Reflect.getBooleanField(panel, "mIsUseMediaBackground")
+                        } catch (_: Throwable) {
+                            return@hookAllMethods result
+                        }
+                        markWallpaper(ctx.api, panel, inWallpaper)
+                        if (inWallpaper) {
+                            pendingReapply.remove(panel)?.let { mainHandler.removeCallbacks(it) }
+                        } else {
+                            // 第 5 参 z5 = animate
+                            val animate = chain.getArgs().getOrNull(4) as? Boolean ?: true
+                            scheduleCompactReapply(ctx.api, panel, animate)
+                        }
+                        result
+                    } catch (_: Throwable) {
+                        result
+                    }
+                }
                 Logger.i(TAG, "已挂载 MediaControlPanel#refreshMusicWallpaperState")
             }
         } catch (e: Throwable) {
@@ -297,14 +286,14 @@ object MediaCardCompactHook : FeatureHook {
         }
     }
 
-    private fun scheduleCompactReapply(panel: Any, animate: Boolean) {
+    private fun scheduleCompactReapply(api: XposedInterface, panel: Any, animate: Boolean) {
         pendingReapply.remove(panel)?.let { mainHandler.removeCallbacks(it) }
         val reapply = Runnable {
             try {
-                val inWallpaper = XposedHelpers.callMethod(panel, "isUseMediaBackground")
+                val inWallpaper = Reflect.callMethod(api, panel, "isUseMediaBackground")
                     as? Boolean ?: false
                 if (!inWallpaper) {
-                    restyle(panel)
+                    restyle(api, panel)
                     Logger.d(TAG) { "退出音乐壁纸后已补套紧凑版式" }
                 }
             } catch (_: Throwable) {
@@ -316,7 +305,7 @@ object MediaCardCompactHook : FeatureHook {
             return
         }
         val duration = try {
-            (XposedHelpers.getStaticObjectField(
+            (Reflect.getStaticObjectField(
                 panel.javaClass, "HEIGHT_ANIMATION_DURATION"
             ) as? Number)?.toLong() ?: 1500L
         } catch (_: Throwable) {
@@ -326,9 +315,9 @@ object MediaCardCompactHook : FeatureHook {
         mainHandler.postDelayed(reapply, duration + 800)
     }
 
-    private fun markWallpaper(panel: Any, inWallpaper: Boolean) {
+    private fun markWallpaper(api: XposedInterface, panel: Any, inWallpaper: Boolean) {
         try {
-            XposedHelpers.getObjectField(panel, "mMediaViewController")?.let {
+            Reflect.getObjectField(panel, "mMediaViewController")?.let {
                 wallpaperState[it] = inWallpaper
             }
         } catch (_: Throwable) {
@@ -336,84 +325,80 @@ object MediaCardCompactHook : FeatureHook {
     }
 
     /** 轮播容器高度：原版 qs_media_container_height(188dp) -> 紧凑高度。 */
-    private fun hookCardHeight(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookCardHeight(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(CLS_CAROUSEL, lpparam.classLoader)
-            XposedBridge.hookAllMethods(
-                clazz,
-                "getMediaCardHeight",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val cur = param.result as? Int ?: return
-                            val ctx = XposedHelpers.getObjectField(param.thisObject, "context")
-                                as? Context ?: return
-                            val res = ctx.resources
-                            val dimenId =
-                                res.getIdentifier("qs_media_container_height", "dimen", SYSTEMUI)
-                            if (dimenId == 0) return
-                            // 只改常态高度，音乐壁纸大卡片高度保持原样
-                            if (cur != res.getDimensionPixelSize(dimenId)) return
-                            param.result = dp(ctx, CARD_H)
-                        } catch (_: Throwable) {
-                        }
-                    }
+            val clazz = Reflect.findClass(CLS_CAROUSEL, ctx.classLoader)
+            Reflect.hookAllMethods(ctx.api, clazz, "getMediaCardHeight", excluded = { false }) { chain ->
+                val result = chain.proceed()
+                try {
+                    val cur = result as? Int ?: return@hookAllMethods result
+                    val context = Reflect.getObjectField(chain.getThisObject(), "context")
+                        as? Context ?: return@hookAllMethods result
+                    val res = context.resources
+                    val dimenId =
+                        res.getIdentifier("qs_media_container_height", "dimen", SYSTEMUI)
+                    if (dimenId == 0) return@hookAllMethods result
+                    // 只改常态高度，音乐壁纸大卡片高度保持原样
+                    if (cur != res.getDimensionPixelSize(dimenId)) return@hookAllMethods result
+                    dp(context, CARD_H)
+                } catch (_: Throwable) {
+                    result
                 }
-            )
+            }
             Logger.i(TAG, "已挂载 MediaCarouselController#getMediaCardHeight")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 MediaCarouselController 失败", e)
         }
     }
 
-    private fun restyle(panel: Any) {
-        val holder = XposedHelpers.getObjectField(panel, "mMediaViewHolder") ?: return
+    private fun restyle(api: XposedInterface, panel: Any) {
+        val holder = Reflect.getObjectField(panel, "mMediaViewHolder") ?: return
         // 音乐壁纸大卡片是另一套元素，不接管
         val useMediaBg = try {
-            XposedHelpers.callMethod(panel, "isUseMediaBackground") as? Boolean ?: false
+            Reflect.callMethod(api, panel, "isUseMediaBackground") as? Boolean ?: false
         } catch (_: Throwable) {
             false
         }
         if (useMediaBg) {
-            markWallpaper(panel, true)
+            markWallpaper(api, panel, true)
             return
         }
-        markWallpaper(panel, false)
+        markWallpaper(api, panel, false)
 
-        val viewController = XposedHelpers.getObjectField(panel, "mMediaViewController") ?: return
-        val set = XposedHelpers.callMethod(viewController, "getExpandedLayout") ?: return
-        val player = XposedHelpers.callMethod(holder, "getPlayer") as? View ?: return
-        val ctx = player.context ?: return
+        val viewController = Reflect.getObjectField(panel, "mMediaViewController") ?: return
+        val set = Reflect.callMethod(api, viewController, "getExpandedLayout") ?: return
+        val player = Reflect.callMethod(api, holder, "getPlayer") as? View ?: return
+        val context = player.context ?: return
 
         val pills = ensurePillViews(player)
-        val ordered = computeButtonOrder(ctx, holder, set)
-        val timeWidthPx = measureTimeWidthPx(ctx, holder)
-        applyLayout(ctx, set, ordered, pills, timeWidthPx)
-        applyPillBackgrounds(player, holder, ordered, pills)
-        hideSeekThumb(holder)
+        val ordered = computeButtonOrder(api, context, holder, set)
+        val timeWidthPx = measureTimeWidthPx(api, context, holder)
+        applyLayout(api, context, set, ordered, pills, timeWidthPx)
+        applyPillBackgrounds(api, player, holder, ordered, pills)
+        hideSeekThumb(api, holder)
 
-        val h = dp(ctx, CARD_H)
+        val h = dp(context, CARD_H)
         if (player.minimumHeight != h) player.minimumHeight = h
         try {
-            XposedHelpers.callMethod(player, "setMinHeight", h)
+            Reflect.callMethod(api, player, "setMinHeight", h)
         } catch (_: Throwable) {
         }
 
-        XposedHelpers.callMethod(viewController, "refreshState")
+        Reflect.callMethod(api, viewController, "refreshState")
     }
 
     /**
      * 用当前系统字体/字号实测时间文本最大宽度，再作为固定宽度写入约束集。
      * 这样不同用户字体大小、不同字体族下都不会裁字，同时避免无脑给死宽度导致进度条过短。
      */
-    private fun measureTimeWidthPx(ctx: Context, holder: Any): Int? {
+    private fun measureTimeWidthPx(api: XposedInterface, context: Context, holder: Any): Int? {
         val elapsed = try {
-            XposedHelpers.callMethod(holder, "getScrubbingElapsedTimeView") as? TextView
+            Reflect.callMethod(api, holder, "getScrubbingElapsedTimeView") as? TextView
         } catch (_: Throwable) {
             null
         }
         val total = try {
-            XposedHelpers.callMethod(holder, "getScrubbingTotalTimeView") as? TextView
+            Reflect.callMethod(api, holder, "getScrubbingTotalTimeView") as? TextView
         } catch (_: Throwable) {
             null
         }
@@ -427,7 +412,7 @@ object MediaCardCompactHook : FeatureHook {
         }
         if (maxText.isBlank()) {
             val seek = try {
-                XposedHelpers.callMethod(holder, "getSeekBar") as? SeekBar
+                Reflect.callMethod(api, holder, "getSeekBar") as? SeekBar
             } catch (_: Throwable) {
                 null
             }
@@ -442,15 +427,15 @@ object MediaCardCompactHook : FeatureHook {
         } catch (_: Throwable) {
             0f
         }
-        val withPadding = maxTextWidth + dp(ctx, 2)
+        val withPadding = maxTextWidth + dp(context, 2)
         val measured = Math.ceil(withPadding.toDouble()).toInt()
-        return maxOf(dp(ctx, TIME_W), measured)
+        return maxOf(dp(context, TIME_W), measured)
     }
 
     /** 隐藏进度条拖动圆点：不能置 null（bindPlayer 会 getThumb().setTint()，NPE），换成透明 ColorDrawable 保留拖动手感。 */
-    private fun hideSeekThumb(holder: Any) {
+    private fun hideSeekThumb(api: XposedInterface, holder: Any) {
         val seek = try {
-            XposedHelpers.callMethod(holder, "getSeekBar") as? SeekBar
+            Reflect.callMethod(api, holder, "getSeekBar") as? SeekBar
         } catch (_: Throwable) {
             null
         } ?: return
@@ -498,17 +483,22 @@ object MediaCardCompactHook : FeatureHook {
      * 计算按钮排列顺序。卡片底部按钮槽位与语义无关，按 contentDescription
      * 认出上一曲/播放/下一曲，其余归左组。
      */
-    private fun computeButtonOrder(ctx: Context, holder: Any, set: Any): Pair<List<Int>, Int> {
+    private fun computeButtonOrder(
+        api: XposedInterface,
+        context: Context,
+        holder: Any,
+        set: Any
+    ): Pair<List<Int>, Int> {
         val names = listOf(
             "action0", "action1", "action2", "action3", "action4",
             "actionPrev", "actionPlayPause", "actionNext"
         )
         val visible = ArrayList<Int>()
         for (name in names) {
-            val vid = id(ctx, name)
+            val vid = id(context, name)
             if (vid == 0) continue
             val visibility = try {
-                XposedHelpers.callMethod(set, "getVisibility", vid) as? Int ?: View.VISIBLE
+                Reflect.callMethod(api, set, "getVisibility", vid) as? Int ?: View.VISIBLE
             } catch (_: Throwable) {
                 View.VISIBLE
             }
@@ -521,7 +511,7 @@ object MediaCardCompactHook : FeatureHook {
         var next = 0
         val extras = ArrayList<Int>()
         for (vid in visible) {
-            val desc = descriptionOf(holder, vid)
+            val desc = descriptionOf(api, holder, vid)
             when {
                 desc == null -> extras.add(vid)
                 matches(desc, PREV_WORDS) && prev == 0 -> prev = vid
@@ -536,9 +526,9 @@ object MediaCardCompactHook : FeatureHook {
         return (extras + transport) to extras.size
     }
 
-    private fun descriptionOf(holder: Any, viewId: Int): String? {
+    private fun descriptionOf(api: XposedInterface, holder: Any, viewId: Int): String? {
         val view = try {
-            XposedHelpers.callMethod(holder, "getAction", viewId) as? View
+            Reflect.callMethod(api, holder, "getAction", viewId) as? View
         } catch (_: Throwable) {
             null
         } ?: return null
@@ -550,165 +540,166 @@ object MediaCardCompactHook : FeatureHook {
 
     /** 重写 expandedLayout：这是整张卡片版式的唯一入口。 */
     private fun applyLayout(
-        ctx: Context,
+        api: XposedInterface,
+        context: Context,
         set: Any,
         ordered: Pair<List<Int>, Int>?,
         pills: IntArray?,
         timeWidthPx: Int? = null
     ) {
-        val album = id(ctx, "album_art")
-        val title = id(ctx, "header_title")
-        val artist = id(ctx, "header_artist")
-        val bar = id(ctx, "media_progress_bar")
+        val album = id(context, "album_art")
+        val title = id(context, "header_title")
+        val artist = id(context, "header_artist")
+        val bar = id(context, "media_progress_bar")
         if (album == 0 || title == 0 || artist == 0 || bar == 0) {
             Logger.once(TAG, "no_ids", "媒体卡片控件 id 解析失败，已跳过重排")
             return
         }
-        val seamless = id(ctx, "media_seamless")
-        val seamlessText = id(ctx, "media_seamless_text")
-        val appIcon = id(ctx, "icon")
-        val elapsed = id(ctx, "media_scrubbing_elapsed_time")
-        val total = id(ctx, "media_scrubbing_total_time")
+        val seamless = id(context, "media_seamless")
+        val seamlessText = id(context, "media_seamless_text")
+        val appIcon = id(context, "icon")
+        val elapsed = id(context, "media_scrubbing_elapsed_time")
+        val total = id(context, "media_scrubbing_total_time")
 
-        val padH = dp(ctx, PAD_H)
-        val padV = dp(ctx, PAD_V)
-        val gap = dp(ctx, GAP)
-        val rowGap = dp(ctx, ROW_GAP)
-        val timeW = timeWidthPx ?: dp(ctx, TIME_W)
+        val padH = dp(context, PAD_H)
+        val padV = dp(context, PAD_V)
+        val gap = dp(context, GAP)
+        val rowGap = dp(context, ROW_GAP)
+        val timeW = timeWidthPx ?: dp(context, TIME_W)
 
         // 封面：左侧，垂直居中，决定卡片内容高度
-        reset(set, album)
-        call(set, "constrainWidth", album, dp(ctx, ALBUM))
-        call(set, "constrainHeight", album, dp(ctx, ALBUM))
-        call(set, "connect", album, START, PARENT_ID, START, padH)
-        call(set, "connect", album, TOP, PARENT_ID, TOP, padV)
-        call(set, "connect", album, BOTTOM, PARENT_ID, BOTTOM, padV)
+        reset(api, set, album)
+        call(api, set, "constrainWidth", album, dp(context, ALBUM))
+        call(api, set, "constrainHeight", album, dp(context, ALBUM))
+        call(api, set, "connect", album, START, PARENT_ID, START, padH)
+        call(api, set, "connect", album, TOP, PARENT_ID, TOP, padV)
+        call(api, set, "connect", album, BOTTOM, PARENT_ID, BOTTOM, padV)
 
         // 设备名与封面上的应用角标：紧凑版式里不显示
-        if (seamlessText != 0) call(set, "setVisibility", seamlessText, GONE)
-        if (appIcon != 0) call(set, "setVisibility", appIcon, GONE)
+        if (seamlessText != 0) call(api, set, "setVisibility", seamlessText, GONE)
+        if (appIcon != 0) call(api, set, "setVisibility", appIcon, GONE)
 
         // 标题：封面右侧顶部
-        reset(set, title)
-        call(set, "constrainWidth", title, MATCH_CONSTRAINT)
-        call(set, "constrainHeight", title, WRAP_CONTENT)
-        call(set, "constrainedWidth", title, true)
-        call(set, "connect", title, START, album, END, gap)
+        reset(api, set, title)
+        call(api, set, "constrainWidth", title, MATCH_CONSTRAINT)
+        call(api, set, "constrainHeight", title, WRAP_CONTENT)
+        call(api, set, "constrainedWidth", title, true)
+        call(api, set, "connect", title, START, album, END, gap)
         if (seamless != 0) {
-            call(set, "connect", title, END, seamless, START, dp(ctx, 8))
+            call(api, set, "connect", title, END, seamless, START, dp(context, 8))
         } else {
-            call(set, "connect", title, END, PARENT_ID, END, padH)
+            call(api, set, "connect", title, END, PARENT_ID, END, padH)
         }
-        call(set, "connect", title, TOP, album, TOP, 0)
-        call(set, "setHorizontalBias", title, 0f)
+        call(api, set, "connect", title, TOP, album, TOP, 0)
+        call(api, set, "setHorizontalBias", title, 0f)
 
         // 投屏键：右上角，与标题垂直居中对齐
         if (seamless != 0) {
-            reset(set, seamless)
-            call(set, "connect", seamless, END, PARENT_ID, END, padH)
-            call(set, "connect", seamless, TOP, title, TOP, 0)
-            call(set, "connect", seamless, BOTTOM, title, BOTTOM, 0)
+            reset(api, set, seamless)
+            call(api, set, "connect", seamless, END, PARENT_ID, END, padH)
+            call(api, set, "connect", seamless, TOP, title, TOP, 0)
+            call(api, set, "connect", seamless, BOTTOM, title, BOTTOM, 0)
         }
 
         // 歌手：标题下方
-        reset(set, artist)
-        call(set, "constrainWidth", artist, MATCH_CONSTRAINT)
-        call(set, "constrainHeight", artist, WRAP_CONTENT)
-        call(set, "constrainedWidth", artist, true)
-        call(set, "connect", artist, START, album, END, gap)
-        call(set, "connect", artist, END, PARENT_ID, END, padH)
-        call(set, "connect", artist, TOP, title, BOTTOM, dp(ctx, 2))
-        call(set, "setHorizontalBias", artist, 0f)
+        reset(api, set, artist)
+        call(api, set, "constrainWidth", artist, MATCH_CONSTRAINT)
+        call(api, set, "constrainHeight", artist, WRAP_CONTENT)
+        call(api, set, "constrainedWidth", artist, true)
+        call(api, set, "connect", artist, START, album, END, gap)
+        call(api, set, "connect", artist, END, PARENT_ID, END, padH)
+        call(api, set, "connect", artist, TOP, title, BOTTOM, dp(context, 2))
+        call(api, set, "setHorizontalBias", artist, 0f)
 
         // 底部按钮行：一条水平链，靠封面底边对齐
-        val buttons = ordered?.first ?: defaultButtons(ctx)
+        val buttons = ordered?.first ?: defaultButtons(context)
         val extraCount = ordered?.second ?: 0
-        val btnH = dp(ctx, BTN_H)
-        val groupGap = dp(ctx, GROUP_GAP)
+        val btnH = dp(context, BTN_H)
+        val groupGap = dp(context, GROUP_GAP)
         for ((index, vid) in buttons.withIndex()) {
-            reset(set, vid)
-            call(set, "constrainWidth", vid, MATCH_CONSTRAINT)
-            call(set, "constrainHeight", vid, btnH)
-            call(set, "connect", vid, BOTTOM, album, BOTTOM, 0)
+            reset(api, set, vid)
+            call(api, set, "constrainWidth", vid, MATCH_CONSTRAINT)
+            call(api, set, "constrainHeight", vid, btnH)
+            call(api, set, "connect", vid, BOTTOM, album, BOTTOM, 0)
             val startMargin = when {
                 index == 0 -> gap
                 extraCount in 1 until buttons.size && index == extraCount -> groupGap
                 else -> 0
             }
             if (index == 0) {
-                call(set, "connect", vid, START, album, END, startMargin)
+                call(api, set, "connect", vid, START, album, END, startMargin)
             } else {
-                call(set, "connect", vid, START, buttons[index - 1], END, startMargin)
+                call(api, set, "connect", vid, START, buttons[index - 1], END, startMargin)
             }
             if (index == buttons.lastIndex) {
-                call(set, "connect", vid, END, PARENT_ID, END, padH)
+                call(api, set, "connect", vid, END, PARENT_ID, END, padH)
             } else {
-                call(set, "connect", vid, END, buttons[index + 1], START, 0)
+                call(api, set, "connect", vid, END, buttons[index + 1], START, 0)
             }
         }
         if (buttons.isNotEmpty()) {
-            call(set, "setHorizontalChainStyle", buttons[0], CHAIN_SPREAD)
+            call(api, set, "setHorizontalChainStyle", buttons[0], CHAIN_SPREAD)
         }
 
         // 进度条 + 两侧时间：夹在歌手与按钮行之间，上下留等距
-        reset(set, bar)
-        call(set, "constrainWidth", bar, MATCH_CONSTRAINT)
-        call(set, "constrainHeight", bar, dp(ctx, SEEK_H))
-        call(set, "connect", bar, TOP, artist, BOTTOM, rowGap)
+        reset(api, set, bar)
+        call(api, set, "constrainWidth", bar, MATCH_CONSTRAINT)
+        call(api, set, "constrainHeight", bar, dp(context, SEEK_H))
+        call(api, set, "connect", bar, TOP, artist, BOTTOM, rowGap)
         if (buttons.isNotEmpty()) {
-            call(set, "connect", bar, BOTTOM, buttons[0], TOP, rowGap)
+            call(api, set, "connect", bar, BOTTOM, buttons[0], TOP, rowGap)
         } else {
-            call(set, "connect", bar, BOTTOM, album, BOTTOM, 0)
+            call(api, set, "connect", bar, BOTTOM, album, BOTTOM, 0)
         }
         if (elapsed != 0) {
-            reset(set, elapsed)
-            call(set, "constrainWidth", elapsed, timeW)
-            call(set, "constrainHeight", elapsed, WRAP_CONTENT)
-            call(set, "connect", elapsed, START, album, END, dp(ctx, TIME_START_GAP))
-            call(set, "connect", elapsed, TOP, bar, TOP, 0)
-            call(set, "connect", elapsed, BOTTOM, bar, BOTTOM, 0)
-            call(set, "connect", bar, START, elapsed, END, dp(ctx, TIME_GAP))
+            reset(api, set, elapsed)
+            call(api, set, "constrainWidth", elapsed, timeW)
+            call(api, set, "constrainHeight", elapsed, WRAP_CONTENT)
+            call(api, set, "connect", elapsed, START, album, END, dp(context, TIME_START_GAP))
+            call(api, set, "connect", elapsed, TOP, bar, TOP, 0)
+            call(api, set, "connect", elapsed, BOTTOM, bar, BOTTOM, 0)
+            call(api, set, "connect", bar, START, elapsed, END, dp(context, TIME_GAP))
         } else {
-            call(set, "connect", bar, START, album, END, dp(ctx, TIME_START_GAP))
+            call(api, set, "connect", bar, START, album, END, dp(context, TIME_START_GAP))
         }
         if (total != 0) {
-            reset(set, total)
-            call(set, "constrainWidth", total, timeW)
-            call(set, "constrainHeight", total, WRAP_CONTENT)
-            call(set, "connect", total, END, PARENT_ID, END, dp(ctx, TIME_END_MARGIN))
-            call(set, "connect", total, TOP, bar, TOP, 0)
-            call(set, "connect", total, BOTTOM, bar, BOTTOM, 0)
-            call(set, "connect", bar, END, total, START, dp(ctx, TIME_GAP))
+            reset(api, set, total)
+            call(api, set, "constrainWidth", total, timeW)
+            call(api, set, "constrainHeight", total, WRAP_CONTENT)
+            call(api, set, "connect", total, END, PARENT_ID, END, dp(context, TIME_END_MARGIN))
+            call(api, set, "connect", total, TOP, bar, TOP, 0)
+            call(api, set, "connect", total, BOTTOM, bar, BOTTOM, 0)
+            call(api, set, "connect", bar, END, total, START, dp(context, TIME_GAP))
         } else {
-            call(set, "connect", bar, END, PARENT_ID, END, padH)
+            call(api, set, "connect", bar, END, PARENT_ID, END, padH)
         }
 
         // 胶囊背景：与各组按钮范围完全重合
         if (pills != null && buttons.isNotEmpty()) {
             if (extraCount in 1 until buttons.size) {
-                constrainPill(set, pills[0], buttons[0], buttons[extraCount - 1])
-                constrainPill(set, pills[1], buttons[extraCount], buttons.last())
+                constrainPill(api, set, pills[0], buttons[0], buttons[extraCount - 1])
+                constrainPill(api, set, pills[1], buttons[extraCount], buttons.last())
             } else {
-                constrainPill(set, pills[0], buttons[0], buttons.last())
-                call(set, "setVisibility", pills[1], GONE)
+                constrainPill(api, set, pills[0], buttons[0], buttons.last())
+                call(api, set, "setVisibility", pills[1], GONE)
             }
         }
     }
 
-    private fun constrainPill(set: Any, pillId: Int, firstBtn: Int, lastBtn: Int) {
-        reset(set, pillId)
-        call(set, "constrainWidth", pillId, MATCH_CONSTRAINT)
-        call(set, "constrainHeight", pillId, MATCH_CONSTRAINT)
-        call(set, "connect", pillId, START, firstBtn, START, 0)
-        call(set, "connect", pillId, END, lastBtn, END, 0)
-        call(set, "connect", pillId, TOP, firstBtn, TOP, 0)
-        call(set, "connect", pillId, BOTTOM, firstBtn, BOTTOM, 0)
-        call(set, "setVisibility", pillId, View.VISIBLE)
+    private fun constrainPill(api: XposedInterface, set: Any, pillId: Int, firstBtn: Int, lastBtn: Int) {
+        reset(api, set, pillId)
+        call(api, set, "constrainWidth", pillId, MATCH_CONSTRAINT)
+        call(api, set, "constrainHeight", pillId, MATCH_CONSTRAINT)
+        call(api, set, "connect", pillId, START, firstBtn, START, 0)
+        call(api, set, "connect", pillId, END, lastBtn, END, 0)
+        call(api, set, "connect", pillId, TOP, firstBtn, TOP, 0)
+        call(api, set, "connect", pillId, BOTTOM, firstBtn, BOTTOM, 0)
+        call(api, set, "setVisibility", pillId, View.VISIBLE)
     }
 
-    private fun defaultButtons(ctx: Context): List<Int> =
+    private fun defaultButtons(context: Context): List<Int> =
         listOf("action0", "action1", "action2", "action3", "action4")
-            .map { id(ctx, it) }
+            .map { id(context, it) }
             .filter { it != 0 }
 
     /**
@@ -718,6 +709,7 @@ object MediaCardCompactHook : FeatureHook {
      * 前景色比卡片略白一档，形成"同质感、更亮一层"的层次；不支持模糊时退回半透明白。
      */
     private fun applyPillBackgrounds(
+        api: XposedInterface,
         player: View,
         holder: Any,
         ordered: Pair<List<Int>, Int>,
@@ -728,7 +720,7 @@ object MediaCardCompactHook : FeatureHook {
 
         for (vid in buttons) {
             val view = try {
-                XposedHelpers.callMethod(holder, "getAction", vid) as? View
+                Reflect.callMethod(api, holder, "getAction", vid) as? View
             } catch (_: Throwable) {
                 null
             } ?: continue
@@ -736,27 +728,27 @@ object MediaCardCompactHook : FeatureHook {
         }
 
         if (pills == null || player !is ViewGroup) return
-        refreshPillBackgrounds(player)
+        refreshPillBackgrounds(api, player)
     }
 
     /**
      * 按当前深浅色模式与“通知卡片模糊”参数给胶囊套背景。
      * tag 记录已应用的模式+参数，避免重复 new 出模糊 drawable。
      */
-    internal fun refreshPillBackgrounds(player: View) {
+    internal fun refreshPillBackgrounds(api: XposedInterface, player: View) {
         if (player !is ViewGroup) return
         val pills = pillIdCache[player] ?: return
-        val ctx = player.context ?: return
-        val night = (ctx.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+        val context = player.context ?: return
+        val night = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
-        val radius = BTN_H / 2f * ctx.resources.displayMetrics.density
+        val radius = BTN_H / 2f * context.resources.displayMetrics.density
         val stateTag = "pill:${if (night) "night" else "day"}:${blurSettingsKey()}"
         val cl = player.javaClass.classLoader
 
         for (pillId in pills) {
             val pill = player.findViewById<View>(pillId) ?: continue
             if (pill.tag == stateTag && pill.background != null) continue
-            val ok = applyPillBlur(pill, player, radius, night, cl)
+            val ok = applyPillBlur(api, pill, player, radius, night, cl)
             if (!ok) {
                 val color = if (night) 0x33FFFFFF else 0x59FFFFFF
                 pill.background = GradientDrawable().apply {
@@ -772,16 +764,16 @@ object MediaCardCompactHook : FeatureHook {
     /** 读取“通知卡片模糊”的当前参数，拼进胶囊 tag；未启用时返回 off。 */
     private fun blurSettingsKey(): String {
         val lp = loadParam ?: return "off"
-        if (!XposedPrefs.isFeatureEnabled(lp, SYSTEMUI, BLUR_FEATURE_KEY)) return "off"
-        val intensity = XposedPrefs.getFeatureValue(
-            lp, SYSTEMUI, BLUR_FEATURE_KEY, NotificationCardBlurMath.DEFAULT_INTENSITY
+        if (!lp.featureEnabled(BLUR_FEATURE_KEY)) return "off"
+        val intensity = lp.featureValue(
+            BLUR_FEATURE_KEY, NotificationCardBlurMath.DEFAULT_INTENSITY
         ).coerceIn(0, NotificationCardBlurMath.MAX_INTENSITY)
-        val opacity = XposedPrefs.getFeatureExtraValue(
-            lp, SYSTEMUI, BLUR_FEATURE_KEY, BLUR_OPACITY_SUFFIX,
+        val opacity = lp.featureExtraValue(
+            BLUR_FEATURE_KEY, BLUR_OPACITY_SUFFIX,
             NotificationCardBlurMath.DEFAULT_OPACITY
         ).coerceIn(0, 100)
-        val beautify = XposedPrefs.getFeatureExtraValue(
-            lp, SYSTEMUI, BLUR_FEATURE_KEY, BLUR_BEAUTIFY_SUFFIX, 0
+        val beautify = lp.featureExtraValue(
+            BLUR_FEATURE_KEY, BLUR_BEAUTIFY_SUFFIX, 0
         )
         val stackCap = IosNotificationStackHook.stackBlurSoftCapActive
         return "blur:$intensity:$opacity:$beautify:${if (stackCap) "cap" else "nocap"}"
@@ -797,6 +789,7 @@ object MediaCardCompactHook : FeatureHook {
      * MzBlurUtils.setBackgroundBlurDrawable(view, 180, -1f, 圆角, 前景色, debug, alpha)。
      */
     private fun applyPillBlur(
+        api: XposedInterface,
         pill: View,
         player: View,
         radius: Float,
@@ -805,29 +798,29 @@ object MediaCardCompactHook : FeatureHook {
     ): Boolean {
         val color = pillForegroundColor(night)
         return try {
-            val utils = blurUtils(cl) ?: return false
-            val supported = XposedHelpers.callMethod(utils, "isSupportNotificationBlur")
+            val utils = blurUtils(api, cl) ?: return false
+            val supported = Reflect.callMethod(api, utils, "isSupportNotificationBlur")
                 as? Boolean ?: false
             if (!supported) return false
 
-            val live = XposedHelpers.callMethod(utils, "hasLiveBlur") as? Boolean ?: false
+            val live = Reflect.callMethod(api, utils, "hasLiveBlur") as? Boolean ?: false
             if (live) {
                 val alpha = try {
-                    XposedHelpers.callMethod(utils, "getBackgroundBlurDrawableAlpha", player, false)
+                    Reflect.callMethod(api, utils, "getBackgroundBlurDrawableAlpha", player, false)
                         as? Int ?: 255
                 } catch (_: Throwable) {
                     255
                 }
-                XposedHelpers.callMethod(
-                    utils, "setBackgroundBlurDrawable",
+                Reflect.callMethod(
+                    api, utils, "setBackgroundBlurDrawable",
                     pill, 180, -1.0f, radius, color, false, if (alpha <= 0) 255 else alpha
                 )
             } else {
-                val mgrCls = XposedHelpers.findClass(CLS_WALLPAPER_BLUR_MANAGER, cl)
-                val mgr = XposedHelpers.callStaticMethod(mgrCls, "getInstance", pill.context)
-                XposedHelpers.callMethod(mgr, "setAllCornerRadius", pill, radius, radius, radius, radius)
-                XposedHelpers.callMethod(mgr, "setAllForegroundColor", pill, color)
-                val drawable = XposedHelpers.callMethod(mgr, "addBlurDrawableTo", pill, color, radius)
+                val mgrCls = Reflect.findClass(CLS_WALLPAPER_BLUR_MANAGER, cl)
+                val mgr = Reflect.callStaticMethod(api, mgrCls, "getInstance", pill.context)
+                Reflect.callMethod(api, mgr, "setAllCornerRadius", pill, radius, radius, radius, radius)
+                Reflect.callMethod(api, mgr, "setAllForegroundColor", pill, color)
+                val drawable = Reflect.callMethod(api, mgr, "addBlurDrawableTo", pill, color, radius)
                     as? android.graphics.drawable.Drawable ?: return false
                 pill.background = drawable
             }
@@ -844,24 +837,21 @@ object MediaCardCompactHook : FeatureHook {
      * MediaCarouseTransitionLayout.setBackground()）顺带刷新胶囊，
      * 否则切到深色模式后胶囊仍是浅色模式的底。
      */
-    private fun hookPillModeRefresh(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookPillModeRefresh(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(CLS_CAROUSE_LAYOUT, lpparam.classLoader)
-            XposedBridge.hookAllMethods(
-                clazz,
-                "setBackground",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            // 只处理 Flyme 自己的无参 setBackground()，不碰 View.setBackground(Drawable)
-                            if (param.args.isNotEmpty()) return
-                            val player = param.thisObject as? View ?: return
-                            refreshPillBackgrounds(player)
-                        } catch (_: Throwable) {
-                        }
-                    }
+            val clazz = Reflect.findClass(CLS_CAROUSE_LAYOUT, ctx.classLoader)
+            Reflect.hookAllMethods(ctx.api, clazz, "setBackground", excluded = { false }) { chain ->
+                val result = chain.proceed()
+                try {
+                    // 只处理 Flyme 自己的无参 setBackground()，不碰 View.setBackground(Drawable)
+                    if (chain.getArgs().isNotEmpty()) return@hookAllMethods result
+                    val player = chain.getThisObject() as? View ?: return@hookAllMethods result
+                    refreshPillBackgrounds(ctx.api, player)
+                    result
+                } catch (_: Throwable) {
+                    result
                 }
-            )
+            }
             Logger.i(TAG, "已挂载 MediaCarouseTransitionLayout#setBackground")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载胶囊模式刷新失败", e)
@@ -869,70 +859,67 @@ object MediaCardCompactHook : FeatureHook {
     }
 
     /** 跟随卡片的模糊透明度，避免下拉过程中胶囊不跟着淡入淡出。 */
-    private fun hookPillBlurAlpha(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookPillBlurAlpha(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(CLS_CAROUSE_LAYOUT, lpparam.classLoader)
-            XposedBridge.hookAllMethods(
-                clazz,
-                "setBackgroundBlurAlpha",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val player = param.thisObject as? View ?: return
-                            val ids = pillIdCache[player] ?: return
-                            val alpha = param.args.getOrNull(0) as? Int ?: return
-                            val utils = blurUtils(player.javaClass.classLoader) ?: return
-                            for (pillId in ids) {
-                                val pill = (player as? ViewGroup)?.findViewById<View>(pillId)
-                                    ?: continue
-                                XposedHelpers.callMethod(
-                                    utils, "setBackgroundBlurDrawableAlpha", pill, alpha, false
-                                )
-                            }
-                        } catch (_: Throwable) {
-                        }
+            val clazz = Reflect.findClass(CLS_CAROUSE_LAYOUT, ctx.classLoader)
+            Reflect.hookAllMethods(ctx.api, clazz, "setBackgroundBlurAlpha", excluded = { false }) { chain ->
+                val result = chain.proceed()
+                try {
+                    val player = chain.getThisObject() as? View ?: return@hookAllMethods result
+                    val ids = pillIdCache[player] ?: return@hookAllMethods result
+                    val alpha = chain.getArgs().getOrNull(0) as? Int ?: return@hookAllMethods result
+                    val utils = blurUtils(ctx.api, player.javaClass.classLoader) ?: return@hookAllMethods result
+                    for (pillId in ids) {
+                        val pill = (player as? ViewGroup)?.findViewById<View>(pillId)
+                            ?: continue
+                        Reflect.callMethod(
+                            ctx.api, utils, "setBackgroundBlurDrawableAlpha", pill, alpha, false
+                        )
                     }
+                    result
+                } catch (_: Throwable) {
+                    result
                 }
-            )
+            }
             Logger.i(TAG, "已挂载 MediaCarouseTransitionLayout#setBackgroundBlurAlpha")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载胶囊模糊透明度同步失败", e)
         }
     }
 
-    private fun blurUtils(cl: ClassLoader?): Any? = try {
-        XposedHelpers.getStaticObjectField(
-            XposedHelpers.findClass(CLS_BLUR_UTILS, cl), "INSTANCE"
+    private fun blurUtils(api: XposedInterface, cl: ClassLoader?): Any? = try {
+        Reflect.getStaticObjectField(
+            Reflect.findClass(CLS_BLUR_UTILS, cl), "INSTANCE"
         )
     } catch (_: Throwable) {
         null
     }
 
-    private fun reset(set: Any, viewId: Int) {
+    private fun reset(api: XposedInterface, set: Any, viewId: Int) {
         for (anchor in ANCHORS) {
             try {
-                XposedHelpers.callMethod(set, "clear", viewId, anchor)
+                Reflect.callMethod(api, set, "clear", viewId, anchor)
             } catch (_: Throwable) {
             }
         }
     }
 
-    private fun call(set: Any, method: String, vararg args: Any?) {
+    private fun call(api: XposedInterface, set: Any, method: String, vararg args: Any?) {
         try {
-            XposedHelpers.callMethod(set, method, *args)
+            Reflect.callMethod(api, set, method, *args)
         } catch (e: Throwable) {
             Logger.once(TAG, "cs_$method", "ConstraintSet.$method 调用失败：${e.javaClass.simpleName}")
         }
     }
 
-    private fun id(ctx: Context, name: String): Int = idCache.getOrPut(name) {
+    private fun id(context: Context, name: String): Int = idCache.getOrPut(name) {
         try {
-            ctx.resources.getIdentifier(name, "id", SYSTEMUI)
+            context.resources.getIdentifier(name, "id", SYSTEMUI)
         } catch (_: Throwable) {
             0
         }
     }
 
-    private fun dp(ctx: Context, value: Int): Int =
-        (value * ctx.resources.displayMetrics.density + 0.5f).toInt()
+    private fun dp(context: Context, value: Int): Int =
+        (value * context.resources.displayMetrics.density + 0.5f).toInt()
 }

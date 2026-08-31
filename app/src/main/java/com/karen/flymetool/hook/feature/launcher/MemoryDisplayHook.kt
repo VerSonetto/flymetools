@@ -11,13 +11,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import java.lang.reflect.Proxy
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 
 object MemoryDisplayHook : FeatureHook {
 
@@ -33,95 +31,95 @@ object MemoryDisplayHook : FeatureHook {
     private var updateInterval: Long = 2000
     private var overviewState: Any? = null
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "memory_display")) return
-        if (lpparam.packageName != "com.meizu.flyme.launcher") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("memory_display")) return
+        if (ctx.packageName != "com.meizu.flyme.launcher") return
 
-        val interval = XposedPrefs.getFeatureValue(lpparam, packageName, "memory_display", 2000).toLong()
-        mount(lpparam, interval)
+        val interval = ctx.featureValue("memory_display", 2000).toLong()
+        mount(ctx, interval)
     }
 
-    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, interval: Long) {
+    private fun mount(ctx: HookContext, interval: Long) {
         updateInterval = if (interval > 0) interval else 2000
 
         try {
-            val launcherStateClass = XposedHelpers.findClass(LAUNCHER_STATE_CLASS, lpparam.classLoader)
-            overviewState = XposedHelpers.getStaticObjectField(launcherStateClass, "OVERVIEW")
+            val launcherStateClass = Reflect.findClass(LAUNCHER_STATE_CLASS, ctx.classLoader)
+            overviewState = Reflect.getStaticObjectField(launcherStateClass, "OVERVIEW")
         } catch (e: Throwable) {
             Logger.e(TAG, "获取 OVERVIEW 状态失败", e)
         }
 
-        hookLauncherOnCreate(lpparam)
+        hookLauncherOnCreate(ctx)
 
         Logger.i(TAG, "已挂载 Launcher 内存显示")
     }
 
-    private fun hookLauncherOnCreate(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookLauncherOnCreate(ctx: HookContext) {
         try {
-            val launcherClass = XposedHelpers.findClass(LAUNCHER_CLASS, lpparam.classLoader)
+            val launcherClass = Reflect.findClass(LAUNCHER_CLASS, ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 launcherClass,
                 "onCreate",
                 Bundle::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val launcher = param.thisObject
-                        val context = XposedHelpers.callMethod(launcher, "getApplicationContext") as Context
+            ) { chain ->
+                val result = chain.proceed()
+                val launcher = chain.getThisObject()
+                val context = Reflect.callMethod(ctx.api, launcher, "getApplicationContext") as Context
 
-                        val dragLayer = XposedHelpers.callMethod(launcher, "getDragLayer") as? ViewGroup
-                        val deviceProfile = XposedHelpers.callMethod(launcher, "getDeviceProfile")
-                        val stateManager = XposedHelpers.callMethod(launcher, "getStateManager")
+                val dragLayer = Reflect.callMethod(ctx.api, launcher, "getDragLayer") as? ViewGroup
+                val deviceProfile = Reflect.callMethod(ctx.api, launcher, "getDeviceProfile")
+                val stateManager = Reflect.callMethod(ctx.api, launcher, "getStateManager")
 
-                        if (dragLayer != null && deviceProfile != null) {
-                            memoryContainer?.let {
-                                try {
-                                    (it.parent as? ViewGroup)?.removeView(it)
-                                } catch (e: Throwable) {
-                                }
-                            }
-                            memoryContainer = null
-                            memoryTextView = null
-
-                            createMemoryView(dragLayer, context, deviceProfile)
-                            Logger.i(TAG, "已在 DragLayer 创建内存视图")
-
-                            if (stateManager != null) {
-                                addStateListener(stateManager)
-                                Logger.i(TAG, "已添加状态监听")
-                            }
-                        } else {
-                            Logger.w(TAG, "DragLayer 或 DeviceProfile 为空")
+                if (dragLayer != null && deviceProfile != null) {
+                    memoryContainer?.let {
+                        try {
+                            (it.parent as? ViewGroup)?.removeView(it)
+                        } catch (e: Throwable) {
                         }
                     }
-                }
-            )
+                    memoryContainer = null
+                    memoryTextView = null
 
-            XposedHelpers.findAndHookMethod(
+                    createMemoryView(dragLayer, context, deviceProfile)
+                    Logger.i(TAG, "已在 DragLayer 创建内存视图")
+
+                    if (stateManager != null) {
+                        addStateListener(ctx, stateManager)
+                        Logger.i(TAG, "已添加状态监听")
+                    }
+                } else {
+                    Logger.w(TAG, "DragLayer 或 DeviceProfile 为空")
+                }
+                result
+            }
+
+            Reflect.hookMethodOn(
+                ctx.api,
                 launcherClass,
                 "onResume",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val launcher = param.thisObject
-                        val dragLayer = XposedHelpers.callMethod(launcher, "getDragLayer") as? ViewGroup
-                        val deviceProfile = XposedHelpers.callMethod(launcher, "getDeviceProfile")
+            ) { chain ->
+                val result = chain.proceed()
+                val launcher = chain.getThisObject()
+                val dragLayer = Reflect.callMethod(ctx.api, launcher, "getDragLayer") as? ViewGroup
+                val deviceProfile = Reflect.callMethod(ctx.api, launcher, "getDeviceProfile")
 
-                        if (memoryContainer == null && dragLayer != null && deviceProfile != null) {
-                            val context = XposedHelpers.callMethod(launcher, "getApplicationContext") as Context
-                            createMemoryView(dragLayer, context, deviceProfile)
-                            Logger.i(TAG, "已在 onResume 重建内存视图")
-                        }
-                    }
+                if (memoryContainer == null && dragLayer != null && deviceProfile != null) {
+                    val context = Reflect.callMethod(ctx.api, launcher, "getApplicationContext") as Context
+                    createMemoryView(dragLayer, context, deviceProfile)
+                    Logger.i(TAG, "已在 onResume 重建内存视图")
                 }
-            )
+                result
+            }
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 Launcher.onCreate 失败", e)
         }
     }
 
-    private fun addStateListener(stateManager: Any) {
+    private fun addStateListener(ctx: HookContext, stateManager: Any) {
         try {
-            val stateListenerClass = XposedHelpers.findClass(
+            val stateListenerClass = Reflect.findClass(
                 "$STATE_MANAGER_CLASS\$StateListener",
                 stateManager.javaClass.classLoader
             )
@@ -153,7 +151,7 @@ object MemoryDisplayHook : FeatureHook {
                 null
             }
 
-            XposedHelpers.callMethod(stateManager, "addStateListener", listener)
+            Reflect.callMethod(ctx.api, stateManager, "addStateListener", listener)
         } catch (e: Throwable) {
             Logger.e(TAG, "添加状态监听失败", e)
         }
@@ -165,7 +163,7 @@ object MemoryDisplayHook : FeatureHook {
         val density = context.resources.displayMetrics.density
         val marginEnd = (12 * density).toInt()
 
-        val taskTopMargin = XposedHelpers.getIntField(deviceProfile, "overviewTaskThumbnailTopMarginPx")
+        val taskTopMargin = Reflect.getIntField(deviceProfile, "overviewTaskThumbnailTopMarginPx")
         val marginTop = (taskTopMargin * 0.1f).toInt()
 
         memoryContainer = LinearLayout(context).apply {

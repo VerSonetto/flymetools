@@ -8,13 +8,11 @@ import android.graphics.drawable.LayerDrawable
 import android.view.View
 import android.widget.ProgressBar
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.util.FlymeVersionUtils
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import io.github.libxposed.api.XposedInterface
 
 /**
  * 控制中心组件背景不透明度（Flyme 12）。
@@ -100,14 +98,12 @@ object ControlCenterOpacityHook : FeatureHook {
     @Volatile
     private var colorIdsResolved = false
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (ctx.packageName != "com.android.systemui") return
         if (!FlymeVersionUtils.isFlyme12()) return
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
 
-        val opacity = XposedPrefs.getFeatureValue(
-            lpparam,
-            packageName,
+        val opacity = ctx.featureValue(
             FEATURE_KEY,
             100
         ).coerceIn(0, 100)
@@ -117,9 +113,9 @@ object ControlCenterOpacityHook : FeatureHook {
         }
 
         val scale = opacity / 100f
-        hookResourcesGetColor(scale)
-        hookResourcesGetColorStateList(scale)
-        hookSliderBgResetPoints(lpparam, scale)
+        hookResourcesGetColor(ctx.api, scale)
+        hookResourcesGetColorStateList(ctx.api, scale)
+        hookSliderBgResetPoints(ctx, scale)
 
         Logger.i(TAG, "控制中心组件背景不透明度 Hook 完成: ${opacity}%")
     }
@@ -129,38 +125,39 @@ object ControlCenterOpacityHook : FeatureHook {
      * `Context.getColor(int)` 与单参 `Resources.getColor(int)` 最终都会
      * 进入该方法，避免同时挂载两个重载导致 alpha 被重复缩放。
      */
-    private fun hookResourcesGetColor(scale: Float) {
+    private fun hookResourcesGetColor(api: XposedInterface, scale: Float) {
         try {
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                api,
                 Resources::class.java,
                 "getColor",
-                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType!!,
                 Resources.Theme::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val resources = param.thisObject as? Resources ?: return
-                        val resId = param.args[0] as? Int ?: return
-                        if (!isTargetColor(resources, resId)) return
+            ) { chain ->
+                val result = chain.proceed()
+                val resources = chain.getThisObject() as? Resources ?: return@hookMethodOn result
+                val resId = chain.getArg(0) as? Int ?: return@hookMethodOn result
+                if (!isTargetColor(resources, resId)) return@hookMethodOn result
 
-                        val original = param.result as? Int ?: return
-                        cacheOriginalColor(resId, original)
-                        val adjusted = adjustColorAlpha(original, scale)
-                        if (adjusted != original) {
-                            param.result = adjusted
-                            val name = try {
-                                resources.getResourceEntryName(resId)
-                            } catch (_: Throwable) {
-                                resId.toString()
-                            }
-                            Logger.once(
-                                TAG,
-                                "color_$name",
-                                "$name alpha ${Color.alpha(original)}→${Color.alpha(adjusted)}"
-                            )
-                        }
+                val original = result as? Int ?: return@hookMethodOn result
+                cacheOriginalColor(resId, original)
+                val adjusted = adjustColorAlpha(original, scale)
+                if (adjusted != original) {
+                    val name = try {
+                        resources.getResourceEntryName(resId)
+                    } catch (_: Throwable) {
+                        resId.toString()
                     }
+                    Logger.once(
+                        TAG,
+                        "color_$name",
+                        "$name alpha ${Color.alpha(original)}→${Color.alpha(adjusted)}"
+                    )
+                    adjusted
+                } else {
+                    result
                 }
-            )
+            }
             Logger.i(TAG, "已挂载 Resources.getColor(int, Theme)")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 Resources.getColor(int, Theme) 失败", e)
@@ -174,39 +171,40 @@ object ControlCenterOpacityHook : FeatureHook {
      * 缩放其返回值后，DrawableCache 烘焙的 ConstantState 即为缩放色，
      * 后续 `setProgressDrawableResource` 的所有替换实例天然携带不透明度。
      */
-    private fun hookResourcesGetColorStateList(scale: Float) {
+    private fun hookResourcesGetColorStateList(api: XposedInterface, scale: Float) {
         try {
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                api,
                 Resources::class.java,
                 "getColorStateList",
-                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType!!,
                 Resources.Theme::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val resources = param.thisObject as? Resources ?: return
-                        val resId = param.args[0] as? Int ?: return
-                        if (!isTargetColor(resources, resId)) return
+            ) { chain ->
+                val result = chain.proceed()
+                val resources = chain.getThisObject() as? Resources ?: return@hookMethodOn result
+                val resId = chain.getArg(0) as? Int ?: return@hookMethodOn result
+                if (!isTargetColor(resources, resId)) return@hookMethodOn result
 
-                        val original = param.result as? ColorStateList ?: return
-                        val originalDefault = original.defaultColor
-                        cacheOriginalColor(resId, originalDefault)
-                        val adjusted = scaleColorStateList(original, scale)
-                        if (adjusted.defaultColor != originalDefault) {
-                            param.result = adjusted
-                            val name = try {
-                                resources.getResourceEntryName(resId)
-                            } catch (_: Throwable) {
-                                resId.toString()
-                            }
-                            Logger.once(
-                                TAG,
-                                "csl_$name",
-                                "$name alpha ${Color.alpha(originalDefault)}→${Color.alpha(adjusted.defaultColor)}"
-                            )
-                        }
+                val original = result as? ColorStateList ?: return@hookMethodOn result
+                val originalDefault = original.defaultColor
+                cacheOriginalColor(resId, originalDefault)
+                val adjusted = scaleColorStateList(original, scale)
+                if (adjusted.defaultColor != originalDefault) {
+                    val name = try {
+                        resources.getResourceEntryName(resId)
+                    } catch (_: Throwable) {
+                        resId.toString()
                     }
+                    Logger.once(
+                        TAG,
+                        "csl_$name",
+                        "$name alpha ${Color.alpha(originalDefault)}→${Color.alpha(adjusted.defaultColor)}"
+                    )
+                    adjusted
+                } else {
+                    result
                 }
-            )
+            }
             Logger.i(TAG, "已挂载 Resources.getColorStateList(int, Theme)")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 Resources.getColorStateList(int, Theme) 失败", e)
@@ -222,50 +220,49 @@ object ControlCenterOpacityHook : FeatureHook {
      * 补丁本身幂等（比对原始颜色后按绝对目标值写入），多层并存不会叠加缩放。
      */
     private fun hookSliderBgResetPoints(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         scale: Float
     ) {
         try {
-            val sliderViewClass = XposedHelpers.findClass(BRIGHTNESS_SLIDER_VIEW, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(
-                sliderViewClass,
-                "initBrightnessViewComponents",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val slider =
-                                XposedHelpers.getObjectField(param.thisObject, "mSlider") as? View
-                                    ?: return
-                            applySliderBgAlpha(slider, scale)
-                        } catch (t: Throwable) {
-                            Logger.e(TAG, "滑条初始化补丁失败", t)
-                        }
-                    }
+            val sliderViewClass = Reflect.findClass(BRIGHTNESS_SLIDER_VIEW, ctx.classLoader)
+            Reflect.hookMethodOn(ctx.api, sliderViewClass, "initBrightnessViewComponents") { chain ->
+                val result = chain.proceed()
+                try {
+                    val slider =
+                        Reflect.getObjectField(chain.getThisObject(), "mSlider") as? View
+                            ?: return@hookMethodOn result
+                    applySliderBgAlpha(ctx.api, slider, scale)
+                    result
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "滑条初始化补丁失败", t)
+                    result
                 }
-            )
+            }
             Logger.i(TAG, "已挂载 BrightnessSliderView.initBrightnessViewComponents")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 BrightnessSliderView.initBrightnessViewComponents 失败", e)
         }
 
         try {
-            val seekBarClass = XposedHelpers.findClass(TOGGLE_SEEK_BAR, lpparam.classLoader)
-            val patchHook = object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    try {
-                        val seekBar = param.thisObject as? View ?: return
-                        applySliderBgAlpha(seekBar, scale)
-                    } catch (t: Throwable) {
-                        Logger.e(TAG, "滑条替换后补丁失败", t)
-                    }
+            val seekBarClass = Reflect.findClass(TOGGLE_SEEK_BAR, ctx.classLoader)
+            val patchBlock = { chain: io.github.libxposed.api.XposedInterface.Chain ->
+                val result = chain.proceed()
+                try {
+                    val seekBar = chain.getThisObject() as? View
+                    if (seekBar != null) applySliderBgAlpha(ctx.api, seekBar, scale)
+                    result
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "滑条替换后补丁失败", t)
+                    result
                 }
             }
-            XposedHelpers.findAndHookMethod(seekBarClass, "onAttachedToWindow", patchHook)
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(ctx.api, seekBarClass, "onAttachedToWindow", block = patchBlock)
+            Reflect.hookMethodOn(
+                ctx.api,
                 seekBarClass,
                 "onConfigurationChanged",
                 android.content.res.Configuration::class.java,
-                patchHook
+                block = patchBlock
             )
             Logger.i(TAG, "已挂载 ToggleSeekBar.onAttachedToWindow/onConfigurationChanged")
         } catch (e: Throwable) {
@@ -279,14 +276,14 @@ object ControlCenterOpacityHook : FeatureHook {
      * - 当前颜色已等于缩放目标值（getColorStateList 层已生效）：跳过；
      * - 无法匹配（第三方主题自定义色等）：不动。
      */
-    private fun applySliderBgAlpha(seekBar: View, scale: Float) {
+    private fun applySliderBgAlpha(api: XposedInterface, seekBar: View, scale: Float) {
         val layer = (seekBar as? ProgressBar)?.progressDrawable as? LayerDrawable ?: return
         val background = layer.findDrawableByLayerId(android.R.id.background) as? GradientDrawable
             ?: return
         val current = background.color?.defaultColor ?: return
 
         for (name in SLIDER_BG_COLOR_NAMES) {
-            val base = resolveOriginalColor(seekBar.resources, name) ?: continue
+            val base = resolveOriginalColor(api, seekBar.resources, name) ?: continue
             val target = adjustColorAlpha(base, scale)
             if (current == target) {
                 return
@@ -306,9 +303,9 @@ object ControlCenterOpacityHook : FeatureHook {
     /**
      * 获取某个颜色资源的**未缩放**原始值：
      * 优先读缓存（getColor/getColorStateList 命中时已捕获），
-     * 否则用 `XposedBridge.invokeOriginalMethod` 绕过本模块 Hook 现取。
+     * 否则用 Invoker（ORIGIN 语义）绕过本模块 Hook 现取。
      */
-    private fun resolveOriginalColor(resources: Resources, name: String): Int? {
+    private fun resolveOriginalColor(api: XposedInterface, resources: Resources, name: String): Int? {
         val id = resolveColorId(resources, name)
         if (id == 0) return null
         synchronized(originalColorCache) {
@@ -320,7 +317,7 @@ object ControlCenterOpacityHook : FeatureHook {
                 Int::class.javaPrimitiveType,
                 Resources.Theme::class.java
             )
-            XposedBridge.invokeOriginalMethod(method, resources, arrayOf<Any?>(id, null)) as? Int
+            api.getInvoker(method).invoke(resources, id, null) as? Int
         } catch (t: Throwable) {
             Logger.once(TAG, "orig_fail_$name", "获取 $name 原始颜色失败，跳过幂等补丁")
             null

@@ -14,12 +14,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.Reflect
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.IdentityHashMap
@@ -69,17 +66,18 @@ object IosDepthStackRecentsHook : FeatureHook {
     private val stateByRecents = IdentityHashMap<ViewGroup, RecentsState>()
     private val scratchRect = Rect()
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (lpparam.packageName != TARGET_PACKAGE) return
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
+    override fun handle(ctx: HookContext) {
+        if (ctx.packageName != TARGET_PACKAGE) return
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
         try {
-            mount(lpparam.classLoader)
+            mount(ctx)
         } catch (throwable: Throwable) {
             Logger.e(TAG, "挂载失败", throwable)
         }
     }
 
-    private fun mount(classLoader: ClassLoader) {
+    private fun mount(ctx: HookContext) {
+        val classLoader = ctx.classLoader
         val taskClass = findFeatureClass(taskClassCandidates, classLoader) { clazz ->
             ViewGroup::class.java.isAssignableFrom(clazz) &&
                 findMethod(clazz, "getTaskViewId", Int::class.javaPrimitiveType) != null
@@ -132,28 +130,25 @@ object IosDepthStackRecentsHook : FeatureHook {
             adjacentPageScaleField = findField(recentsClass, "mAdjacentPageScale"),
         )
 
-        hookLayoutCallbacks(recentsClass, hooks)
-        hookStateCallbacks(recentsClass, hooks)
-        hookPageScaleUpdates(recentsClass, hooks)
-        hookRemoteTargetLifecycle(recentsClass, hooks)
-        hookPlaceholderDrawing(classLoader)
-        hookScreenshotSwitch(taskClass)
-        hookDismissChannel(taskClass, hooks)
-        hookDismissAll(recentsClass)
-        hookReset(recentsClass, hooks)
-        hookDismissGestureUnlock(classLoader)
+        hookLayoutCallbacks(ctx, recentsClass, hooks)
+        hookStateCallbacks(ctx, recentsClass, hooks)
+        hookPageScaleUpdates(ctx, recentsClass, hooks)
+        hookRemoteTargetLifecycle(ctx, recentsClass, hooks)
+        hookPlaceholderDrawing(ctx)
+        hookScreenshotSwitch(ctx, taskClass)
+        hookDismissChannel(ctx, taskClass, hooks)
+        hookDismissAll(ctx, recentsClass)
+        hookReset(ctx, recentsClass, hooks)
+        hookDismissGestureUnlock(ctx)
         // 诊断：quickswitch 重排打点
         findMethod(recentsClass, "moveRunningTaskToExpectedPosition", Void.TYPE)?.let { m ->
-            XposedBridge.hookMethod(m, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    Logger.i(TAG, "MOVE-RUNNING before t=${SystemClock.uptimeMillis()}")
-                }
-
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val recents = param.thisObject as? ViewGroup ?: return
-                    Logger.i(TAG, "MOVE-RUNNING after children=${recents.childCount} order=[${(0 until recents.childCount).joinToString { i -> taskIdentity(recents.getChildAt(i)) }}]")
-                }
-            })
+            Reflect.hookMethod(ctx.api, m) { chain ->
+                Logger.i(TAG, "MOVE-RUNNING before t=${SystemClock.uptimeMillis()}")
+                val result = chain.proceed()
+                val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
+                Logger.i(TAG, "MOVE-RUNNING after children=${recents.childCount} order=[${(0 until recents.childCount).joinToString { i -> taskIdentity(ctx, recents.getChildAt(i)) }}]")
+                result
+            }
         }
 
         Logger.i(
@@ -166,117 +161,116 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     // === Hooks ===
 
-    private fun hookLayoutCallbacks(recentsClass: Class<*>, hooks: ResolvedHooks) {
+    private fun hookLayoutCallbacks(ctx: HookContext, recentsClass: Class<*>, hooks: ResolvedHooks) {
         val dispatchDraw = requireMethod(recentsClass, "dispatchDraw", Void.TYPE, Canvas::class.java)
-        XposedBridge.hookMethod(dispatchDraw, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                val recents = param.thisObject as? ViewGroup ?: return
-                val state = stateFor(recents)
-                val allowPageRebuild = state.pageRebuildPending
-                state.pageRebuildPending = false
-                applyStack(recents, hooks, allowPageRebuild)
-            }
-        })
+        Reflect.hookMethod(ctx.api, dispatchDraw) { chain ->
+            val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod chain.proceed()
+            val state = stateFor(recents)
+            val allowPageRebuild = state.pageRebuildPending
+            state.pageRebuildPending = false
+            applyStack(ctx, recents, hooks, allowPageRebuild)
+            chain.proceed()
+        }
 
         val onLayout = requireMethod(
             recentsClass, "onLayout", Void.TYPE,
             Boolean::class.javaPrimitiveType, Int::class.javaPrimitiveType,
             Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
         )
-        XposedBridge.hookMethod(onLayout, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                requestStackApply(param.thisObject as? ViewGroup ?: return, rebuildPages = true)
-            }
-        })
+        Reflect.hookMethod(ctx.api, onLayout) { chain ->
+            val result = chain.proceed()
+            requestStackApply(chain.getThisObject() as? ViewGroup ?: return@hookMethod result, rebuildPages = true)
+            result
+        }
 
         val onScrollChanged = requireMethod(
             recentsClass, "onScrollChanged", Void.TYPE,
             Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
             Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
         )
-        XposedBridge.hookMethod(onScrollChanged, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                requestStackApply(param.thisObject as? ViewGroup ?: return, rebuildPages = false)
-            }
-        })
+        Reflect.hookMethod(ctx.api, onScrollChanged) { chain ->
+            val result = chain.proceed()
+            requestStackApply(chain.getThisObject() as? ViewGroup ?: return@hookMethod result, rebuildPages = false)
+            result
+        }
     }
 
-    private fun hookStateCallbacks(recentsClass: Class<*>, hooks: ResolvedHooks) {
+    private fun hookStateCallbacks(ctx: HookContext, recentsClass: Class<*>, hooks: ResolvedHooks) {
         findMethod(recentsClass, "setOverviewStateEnabled", Void.TYPE, Boolean::class.javaPrimitiveType)?.let { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val recents = param.thisObject as? ViewGroup ?: return
-                    stateFor(recents).overviewEnabled = param.args[0] as? Boolean ?: false
-                    requestStackApply(recents, rebuildPages = true)
-                }
-            })
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val result = chain.proceed()
+                val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
+                stateFor(recents).overviewEnabled = chain.getArg(0) as? Boolean ?: false
+                requestStackApply(recents, rebuildPages = true)
+                result
+            }
         }
         findMethod(recentsClass, "setFullscreenProgress", Void.TYPE, Float::class.javaPrimitiveType)?.let { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val recents = param.thisObject as? ViewGroup ?: return
-                    stateFor(recents).apply {
-                        fullscreenProgress = ((param.args[0] as? Number)?.toFloat() ?: 0f).coerceIn(0f, 1f)
-                        fullscreenProgressKnown = true
-                    }
-                    // 入场动画期间页面几何不变，跳过页面重建。
-                    requestStackApply(recents, rebuildPages = false)
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val result = chain.proceed()
+                val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
+                stateFor(recents).apply {
+                    fullscreenProgress = ((chain.getArg(0) as? Number)?.toFloat() ?: 0f).coerceIn(0f, 1f)
+                    fullscreenProgressKnown = true
                 }
-            })
+                // 入场动画期间页面几何不变，跳过页面重建。
+                requestStackApply(recents, rebuildPages = false)
+                result
+            }
         }
         findMethod(recentsClass, "setContentAlpha", Void.TYPE, Float::class.javaPrimitiveType)?.let { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val recents = param.thisObject as? ViewGroup ?: return
-                    val alpha = ((param.args[0] as? Number)?.toFloat() ?: 0f).coerceIn(0f, 1f)
-                    val state = stateFor(recents)
-                    state.contentAlpha = alpha
-                    // contentAlpha 归零后 setVisibility(GONE) 生效、dispatchDraw 不再触发，
-                    // 堆叠通道无法常规清理，须在此立即复位。
-                    if (alpha <= EPSILON && !state.applying) {
-                        resetAllTransforms(recents, state, hooks)
-                        state.quickswitchStray = false
-                        state.strayHandled = false
-                        state.strayAnchorSettled = false
-                        state.rotation = -1
-                        state.cachedPages = null
-                        state.cachedAxis = null
-                        state.detachFadeActive = false
-                        state.lastAdjacentPageScale = 0f
-                        state.adjacentPageScale = 0f
-                    } else {
-                        requestStackApply(recents, rebuildPages = false)
-                    }
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val result = chain.proceed()
+                val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
+                val alpha = ((chain.getArg(0) as? Number)?.toFloat() ?: 0f).coerceIn(0f, 1f)
+                val state = stateFor(recents)
+                state.contentAlpha = alpha
+                // contentAlpha 归零后 setVisibility(GONE) 生效、dispatchDraw 不再触发，
+                // 堆叠通道无法常规清理，须在此立即复位。
+                if (alpha <= EPSILON && !state.applying) {
+                    resetAllTransforms(ctx, recents, state, hooks)
+                    state.quickswitchStray = false
+                    state.strayHandled = false
+                    state.strayAnchorSettled = false
+                    state.rotation = -1
+                    state.cachedPages = null
+                    state.cachedAxis = null
+                    state.detachFadeActive = false
+                    state.lastAdjacentPageScale = 0f
+                    state.adjacentPageScale = 0f
+                } else {
+                    requestStackApply(recents, rebuildPages = false)
                 }
-            })
+                result
+            }
         }
     }
 
-    private fun hookPageScaleUpdates(recentsClass: Class<*>, hooks: ResolvedHooks) {
+    private fun hookPageScaleUpdates(ctx: HookContext, recentsClass: Class<*>, hooks: ResolvedHooks) {
         findMethod(recentsClass, "updatePageScales", Void.TYPE)?.let { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val recents = param.thisObject as? ViewGroup ?: return
-                    val state = stateFor(recents)
-                    val scale = readAdjacentPageScale(recents, hooks)
-                    // 用 scale 升降区分入场(1→0) / 退桌(0→1)，只在退桌同帧 apply。
-                    if (scale > state.lastAdjacentPageScale + 0.001f && scale > 0.02f) {
-                        state.detachFadeActive = true
-                    }
-                    if (scale <= 0.02f) {
-                        state.detachFadeActive = false
-                    }
-                    state.lastAdjacentPageScale = scale
-                    state.adjacentPageScale = scale
-                    // 入场/稳态只 request 由 dispatchDraw 统一重算，避免双倍 applyStack；
-                    // 退桌必须同帧收敛，否则 exitFade 慢一帧会滞留堆叠卡。
-                    if (state.detachFadeActive && !state.applying) {
-                        applyStack(recents, hooks, allowPageRebuild = false)
-                    } else {
-                        requestStackApply(recents, rebuildPages = false)
-                    }
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val result = chain.proceed()
+                val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
+                val state = stateFor(recents)
+                val scale = readAdjacentPageScale(recents, hooks)
+                // 用 scale 升降区分入场(1→0) / 退桌(0→1)，只在退桌同帧 apply。
+                if (scale > state.lastAdjacentPageScale + 0.001f && scale > 0.02f) {
+                    state.detachFadeActive = true
                 }
-            })
+                if (scale <= 0.02f) {
+                    state.detachFadeActive = false
+                }
+                state.lastAdjacentPageScale = scale
+                state.adjacentPageScale = scale
+                // 入场/稳态只 request 由 dispatchDraw 统一重算，避免双倍 applyStack；
+                // 退桌必须同帧收敛，否则 exitFade 慢一帧会滞留堆叠卡。
+                if (state.detachFadeActive && !state.applying) {
+                    applyStack(ctx, recents, hooks, allowPageRebuild = false)
+                } else {
+                    requestStackApply(recents, rebuildPages = false)
+                }
+                result
+            }
         } ?: Logger.w(TAG, "未找到 updatePageScales，悬浮卡片缩放稳定跳过")
     }
 
@@ -289,90 +283,85 @@ object IosDepthStackRecentsHook : FeatureHook {
         }
     }
 
-    private fun hookRemoteTargetLifecycle(recentsClass: Class<*>, hooks: ResolvedHooks) {
+    private fun hookRemoteTargetLifecycle(ctx: HookContext, recentsClass: Class<*>, hooks: ResolvedHooks) {
         findMethodsInHierarchy(recentsClass).firstOrNull {
             it.name == "setRecentsAnimationTargets" && it.parameterTypes.size == 2 && it.returnType == Void.TYPE
         }?.apply { isAccessible = true }?.let { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val recents = param.thisObject as? ViewGroup ?: return
-                    val active = param.args.getOrNull(1) != null
-                    recents.setTag(TAG_REMOTE_TARGETS, active)
-                    trace(recents, "setRecentsAnimationTargets active=$active childCount=${recents.childCount}")
-                }
-            })
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod chain.proceed()
+                val active = chain.getArg(1) != null
+                recents.setTag(TAG_REMOTE_TARGETS, active)
+                trace(ctx, recents, "setRecentsAnimationTargets active=$active childCount=${recents.childCount}")
+                chain.proceed()
+            }
         }
         findMethod(recentsClass, "cleanupRemoteTargets", Void.TYPE)?.let { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val recents = param.thisObject as? ViewGroup ?: return
-                    trace(recents, "cleanupRemoteTargets before")
-                    recents.setTag(TAG_REMOTE_TARGETS, false)
-                }
-
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val recents = param.thisObject as? ViewGroup ?: return
-                    trace(recents, "cleanupRemoteTargets after")
-                    markPlaceholderReleasePending(recents, hooks)
-                    requestStackApply(recents, rebuildPages = false)
-                }
-            })
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod chain.proceed()
+                trace(ctx, recents, "cleanupRemoteTargets before")
+                recents.setTag(TAG_REMOTE_TARGETS, false)
+                val result = chain.proceed()
+                val recentsAfter = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
+                trace(ctx, recentsAfter, "cleanupRemoteTargets after")
+                markPlaceholderReleasePending(ctx, recentsAfter, hooks)
+                requestStackApply(recentsAfter, rebuildPages = false)
+                result
+            }
         }
     }
 
     /** running task 使用 live tile 时，抑制其无缩略图占位底板绘制，避免横向手势露出白卡。 */
-    private fun hookPlaceholderDrawing(classLoader: ClassLoader) {
+    private fun hookPlaceholderDrawing(ctx: HookContext) {
         val thumbnailClass = try {
-            classLoader.loadClass("com.android.quickstep.views.TaskThumbnailViewDeprecated")
+            ctx.classLoader.loadClass("com.android.quickstep.views.TaskThumbnailViewDeprecated")
         } catch (_: Throwable) {
             return
         }
         findMethod(thumbnailClass, "onDraw", Void.TYPE, Canvas::class.java)?.let { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val thumbnail = param.thisObject as? View ?: return
-                    val suppressed = thumbnail.getTag(TAG_PLACEHOLDER_SUPPRESSED) == true
-                    if (suppressed && hasThumbnailView(thumbnail)) {
-                        releasePlaceholderFromThumbnail(thumbnail)
-                        trace(thumbnail, "thumbnail onDraw release-before-draw hasThumb=true")
-                        return
-                    }
-                    if (suppressed) {
-                        trace(thumbnail, "thumbnail onDraw suppressed hasThumb=false")
-                        param.result = null
-                    }
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val thumbnail = chain.getThisObject() as? View ?: return@hookMethod chain.proceed()
+                val suppressed = thumbnail.getTag(TAG_PLACEHOLDER_SUPPRESSED) == true
+                if (suppressed && hasThumbnailView(ctx, thumbnail)) {
+                    releasePlaceholderFromThumbnail(thumbnail)
+                    trace(ctx, thumbnail, "thumbnail onDraw release-before-draw hasThumb=true")
+                    return@hookMethod chain.proceed()
                 }
-            })
+                if (suppressed) {
+                    trace(ctx, thumbnail, "thumbnail onDraw suppressed hasThumb=false")
+                    return@hookMethod null
+                }
+                chain.proceed()
+            }
         }
         findMethodsInHierarchy(thumbnailClass).filter {
             it.name == "setThumbnail" && it.parameterTypes.size in 2..3 && it.returnType == Void.TYPE
         }.forEach { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val thumbnail = param.thisObject as? View ?: return
-                    val hasThumb = hasThumbnailView(thumbnail)
-                    trace(thumbnail, "setThumbnail after pending=${thumbnail.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)} suppressed=${thumbnail.getTag(TAG_PLACEHOLDER_SUPPRESSED)} hasThumb=$hasThumb args=${param.args.size}")
-                    if (thumbnail.getTag(TAG_PLACEHOLDER_RELEASE_PENDING) == true && hasThumb) {
-                        releasePlaceholderFromThumbnail(thumbnail)
-                    }
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val result = chain.proceed()
+                val thumbnail = chain.getThisObject() as? View ?: return@hookMethod result
+                val hasThumb = hasThumbnailView(ctx, thumbnail)
+                trace(ctx, thumbnail, "setThumbnail after pending=${thumbnail.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)} suppressed=${thumbnail.getTag(TAG_PLACEHOLDER_SUPPRESSED)} hasThumb=$hasThumb args=${chain.getArgs().size}")
+                if (thumbnail.getTag(TAG_PLACEHOLDER_RELEASE_PENDING) == true && hasThumb) {
+                    releasePlaceholderFromThumbnail(thumbnail)
                 }
-            })
+                result
+            }
         }
     }
 
-    private fun hookScreenshotSwitch(taskClass: Class<*>) {
+    private fun hookScreenshotSwitch(ctx: HookContext, taskClass: Class<*>) {
         findMethodsInHierarchy(taskClass).filter {
             it.name == "setShouldShowScreenshot" && it.parameterTypes.isNotEmpty() &&
                 it.parameterTypes[0] == Boolean::class.javaPrimitiveType && it.returnType == Void.TYPE
         }.forEach { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val task = param.thisObject as? View ?: return
-                    val shouldShow = param.args.firstOrNull() as? Boolean ?: return
-                    trace(task, "setShouldShowScreenshot after shouldShow=$shouldShow pending=${task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)}")
-                    if (shouldShow) releasePlaceholderTask(task)
-                }
-            })
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val result = chain.proceed()
+                val task = chain.getThisObject() as? View ?: return@hookMethod result
+                val shouldShow = chain.getArg(0) as? Boolean ?: return@hookMethod result
+                trace(ctx, task, "setShouldShowScreenshot after shouldShow=$shouldShow pending=${task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)}")
+                if (shouldShow) releasePlaceholderTask(ctx, task)
+                result
+            }
         }
     }
 
@@ -381,9 +370,9 @@ object IosDepthStackRecentsHook : FeatureHook {
      * 检测到 DOWN 时快进动画到结束（ValueAnimator.end()）；若本次查找仍 miss，
      * 把 DOWN 副本延迟一帧重放，保证连删时新手势总能命中已补位的卡片。
      */
-    private fun hookDismissGestureUnlock(classLoader: ClassLoader) {
+    private fun hookDismissGestureUnlock(ctx: HookContext) {
         val controllerClass = try {
-            classLoader.loadClass("com.android.launcher3.uioverrides.touchcontrollers.TaskViewTouchControllerDeprecated")
+            ctx.classLoader.loadClass("com.android.launcher3.uioverrides.touchcontrollers.TaskViewTouchControllerDeprecated")
         } catch (_: Throwable) {
             Logger.w(TAG, "未找到 TaskViewTouchControllerDeprecated，连删解锁跳过")
             return
@@ -397,45 +386,45 @@ object IosDepthStackRecentsHook : FeatureHook {
             return
         }
         val fastForwarded = HashSet<Any>()
-        XposedBridge.hookMethod(intercept, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                val event = param.args[0] as? MotionEvent ?: return
-                if (event.actionMasked != MotionEvent.ACTION_DOWN) return
-                val animation = try {
-                    XposedHelpers.getObjectField(param.thisObject, "mCurrentAnimation")
-                } catch (_: Throwable) {
-                    null
-                } ?: return
+        Reflect.hookMethod(ctx.api, intercept) { chain ->
+            val event = chain.getArg(0) as? MotionEvent ?: return@hookMethod chain.proceed()
+            if (event.actionMasked != MotionEvent.ACTION_DOWN) return@hookMethod chain.proceed()
+            val animation = try {
+                Reflect.getObjectField(chain.getThisObject(), "mCurrentAnimation")
+            } catch (_: Throwable) {
+                null
+            } ?: return@hookMethod chain.proceed()
+            try {
+                val player = Reflect.callMethod(ctx.api, animation, "getAnimationPlayer")
+                Reflect.callMethod(ctx.api, player, "end")
+            } catch (e: Throwable) {
                 try {
-                    val player = XposedHelpers.callMethod(animation, "getAnimationPlayer")
-                    XposedHelpers.callMethod(player, "end")
-                } catch (e: Throwable) {
-                    try {
-                        XposedHelpers.callMethod(animation, "dispatchOnCancel")
-                    } catch (e2: Throwable) {
-                        Logger.e(TAG, "连删解锁失败", e2)
-                        return
-                    }
+                    Reflect.callMethod(ctx.api, animation, "dispatchOnCancel")
+                } catch (e2: Throwable) {
+                    Logger.e(TAG, "连删解锁失败", e2)
+                    return@hookMethod chain.proceed()
                 }
-                fastForwarded.add(param.thisObject)
             }
+            fastForwarded.add(chain.getThisObject())
 
-            override fun afterHookedMethod(param: MethodHookParam) {
-                if (param.thisObject !in fastForwarded) return
-                fastForwarded.remove(param.thisObject)
-                if (param.result == true) return
-                val event = param.args[0] as? MotionEvent ?: return
-                try {
-                    val container = XposedHelpers.getObjectField(param.thisObject, "mContainer")
-                    val dragLayer = XposedHelpers.callMethod(container, "getDragLayer") as? View ?: return
-                    val replay = MotionEvent.obtainNoHistory(event)
-                    dragLayer.post { dragLayer.dispatchTouchEvent(replay) }
-                    Logger.d(TAG) { "连删解锁：DOWN 已延迟一帧重放" }
-                } catch (e: Throwable) {
-                    Logger.e(TAG, "DOWN 重放失败", e)
-                }
+            val result = chain.proceed()
+
+            if (chain.getThisObject() !in fastForwarded) return@hookMethod result
+            fastForwarded.remove(chain.getThisObject())
+            if (result == true) return@hookMethod result
+            if (chain.getThisObject() == null) return@hookMethod result
+            val replayEvent = chain.getArg(0) as? MotionEvent ?: return@hookMethod result
+            try {
+                val container = Reflect.getObjectField(chain.getThisObject(), "mContainer")
+                val dragLayer = Reflect.callMethod(ctx.api, container, "getDragLayer") as? View ?: return@hookMethod result
+                val replay = MotionEvent.obtainNoHistory(replayEvent)
+                dragLayer.post { dragLayer.dispatchTouchEvent(replay) }
+                Logger.d(TAG) { "连删解锁：DOWN 已延迟一帧重放" }
+            } catch (e: Throwable) {
+                Logger.e(TAG, "DOWN 重放失败", e)
             }
-        })
+            result
+        }
         Logger.i(TAG, "已挂载快速连删解锁")
     }
 
@@ -445,7 +434,7 @@ object IosDepthStackRecentsHook : FeatureHook {
      * - 主轴 dismiss = 原生补位平移：吃掉(置0)，补位由 applyStack 接管。
      * 两个 setter 都按当前 axis 判断自己此刻是主轴还是次轴。
      */
-    private fun hookDismissChannel(taskClass: Class<*>, hooks: ResolvedHooks) {
+    private fun hookDismissChannel(ctx: HookContext, taskClass: Class<*>, hooks: ResolvedHooks) {
         val setY = findMethodInHierarchyNamed(taskClass, "setDismissTranslationY", Float::class.javaPrimitiveType)
         val setX = findMethodInHierarchyNamed(taskClass, "setDismissTranslationX", Float::class.javaPrimitiveType)
         if (setY == null || setX == null) {
@@ -454,52 +443,51 @@ object IosDepthStackRecentsHook : FeatureHook {
         }
         // isYAxis: 该 setter 写的是 Y 轴。竖屏次轴=Y、横屏次轴=X。
         for ((method, isYAxis) in listOf(setY to true, setX to false)) {
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val task = param.thisObject as? View ?: return
-                    val recents = task.parent as? ViewGroup ?: return
-                    val axis = axisFor(recents, hooks)
-                    val isSecondaryAxis = if (axis.landscape) !isYAxis else isYAxis
-                    if (isSecondaryAxis) return  // 次轴=被删卡飞出，放行，进度在 after 里算
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val value = (chain.getArg(0) as? Number)?.toFloat() ?: 0f
+                val task = chain.getThisObject() as? View ?: return@hookMethod chain.proceed()
+                val recents = task.parent as? ViewGroup ?: return@hookMethod chain.proceed()
+                val axis = axisFor(recents, hooks)
+                val isSecondaryAxis = if (axis.landscape) !isYAxis else isYAxis
+                val result = if (isSecondaryAxis) {
+                    chain.proceed()
+                } else {
                     // 主轴 = 原生补位平移，吃掉，交给 applyStack。
-                    param.args[0] = 0f
+                    chain.proceed(arrayOf<Any>(0f))
                 }
-
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val task = param.thisObject as? View ?: return
-                    val recents = task.parent as? ViewGroup ?: return
-                    val state = stateFor(recents)
-                    // 动画期间复用 applyStack 缓存的 axis，避免每帧每卡反射 getPagedOrientationHandler。
-                    val axis = if (state.cachedAxis != null && state.rotation >= 0) {
-                        state.cachedAxis!!
-                    } else {
-                        axisFor(recents, hooks)
-                    }
-                    val isSecondaryAxis = if (axis.landscape) !isYAxis else isYAxis
-                    if (!isSecondaryAxis) return
-                    val value = (param.args[0] as? Number)?.toFloat() ?: 0f
-                    // 次轴维度：横屏次轴=X→宽，竖屏次轴=Y→高。
-                    val secondaryDim = axis.childSecondarySize(task).takeIf { it > 0f } ?: return
-                    if (abs(value) > EPSILON) {
-                        // 兜底：若 preDismissAllTasks 入口未命中，错峰动画下多卡并发仍会击穿单槽
-                        // dismissingTask（顶 z/补位/渐淡互相打架）。检测到第二张不同卡并发移动
-                        // 即整体放弃单卡接管：堆叠几何保持，飞出交还原生。
-                        if (state.dismissingTask != null && state.dismissingTask !== task) {
-                            state.multiDismissActive = true
-                            state.dismissingTask = null
-                            state.dismissProgress = 0f
-                        } else if (!state.multiDismissActive) {
-                            state.dismissingTask = task
-                            state.dismissProgress = (abs(value) / secondaryDim).coerceIn(0f, 1f)
-                        }
-                        state.lastDismissMoveTime = SystemClock.uptimeMillis()
-                    } else if (state.dismissingTask === task) {
+                val taskAfter = chain.getThisObject() as? View ?: return@hookMethod result
+                val recentsAfter = taskAfter.parent as? ViewGroup ?: return@hookMethod result
+                val state = stateFor(recentsAfter)
+                // 动画期间复用 applyStack 缓存的 axis，避免每帧每卡反射 getPagedOrientationHandler。
+                val axisAfter = if (state.cachedAxis != null && state.rotation >= 0) {
+                    state.cachedAxis!!
+                } else {
+                    axisFor(recentsAfter, hooks)
+                }
+                val isSecondaryAxisAfter = if (axisAfter.landscape) !isYAxis else isYAxis
+                if (!isSecondaryAxisAfter) return@hookMethod result
+                // 次轴维度：横屏次轴=X→宽，竖屏次轴=Y→高。
+                val secondaryDim = axisAfter.childSecondarySize(taskAfter).takeIf { it > 0f } ?: return@hookMethod result
+                if (abs(value) > EPSILON) {
+                    // 兜底：若 preDismissAllTasks 入口未命中，错峰动画下多卡并发仍会击穿单槽
+                    // dismissingTask（顶 z/补位/渐淡互相打架）。检测到第二张不同卡并发移动
+                    // 即整体放弃单卡接管：堆叠几何保持，飞出交还原生。
+                    if (state.dismissingTask != null && state.dismissingTask !== taskAfter) {
+                        state.multiDismissActive = true
                         state.dismissingTask = null
                         state.dismissProgress = 0f
+                    } else if (!state.multiDismissActive) {
+                        state.dismissingTask = taskAfter
+                        state.dismissProgress = (abs(value) / secondaryDim).coerceIn(0f, 1f)
                     }
-                    requestStackApply(recents, rebuildPages = false)
+                    state.lastDismissMoveTime = SystemClock.uptimeMillis()
+                } else if (state.dismissingTask === taskAfter) {
+                    state.dismissingTask = null
+                    state.dismissProgress = 0f
                 }
-            })
+                requestStackApply(recentsAfter, rebuildPages = false)
+                result
+            }
         }
     }
 
@@ -508,39 +496,39 @@ object IosDepthStackRecentsHook : FeatureHook {
      * 直接置清空模式而非依赖并发检测：初始态动画可能只有一张卡移动，
      * 不满足并发条件时单槽接管会把卡顶到最高 z。
      */
-    private fun hookDismissAll(recentsClass: Class<*>) {
+    private fun hookDismissAll(ctx: HookContext, recentsClass: Class<*>) {
         findMethod(recentsClass, "preDismissAllTasks", Void.TYPE)?.let { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val recents = param.thisObject as? ViewGroup ?: return
-                    val state = stateFor(recents)
-                    state.multiDismissActive = true
-                    state.dismissingTask = null
-                    state.dismissProgress = 0f
-                    state.lastDismissMoveTime = SystemClock.uptimeMillis()
-                    Logger.i(TAG, "清空最近任务：进入清空模式，飞出交还原生")
-                }
-            })
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val result = chain.proceed()
+                val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
+                val state = stateFor(recents)
+                state.multiDismissActive = true
+                state.dismissingTask = null
+                state.dismissProgress = 0f
+                state.lastDismissMoveTime = SystemClock.uptimeMillis()
+                Logger.i(TAG, "清空最近任务：进入清空模式，飞出交还原生")
+                result
+            }
         } ?: Logger.w(TAG, "未找到 preDismissAllTasks()，清空模式降级为并发检测")
     }
 
     /** RecentsView.reset() 不清零 Hook 的位移通道，此处兜底清理。 */
-    private fun hookReset(recentsClass: Class<*>, hooks: ResolvedHooks) {
+    private fun hookReset(ctx: HookContext, recentsClass: Class<*>, hooks: ResolvedHooks) {
         findMethod(recentsClass, "reset", Void.TYPE)?.let { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val recents = param.thisObject as? ViewGroup ?: return
-                    val state = stateFor(recents)
-                    if (state.applying) return
-                    resetAllTransforms(recents, state, hooks)
-                    state.quickswitchStray = false
-                    state.strayHandled = false
-                    state.strayAnchorSettled = false
-                    state.rotation = -1
-                    state.cachedPages = null
-                    state.cachedAxis = null
-                }
-            })
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val result = chain.proceed()
+                val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
+                val state = stateFor(recents)
+                if (state.applying) return@hookMethod result
+                resetAllTransforms(ctx, recents, state, hooks)
+                state.quickswitchStray = false
+                state.strayHandled = false
+                state.strayAnchorSettled = false
+                state.rotation = -1
+                state.cachedPages = null
+                state.cachedAxis = null
+                result
+            }
         } ?: Logger.w(TAG, "未找到 reset()，安全清理跳过")
     }
 
@@ -552,7 +540,7 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     // === 主循环 ===
 
-    private fun applyStack(recents: ViewGroup, hooks: ResolvedHooks, allowPageRebuild: Boolean) {
+    private fun applyStack(ctx: HookContext, recents: ViewGroup, hooks: ResolvedHooks, allowPageRebuild: Boolean) {
         val state = stateFor(recents)
         if (state.applying) return
         state.applying = true
@@ -563,7 +551,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             val unsupported = invokeBoolean(hooks.showAsGrid, recents) ||
                 invokeBoolean(hooks.isSplitSelectionActive, recents)
             if (!active || unsupported || recents.width <= 0 || recents.height <= 0) {
-                resetAllTransforms(recents, state, hooks)
+                resetAllTransforms(ctx, recents, state, hooks)
                 state.quickswitchStray = false
                 state.strayHandled = false
                 state.strayAnchorSettled = false
@@ -581,7 +569,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             }
             val rotation = axis.rotation
             if (state.rotation != rotation) {
-                resetAllTransforms(recents, state, hooks)
+                resetAllTransforms(ctx, recents, state, hooks)
                 state.rotation = rotation
                 state.cachedPages = null
                 state.cachedAxis = axis
@@ -603,7 +591,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                     // 诊断：rebuild 时打印页面顺序与滚动位置
                     val running = resolveRunningTaskView(recents, hooks)
                     val runningOrd = pagesIndexOf(it, running)
-                    Logger.i(TAG, "REBUILD pages=[${it.joinToString { p -> taskIdentity(p.view) }}] scrollPos=${calculateScrollPosition(it, axis.primaryScroll(recents))} runningOrd=$runningOrd running=${running?.let { v -> taskIdentity(v) }} children=${recents.childCount}")
+                    Logger.i(TAG, "REBUILD pages=[${it.joinToString { p -> taskIdentity(ctx, p.view) }}] scrollPos=${calculateScrollPosition(it, axis.primaryScroll(recents))} runningOrd=$runningOrd running=${running?.let { v -> taskIdentity(ctx, v) }} children=${recents.childCount}")
                 }
             }
             if (pages.isEmpty()) return
@@ -638,7 +626,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             }
             // 淡出末帧只卸位移通道（不走 resetAllTransforms，会把 alpha 恢复成 nativeAlpha 导致闪一下）。
             if (exitFade <= EPSILON) {
-                clearStackOffsetsOnly(recents, state, hooks)
+                clearStackOffsetsOnly(ctx, recents, state, hooks)
                 return
             }
 
@@ -672,6 +660,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             if (TRACE_TASK_FRAMES) {
                 state.traceFrame++
                 trace(
+                    ctx,
                     recents,
                     "frame=${state.traceFrame} rot=$rotation land=${axis.landscape} pages=${pages.size} " +
                         "scroll=$scrollPosition clamp=$clampedPosition over=$overscroll " +
@@ -728,7 +717,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                 else invokeBoolean(hooks.isRunningTask, task) && abs(ordinal - clampedPosition) <= 0.55f
                 val suppressPlaceholder = isRunningView &&
                     (recents.getTag(TAG_REMOTE_TARGETS) == true || task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING) == true)
-                setPlaceholderSuppressedCached(task, taskState, suppressPlaceholder)
+                setPlaceholderSuppressedCached(ctx, task, taskState, suppressPlaceholder)
 
                 // 补位：拖动中按 dismissProgress 渐进；被删卡有左邻则左邻右移(+1)，否则右侧整体左移(-1)。
                 val effectiveOrdinal = effectiveOrdinalFor(ordinal, isDismissing)
@@ -777,15 +766,16 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val scaleFactor = if (isRunning) 1f else lerp(1f, visual.scale, stackLayoutAmount)
                 applyScale(task, taskState, hooks, scaleFactor)
                 if (TRACE_TASK_FRAMES && (abs(stackRelative) < 0.35f || isRunning)) {
-                    val thumbnail = thumbnailViewForTask(task)
+                    val thumbnail = thumbnailViewForTask(ctx, task)
                     trace(
+                        ctx,
                         task,
                         "frame=${state.traceFrame} task ord=$ordinal child=${page.childIndex} rel=$relativePosition stackRel=$stackRelative eff=$effectiveOrdinal " +
                             "run=$isRunning dis=$isDismissing nativePrim=$nativePrimaryTranslation custom=${taskState.customPrimaryOffset} " +
                             "scaleFactor=$scaleFactor nativeScale=${taskState.nativeScale} stableScale=${taskState.lastStableNativeScale} " +
                             "sx=${task.scaleX} sy=${task.scaleY} tx=${task.translationX} ty=${task.translationY} z=${task.translationZ} alpha=${task.alpha} " +
                             "visPrim=$targetPrimaryCenter curvePrim=${visual.primaryCenter} visScale=${visual.scale} visAlpha=${visual.alpha} suppress=${thumbnail?.getTag(TAG_PLACEHOLDER_SUPPRESSED)} " +
-                            "pending=${task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)} hasThumb=${thumbnail?.let { hasThumbnailView(it) }} bounds=${task.left},${task.top},${task.right},${task.bottom}",
+                            "pending=${task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)} hasThumb=${thumbnail?.let { hasThumbnailView(ctx, it) }} bounds=${task.left},${task.top},${task.right},${task.bottom}",
                     )
                 }
                 // Z 序：默认/Seascape 按 ordinal；quickswitch 错位态按视觉堆叠深度；被删卡保持自身层级飞出。
@@ -833,7 +823,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                 if (blurIndex == rearTerminalIndex) blurIndex = -1
                 pages.forEachIndexed { index, page ->
                     val ts = state.taskStates.getValue(page.view)
-                    applyHeaderBlur(page.view, ts, index == blurIndex)
+                    applyHeaderBlur(ctx, page.view, ts, index == blurIndex)
                 }
             } else {
                 // 入场/退桌中跳过模糊时，清掉可能残留的 overlay，避免额外合成开销。
@@ -1004,15 +994,15 @@ object IosDepthStackRecentsHook : FeatureHook {
         return state.iconView
     }
 
-    private fun readIconDrawable(icon: View): Drawable? = try {
-        XposedHelpers.callMethod(icon, "getDrawable") as? Drawable
+    private fun readIconDrawable(ctx: HookContext, icon: View): Drawable? = try {
+        Reflect.callMethod(ctx.api, icon, "getDrawable") as? Drawable
     } catch (_: Throwable) { null }
 
     /**
      * 图标低强度模糊：只作用于最左侧可见卡。图标 drawable 复制画进带 padding 的 overlay，
      * 对 overlay 施加模糊后原图标 alpha 置 0——模糊可向外扩散，不被图标矩形 bounds 裁成硬边。
      */
-    private fun applyHeaderBlur(task: View, state: TaskVisualState, enable: Boolean) {
+    private fun applyHeaderBlur(ctx: HookContext, task: View, state: TaskVisualState, enable: Boolean) {
         val icon = resolveHeader(task, state) ?: return
         // overlay 挂到 task_head 的 ViewOverlay：随宿主一起绘制并继承其 alpha，
         // 于是入场淡入(onSettledProgressUpdated 改写 task_head.alpha)自动带上模糊图标，
@@ -1022,7 +1012,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             if (state.headerBlurred) clearHeaderBlur(icon, state)
             return
         }
-        val source = readIconDrawable(icon)
+        val source = readIconDrawable(ctx, icon)
         if (source == null) { if (state.headerBlurred) clearHeaderBlur(icon, state); return }
 
         val density = task.resources.displayMetrics.density
@@ -1236,7 +1226,7 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     /** 仅清堆叠位移通道与深度/缩放脏标记，不动 alpha（退桌淡出末帧专用）。 */
-    private fun clearStackOffsetsOnly(recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks) {
+    private fun clearStackOffsetsOnly(ctx: HookContext, recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks) {
         val it = state.taskStates.entries.iterator()
         while (it.hasNext()) {
             val (task, ts) = it.next()
@@ -1262,7 +1252,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             // alpha：保持当前淡出值，仅丢脏标记，防被读回 native=1。
             ts.lastAppliedAlpha = Float.NaN
             ts.nativeAlpha = 1f
-            setPlaceholderSuppressed(task, false)
+            setPlaceholderSuppressed(ctx, task, false)
         }
         for (i in 0 until recents.childCount) {
             val child = recents.getChildAt(i) ?: continue
@@ -1273,7 +1263,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         }
     }
 
-    private fun resetAllTransforms(recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks) {
+    private fun resetAllTransforms(ctx: HookContext, recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks) {
         // 清空模式随 reset 一并复位，防下次进 overview 误屏蔽单卡删除。
         state.multiDismissActive = false
         state.lastDismissMoveTime = 0L
@@ -1301,7 +1291,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             if (ts.headerBlurred) {
                 ts.iconView?.let { clearHeaderBlur(it, ts) }
             }
-            setPlaceholderSuppressed(task, false)
+            setPlaceholderSuppressed(ctx, task, false)
         }
         // 仍挂在 recents 下但未入 taskStates 的 TaskView 也清一遍（旋转后新建 state 前的残留）。
         for (i in 0 until recents.childCount) {
@@ -1313,10 +1303,10 @@ object IosDepthStackRecentsHook : FeatureHook {
         }
     }
 
-    private fun setPlaceholderSuppressed(task: View, suppress: Boolean) {
+    private fun setPlaceholderSuppressed(ctx: HookContext, task: View, suppress: Boolean) {
         try {
-            val container = XposedHelpers.callMethod(task, "getFirstTaskContainer") ?: return
-            val thumbnail = XposedHelpers.callMethod(container, "getThumbnailViewDeprecated") as? View ?: return
+            val container = Reflect.callMethod(ctx.api, task, "getFirstTaskContainer") ?: return
+            val thumbnail = Reflect.callMethod(ctx.api, container, "getThumbnailViewDeprecated") as? View ?: return
             thumbnail.setTag(TAG_PLACEHOLDER_SUPPRESSED, suppress)
         } catch (_: Throwable) {
             return
@@ -1327,7 +1317,7 @@ object IosDepthStackRecentsHook : FeatureHook {
      * 缓存 TaskView 的占位底板视图：热路径（applyStack 每帧每卡）只首次走反射，
      * 之后用直读字段校验复用性（TaskView 回收/容器重建会使旧 thumbnail 脱离窗口）。
      */
-    private fun resolvePlaceholderThumbnail(task: View, state: TaskVisualState): View? {
+    private fun resolvePlaceholderThumbnail(ctx: HookContext, task: View, state: TaskVisualState): View? {
         if (state.placeholderThumbnailResolved) {
             val cached = state.placeholderThumbnail
             if (cached != null && cached.isAttachedToWindow) return cached
@@ -1335,35 +1325,35 @@ object IosDepthStackRecentsHook : FeatureHook {
             state.placeholderThumbnailResolved = false
         }
         state.placeholderThumbnailResolved = true
-        state.placeholderThumbnail = thumbnailViewForTask(task)
+        state.placeholderThumbnail = thumbnailViewForTask(ctx, task)
         return state.placeholderThumbnail
     }
 
     /** 热路径版：tag 无变化时跳过 setTag（getTag 为直读，开销可忽略）。 */
-    private fun setPlaceholderSuppressedCached(task: View, state: TaskVisualState, suppress: Boolean) {
-        val thumbnail = resolvePlaceholderThumbnail(task, state) ?: return
+    private fun setPlaceholderSuppressedCached(ctx: HookContext, task: View, state: TaskVisualState, suppress: Boolean) {
+        val thumbnail = resolvePlaceholderThumbnail(ctx, task, state) ?: return
         if ((thumbnail.getTag(TAG_PLACEHOLDER_SUPPRESSED) == true) == suppress) return
         thumbnail.setTag(TAG_PLACEHOLDER_SUPPRESSED, suppress)
     }
 
-    private fun markPlaceholderReleasePending(recents: ViewGroup, hooks: ResolvedHooks) {
+    private fun markPlaceholderReleasePending(ctx: HookContext, recents: ViewGroup, hooks: ResolvedHooks) {
         for (i in 0 until recents.childCount) {
             val task = recents.getChildAt(i) ?: continue
             if (!hooks.taskClass.isInstance(task)) continue
             if (!invokeBoolean(hooks.isRunningTask, task)) continue
-            val thumbnail = thumbnailViewForTask(task) ?: continue
+            val thumbnail = thumbnailViewForTask(ctx, task) ?: continue
             task.setTag(TAG_PLACEHOLDER_RELEASE_PENDING, true)
             thumbnail.setTag(TAG_PLACEHOLDER_RELEASE_PENDING, true)
-            setPlaceholderSuppressed(task, true)
-            if (hasThumbnailView(thumbnail)) {
-                releasePlaceholderTask(task)
+            setPlaceholderSuppressed(ctx, task, true)
+            if (hasThumbnailView(ctx, thumbnail)) {
+                releasePlaceholderTask(ctx, task)
             }
         }
     }
 
-    private fun releasePlaceholderTask(task: View) {
+    private fun releasePlaceholderTask(ctx: HookContext, task: View) {
         task.setTag(TAG_PLACEHOLDER_RELEASE_PENDING, false)
-        thumbnailViewForTask(task)?.let { releasePlaceholderThumbnail(it) }
+        thumbnailViewForTask(ctx, task)?.let { releasePlaceholderThumbnail(it) }
     }
 
     private fun releasePlaceholderThumbnail(thumbnail: View) {
@@ -1378,41 +1368,41 @@ object IosDepthStackRecentsHook : FeatureHook {
         }
     }
 
-    private fun thumbnailViewForTask(task: View): View? = try {
-        val container = XposedHelpers.callMethod(task, "getFirstTaskContainer") ?: return null
-        XposedHelpers.callMethod(container, "getThumbnailViewDeprecated") as? View
+    private fun thumbnailViewForTask(ctx: HookContext, task: View): View? = try {
+        val container = Reflect.callMethod(ctx.api, task, "getFirstTaskContainer") ?: return null
+        Reflect.callMethod(ctx.api, container, "getThumbnailViewDeprecated") as? View
     } catch (_: Throwable) {
         null
     }
 
-    private fun hasThumbnailView(thumbnail: View): Boolean = try {
-        XposedHelpers.callMethod(thumbnail, "getThumbnail") != null
+    private fun hasThumbnailView(ctx: HookContext, thumbnail: View): Boolean = try {
+        Reflect.callMethod(ctx.api, thumbnail, "getThumbnail") != null
     } catch (_: Throwable) {
         false
     }
 
-    private fun clearPlaceholderSuppression(recents: ViewGroup, hooks: ResolvedHooks) {
+    private fun clearPlaceholderSuppression(ctx: HookContext, recents: ViewGroup, hooks: ResolvedHooks) {
         for (i in 0 until recents.childCount) {
             val task = recents.getChildAt(i) ?: continue
             if (hooks.taskClass.isInstance(task)) {
                 task.setTag(TAG_PLACEHOLDER_RELEASE_PENDING, false)
-                setPlaceholderSuppressed(task, false)
+                setPlaceholderSuppressed(ctx, task, false)
             }
         }
     }
 
-    private fun trace(view: View, message: String) {
+    private fun trace(ctx: HookContext, view: View, message: String) {
         if (!TRACE_PLACEHOLDER) return
-        Log.i(LOGCAT_TAG, "t=${SystemClock.uptimeMillis()} ${viewIdentity(view)} $message")
+        Log.i(LOGCAT_TAG, "t=${SystemClock.uptimeMillis()} ${viewIdentity(ctx, view)} $message")
     }
 
-    private fun viewIdentity(view: View): String = try {
+    private fun viewIdentity(ctx: HookContext, view: View): String = try {
         val taskId = if (view.javaClass.name.contains("TaskThumbnail")) {
-            val task = XposedHelpers.getObjectField(view, "mTask")
-            val key = task?.let { XposedHelpers.getObjectField(it, "key") }
-            key?.let { XposedHelpers.getIntField(it, "id") }
+            val task = Reflect.getObjectField(view, "mTask")
+            val key = task?.let { Reflect.getObjectField(it, "key") }
+            key?.let { Reflect.getIntField(it, "id") }
         } else {
-            val component = runCatching { XposedHelpers.callMethod(view, "getTaskFlowComponent") as? ComponentName }.getOrNull()
+            val component = runCatching { Reflect.callMethod(ctx.api, view, "getTaskFlowComponent") as? ComponentName }.getOrNull()
             component?.flattenToShortString() ?: "taskView"
         }
         "view=${view.javaClass.simpleName}@${System.identityHashCode(view).toString(16)} task=$taskId"
@@ -1508,8 +1498,8 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     // === 诊断辅助（临时） ===
-    private fun taskIdentity(view: View): String = try {
-        val component = runCatching { XposedHelpers.callMethod(view, "getTaskFlowComponent") as? ComponentName }.getOrNull()
+    private fun taskIdentity(ctx: HookContext, view: View): String = try {
+        val component = runCatching { Reflect.callMethod(ctx.api, view, "getTaskFlowComponent") as? ComponentName }.getOrNull()
         val pkg = component?.shortClassName?.takeLast(12) ?: component?.packageName?.take(6)
         if (pkg != null) pkg else "tv@${System.identityHashCode(view).toString(16)}"
     } catch (_: Throwable) {

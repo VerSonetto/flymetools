@@ -1,7 +1,7 @@
 package com.karen.flymetool.hook.base
 
 import android.util.Log
-import de.robv.android.xposed.XposedBridge
+import io.github.libxposed.api.XposedInterface
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * 设计目标：让 AI / 开发者拿到日志后能快速精准定位问题。
  *
- * 输出格式（双通道：Logcat tag=FlymeTool + XposedBridge.log）：
+ * 输出格式（双通道：Logcat tag=FlymeTool + 框架日志 api.log）：
  *   [FlymeTool][v2.7][E][IosStackedRecents] IosStackedRecentsHook#mount:72 | 挂载失败 | pkg=com.meizu.flyme.launcher
  *       java.lang.ClassNotFoundException: ...
  *           at ...
@@ -35,6 +35,10 @@ object Logger {
     @Volatile
     var moduleVersion: String = "unknown"
 
+    /** 框架日志通道（libxposed API 101 的 api.log），由 XposedInit 在 onModuleLoaded 注入 */
+    @Volatile
+    private var frameworkApi: XposedInterface? = null
+
     private const val LEVEL_D = 'D'
     private const val LEVEL_I = 'I'
     private const val LEVEL_W = 'W'
@@ -58,6 +62,11 @@ object Logger {
         if (debug) {
             i("Boot", "调试日志已通过 prefs 开启")
         }
+    }
+
+    /** 注入框架接口（现代 API 的日志输出通道）。 */
+    fun attachApi(interface_: XposedInterface) {
+        frameworkApi = interface_
     }
 
     // ---------- 业务 API ----------
@@ -140,7 +149,7 @@ object Logger {
         debugEnabled = enabled
         Log.i(CMD_TAG, if (enabled) "debug=on applied" else "debug=off applied")
         val status = if (enabled) "热开启" else "热关闭"
-        XposedBridge.log("[$TAG][v$moduleVersion][I][Boot] 调试日志已$status (logcat 命令)")
+        frameworkApi?.log(Log.INFO, TAG, "[$TAG][v$moduleVersion][I][Boot] 调试日志已$status (logcat 命令)")
     }
 
     // ---------- 内部实现 ----------
@@ -166,9 +175,15 @@ object Logger {
             } else {
                 pseudoStack()
             }
-            XposedBridge.log("$text\n$stack")
+            frameworkApi?.log(Log.ERROR, TAG, text, throwable)
+            frameworkApi?.log(Log.ERROR, TAG, stack)
         } else {
-            XposedBridge.log(text)
+            val lg = when (level) {
+                LEVEL_D -> Log.DEBUG
+                LEVEL_W -> Log.WARN
+                else -> Log.INFO
+            }
+            frameworkApi?.log(lg, TAG, text)
         }
     }
 

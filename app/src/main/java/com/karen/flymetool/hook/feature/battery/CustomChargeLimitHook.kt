@@ -7,11 +7,9 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.Reflect
 import java.io.File
 
 object CustomChargeLimitHook : FeatureHook {
@@ -19,44 +17,46 @@ object CustomChargeLimitHook : FeatureHook {
     private const val TAG = "CustomChargeLimit"
     private const val PACKAGE_NAME = "com.meizu.battery"
 
-    private var currentLpparam: XC_LoadPackage.LoadPackageParam? = null
+    private var currentCtx: HookContext? = null
     private var fileObserver: FileObserver? = null
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "custom_charge_limit")) return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("custom_charge_limit")) return
 
-        currentLpparam = lpparam
+        currentCtx = ctx
 
         try {
-            val activityClass = XposedHelpers.findClass(
+            val activityClass = Reflect.findClass(
                 "com.meizu.battery.app.batteryhealth.BatteryHealthActivity",
-                lpparam.classLoader
+                ctx.classLoader
             )
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 activityClass,
                 "onCreate",
                 Bundle::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val activity = param.thisObject ?: return
-                        try {
-                            applyCustomValue(activity)
-                            startWatchingPrefs(activity)
-                        } catch (e: Throwable) {
-                            Logger.e(TAG, "设置失败", e)
-                        }
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+
+                val activity = chain.getThisObject() ?: return@hookMethodOn result
+                try {
+                    applyCustomValue(activity)
+                    startWatchingPrefs(activity)
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "设置失败", e)
                 }
-            )
+
+                return@hookMethodOn result
+            }
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载失败", e)
         }
     }
 
     private fun applyCustomValue(activity: Any) {
-        val lp = currentLpparam ?: return
-        val customValue = XposedPrefs.getFeatureValue(lp, PACKAGE_NAME, "custom_charge_limit", -1)
+        val hctx = currentCtx ?: return
+        val customValue = hctx.featureValue("custom_charge_limit", -1)
         if (customValue in 50..100) {
             val ctx = activity as? Context ?: return
             val current = try {
@@ -67,29 +67,29 @@ object CustomChargeLimitHook : FeatureHook {
             Settings.System.putInt(ctx.contentResolver, "mz_charge_limit_percentage", customValue)
             Settings.System.putInt(ctx.contentResolver, "mz_charge_optimization_switch", if (customValue == 100) 1 else 0)
 
-            updateChargeLimitSummary(activity, customValue)
-            updateChargeOptimizeState(activity, customValue)
+            updateChargeLimitSummary(hctx, activity, customValue)
+            updateChargeOptimizeState(hctx, activity, customValue)
         }
     }
 
-    private fun updateChargeLimitSummary(activity: Any, value: Int) {
+    private fun updateChargeLimitSummary(ctx: HookContext, activity: Any, value: Int) {
         try {
-            val pref = XposedHelpers.callMethod(activity, "findPreference", "settings_pref_charge_limit_setting")
+            val pref = Reflect.callMethod(ctx.api, activity, "findPreference", "settings_pref_charge_limit_setting")
             if (pref != null) {
-                XposedHelpers.callMethod(pref, "setSummary", "$value%")
+                Reflect.callMethod(ctx.api, pref, "setSummary", "$value%")
             }
         } catch (_: Exception) {}
     }
 
-    private fun updateChargeOptimizeState(activity: Any, value: Int) {
+    private fun updateChargeOptimizeState(ctx: HookContext, activity: Any, value: Int) {
         try {
-            val optimizePref = XposedHelpers.callMethod(activity, "findPreference", "settings_pref_charge_optimize")
+            val optimizePref = Reflect.callMethod(ctx.api, activity, "findPreference", "settings_pref_charge_optimize")
             if (optimizePref != null) {
                 if (value != 100) {
-                    XposedHelpers.callMethod(optimizePref, "setChecked", false)
-                    XposedHelpers.callMethod(optimizePref, "setEnabled", false)
+                    Reflect.callMethod(ctx.api, optimizePref, "setChecked", false)
+                    Reflect.callMethod(ctx.api, optimizePref, "setEnabled", false)
                 } else {
-                    XposedHelpers.callMethod(optimizePref, "setEnabled", true)
+                    Reflect.callMethod(ctx.api, optimizePref, "setEnabled", true)
                 }
             }
         } catch (_: Exception) {}

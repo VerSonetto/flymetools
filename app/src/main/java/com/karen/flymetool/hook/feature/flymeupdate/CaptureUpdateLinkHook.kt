@@ -4,11 +4,10 @@ import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.Reflect
+import io.github.libxposed.api.XposedInterface
 
 object CaptureUpdateLinkHook : FeatureHook {
 
@@ -21,86 +20,88 @@ object CaptureUpdateLinkHook : FeatureHook {
         "v4/firmware/check"
     )
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "capture_update_link")) return
-        if (XposedPrefs.isFeatureEnabled(lpparam, packageName, "disable_update_check")) return
-        if (lpparam.packageName != TARGET_PACKAGE) return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("capture_update_link")) return
+        if (ctx.featureEnabled("disable_update_check")) return
+        if (ctx.packageName != TARGET_PACKAGE) return
 
-        hookBasicRequestDeliverResponse(lpparam)
+        hookBasicRequestDeliverResponse(ctx)
     }
 
-    private fun hookBasicRequestDeliverResponse(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookBasicRequestDeliverResponse(ctx: HookContext) {
         try {
-            val basicRequestClass = XposedHelpers.findClass(
+            val basicRequestClass = Reflect.findClass(
                 "com.meizu.flyme.update.network.BasicRequest",
-                lpparam.classLoader
+                ctx.classLoader
             )
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 basicRequestClass,
                 "deliverResponse",
                 Any::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val request = param.thisObject ?: return
+            ) { chain ->
+                val result = chain.proceed()
 
-                        val url = try {
-                            XposedHelpers.callMethod(request, "getUrl") as? String
-                        } catch (_: Throwable) {
-                            null
-                        } ?: return
+                val request = chain.getThisObject() ?: return@hookMethodOn result
 
-                        if (!CHECK_URL_PATTERNS.any { url.contains(it, ignoreCase = true) }) return
+                val url = try {
+                    Reflect.callMethod(ctx.api, request, "getUrl") as? String
+                } catch (_: Throwable) {
+                    null
+                } ?: return@hookMethodOn result
 
-                        Logger.i(TAG, "检测到更新检查响应: $url")
+                if (!CHECK_URL_PATTERNS.any { url.contains(it, ignoreCase = true) }) return@hookMethodOn result
 
-                        val response = param.args[0] ?: return
+                Logger.i(TAG, "检测到更新检查响应: $url")
 
-                        try {
-                            val code = XposedHelpers.callMethod(response, "getCode") as? Int
-                            if (code != 200) return
+                val response = chain.getArg(0) ?: return@hookMethodOn result
 
-                            val value = XposedHelpers.callMethod(response, "getValue") ?: return
+                try {
+                    val code = Reflect.callMethod(ctx.api, response, "getCode") as? Int
+                    if (code != 200) return@hookMethodOn result
 
-                            val newFirmware = try {
-                                XposedHelpers.callMethod(value, "getJSONObject", "new")
-                            } catch (_: Throwable) {
-                                null
-                            }
+                    val value = Reflect.callMethod(ctx.api, response, "getValue") ?: return@hookMethodOn result
 
-                            val updateUrl = if (newFirmware != null) {
-                                XposedHelpers.callMethod(newFirmware, "getString", "updateUrl") as? String
-                            } else {
-                                XposedHelpers.callMethod(value, "getString", "updateUrl") as? String
-                            }
-
-                            if (updateUrl.isNullOrEmpty()) {
-                                Logger.d(TAG) { "响应中未找到更新 URL" }
-                                return
-                            }
-
-                            val firmwareObj = newFirmware ?: value
-
-                            val latestVersion = XposedHelpers.callMethod(firmwareObj, "getString", "latestVersion") as? String ?: ""
-                            val fileSize = XposedHelpers.callMethod(firmwareObj, "getString", "fileSize") as? String ?: ""
-                            val systemVersion = XposedHelpers.callMethod(firmwareObj, "getString", "systemVersion") as? String ?: ""
-                            val verType = XposedHelpers.callMethod(firmwareObj, "getString", "verType") as? String ?: ""
-                            val packageType = try {
-                                XposedHelpers.callMethod(firmwareObj, "getIntValue", "packageType") as? Int ?: 0
-                            } catch (_: Throwable) {
-                                0
-                            }
-
-                            Logger.i(TAG, "已捕获更新链接: $updateUrl")
-                            Logger.i(TAG, "版本: $latestVersion, 大小: $fileSize, verType: $verType, packageType: $packageType")
-
-                            saveUpdateInfo(updateUrl, latestVersion, fileSize, systemVersion, verType, packageType)
-                        } catch (e: Throwable) {
-                            Logger.e(TAG, "提取更新信息失败", e)
-                        }
+                    val newFirmware = try {
+                        Reflect.callMethod(ctx.api, value, "getJSONObject", "new")
+                    } catch (_: Throwable) {
+                        null
                     }
+
+                    val updateUrl = if (newFirmware != null) {
+                        Reflect.callMethod(ctx.api, newFirmware, "getString", "updateUrl") as? String
+                    } else {
+                        Reflect.callMethod(ctx.api, value, "getString", "updateUrl") as? String
+                    }
+
+                    if (updateUrl.isNullOrEmpty()) {
+                        Logger.d(TAG) { "响应中未找到更新 URL" }
+                        return@hookMethodOn result
+                    }
+
+                    val firmwareObj = newFirmware ?: value
+
+                    val latestVersion = Reflect.callMethod(ctx.api, firmwareObj, "getString", "latestVersion") as? String ?: ""
+                    val fileSize = Reflect.callMethod(ctx.api, firmwareObj, "getString", "fileSize") as? String ?: ""
+                    val systemVersion = Reflect.callMethod(ctx.api, firmwareObj, "getString", "systemVersion") as? String ?: ""
+                    val verType = Reflect.callMethod(ctx.api, firmwareObj, "getString", "verType") as? String ?: ""
+                    val packageType = try {
+                        Reflect.callMethod(ctx.api, firmwareObj, "getIntValue", "packageType") as? Int ?: 0
+                    } catch (_: Throwable) {
+                        0
+                    }
+
+                    Logger.i(TAG, "已捕获更新链接: $updateUrl")
+                    Logger.i(TAG, "版本: $latestVersion, 大小: $fileSize, verType: $verType, packageType: $packageType")
+
+                    saveUpdateInfo(ctx.api, updateUrl, latestVersion, fileSize, systemVersion, verType, packageType)
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "提取更新信息失败", e)
                 }
-            )
+
+                return@hookMethodOn result
+            }
 
             Logger.i(TAG, "已挂载 BasicRequest.deliverResponse")
         } catch (e: Throwable) {
@@ -109,6 +110,7 @@ object CaptureUpdateLinkHook : FeatureHook {
     }
 
     private fun saveUpdateInfo(
+        api: XposedInterface,
         updateUrl: String,
         latestVersion: String,
         fileSize: String,
@@ -117,11 +119,12 @@ object CaptureUpdateLinkHook : FeatureHook {
         packageType: Int
     ) {
         try {
-            val activityThread = XposedHelpers.callStaticMethod(
-                XposedHelpers.findClass("android.app.ActivityThread", null),
+            val activityThread = Reflect.callStaticMethod(
+                api,
+                Reflect.findClass("android.app.ActivityThread", null),
                 "currentActivityThread"
             )
-            val context = XposedHelpers.callMethod(activityThread, "getApplication") as? Context ?: return
+            val context = Reflect.callMethod(api, activityThread, "getApplication") as? Context ?: return
 
             val values = ContentValues().apply {
                 put("updateUrl", updateUrl)

@@ -9,54 +9,54 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.Reflect
 
 object BatteryHealthStatusHook : FeatureHook {
 
     private const val TAG = "BatteryHealthStatus"
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+    override fun handle(ctx: HookContext) {
         Logger.i(TAG, "handle 被调用")
 
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "health_monitor")) return
+        if (!ctx.featureEnabled("health_monitor")) return
 
         try {
-            val clazz = XposedHelpers.findClass(
+            val clazz = Reflect.findClass(
                 "com.meizu.battery.app.settings.BatteryHealthStatusPreference",
-                lpparam.classLoader
+                ctx.classLoader
             )
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "onBindView",
                 View::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val view = param.args[0] as? View ?: return
-                        val context = view.context ?: return
+            ) { chain ->
+                val result = chain.proceed()
 
-                        val tvStatus = findTextView(view, "tv_status") ?: return
-                        val tvTips = findTextView(view, "tv_tips")
+                val view = chain.getArg(0) as? View ?: return@hookMethodOn result
+                val context = view.context ?: return@hookMethodOn result
 
-                        val sohPrefs = context.getSharedPreferences("StarCoreManager", 0)
-                        val soh = sohPrefs.getInt("soh", -1)
-                        Logger.i(TAG, "读取 SOH: $soh")
+                val tvStatus = findTextView(view, "tv_status") ?: return@hookMethodOn result
+                val tvTips = findTextView(view, "tv_tips")
 
-                        val currentText = tvStatus.text.toString()
-                        if (soh > 0 && !currentText.contains("%")) {
-                            tvStatus.text = "$currentText ($soh%)"
-                            Logger.i(TAG, "已更新状态: ${tvStatus.text}")
-                        }
+                val sohPrefs = context.getSharedPreferences("StarCoreManager", 0)
+                val soh = sohPrefs.getInt("soh", -1)
+                Logger.i(TAG, "读取 SOH: $soh")
 
-                        val cycleCount = getCycleCount(context)
-                        if (cycleCount >= 0) addCycleCountCard(view, cycleCount)
-                    }
+                val currentText = tvStatus.text.toString()
+                if (soh > 0 && !currentText.contains("%")) {
+                    tvStatus.text = "$currentText ($soh%)"
+                    Logger.i(TAG, "已更新状态: ${tvStatus.text}")
                 }
-            )
+
+                val cycleCount = getCycleCount(context)
+                if (cycleCount >= 0) addCycleCountCard(view, cycleCount)
+
+                return@hookMethodOn result
+            }
 
             Logger.i(TAG, "Hook 已安装")
         } catch (e: Throwable) {

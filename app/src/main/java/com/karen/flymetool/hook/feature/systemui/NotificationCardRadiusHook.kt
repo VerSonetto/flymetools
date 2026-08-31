@@ -2,12 +2,10 @@ package com.karen.flymetool.hook.feature.systemui
 
 import android.content.res.Resources
 import android.util.TypedValue
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 
 object NotificationCardRadiusHook : FeatureHook {
 
@@ -19,17 +17,17 @@ object NotificationCardRadiusHook : FeatureHook {
     private var cornerResId = -1
     private var backgroundResId = -1
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "notification_card_radius")) return
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("notification_card_radius")) return
+        if (ctx.packageName != "com.android.systemui") return
 
-        val radiusDp = XposedPrefs.getFeatureValue(lpparam, packageName, "notification_card_radius", 24)
-        mount(lpparam, radiusDp)
+        val radiusDp = ctx.featureValue("notification_card_radius", 24)
+        mount(ctx, radiusDp)
     }
 
-    private fun mount(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int) {
-        hookResourcesDimension(lpparam, radiusDp)
-        hookRoundableState(lpparam, radiusDp)
+    private fun mount(ctx: HookContext, radiusDp: Int) {
+        hookResourcesDimension(ctx, radiusDp)
+        hookRoundableState(ctx, radiusDp)
     }
 
     private fun isTargetDimen(resources: Resources, resId: Int): Boolean {
@@ -41,7 +39,7 @@ object NotificationCardRadiusHook : FeatureHook {
         return resId == cornerResId || resId == backgroundResId
     }
 
-    private fun hookResourcesDimension(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int) {
+    private fun hookResourcesDimension(ctx: HookContext, radiusDp: Int) {
         try {
             val radiusPx = TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP,
@@ -49,32 +47,32 @@ object NotificationCardRadiusHook : FeatureHook {
                 Resources.getSystem().displayMetrics
             ).toInt()
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 Resources::class.java,
                 "getDimensionPixelSize",
                 Int::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        if (isTargetDimen(param.thisObject as Resources, param.args[0] as Int)) {
-                            param.result = radiusPx
-                            Logger.once(TAG, "dim", "已挂载通知卡圆角 = ${radiusPx}px")
-                        }
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+                if (isTargetDimen(chain.getThisObject() as Resources, chain.getArg(0) as Int)) {
+                    Logger.once(TAG, "dim", "已挂载通知卡圆角 = ${radiusPx}px")
+                    return@hookMethodOn radiusPx
                 }
-            )
+                result
+            }
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 Resources::class.java,
                 "getDimension",
                 Int::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        if (isTargetDimen(param.thisObject as Resources, param.args[0] as Int)) {
-                            param.result = radiusPx.toFloat()
-                        }
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+                if (isTargetDimen(chain.getThisObject() as Resources, chain.getArg(0) as Int)) {
+                    return@hookMethodOn radiusPx.toFloat()
                 }
-            )
+                result
+            }
 
             Logger.i(TAG, "已挂载 Resources.getDimension*，圆角=${radiusDp}dp")
         } catch (e: Throwable) {
@@ -82,7 +80,7 @@ object NotificationCardRadiusHook : FeatureHook {
         }
     }
 
-    private fun hookRoundableState(lpparam: XC_LoadPackage.LoadPackageParam, radiusDp: Int) {
+    private fun hookRoundableState(ctx: HookContext, radiusDp: Int) {
         try {
             val radiusPx = TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP,
@@ -90,35 +88,35 @@ object NotificationCardRadiusHook : FeatureHook {
                 Resources.getSystem().displayMetrics
             )
 
-            val roundableStateClass = XposedHelpers.findClass(
+            val roundableStateClass = Reflect.findClass(
                 "com.android.systemui.statusbar.notification.RoundableState",
-                lpparam.classLoader
+                ctx.classLoader
             )
 
-            XposedHelpers.findAndHookConstructor(
+            Reflect.hookConstructorOn(
+                ctx.api,
                 roundableStateClass,
                 android.view.View::class.java,
-                XposedHelpers.findClass("com.android.systemui.statusbar.notification.Roundable", lpparam.classLoader),
+                Reflect.findClass("com.android.systemui.statusbar.notification.Roundable", ctx.classLoader),
                 Float::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.args[2] = radiusPx
-                        Logger.once(TAG, "roundable", "已挂载 RoundableState, maxRadius=${radiusPx}")
-                    }
-                }
-            )
+            ) { chain ->
+                val args = chain.getArgs().toTypedArray()
+                args[2] = radiusPx
+                Logger.once(TAG, "roundable", "已挂载 RoundableState, maxRadius=${radiusPx}")
+                chain.proceed(args)
+            }
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 roundableStateClass,
                 "setMaxRadius",
                 Float::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.args[0] = radiusPx
-                        Logger.once(TAG, "set_max_radius", "setMaxRadius 覆盖 = ${radiusPx}")
-                    }
-                }
-            )
+            ) { chain ->
+                val args = chain.getArgs().toTypedArray()
+                args[0] = radiusPx
+                Logger.once(TAG, "set_max_radius", "setMaxRadius 覆盖 = ${radiusPx}")
+                chain.proceed(args)
+            }
 
             Logger.i(TAG, "已挂载 RoundableState")
         } catch (e: Throwable) {

@@ -1,12 +1,10 @@
 package com.karen.flymetool.hook.feature.systemui
 
 import android.telephony.SubscriptionManager
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.util.FlymeVersionUtils
 
 object ShowDataSimOnlyHook : FeatureHook {
@@ -19,56 +17,57 @@ object ShowDataSimOnlyHook : FeatureHook {
     private const val CONNECTIVITY_CONSTANTS = "com.android.systemui.statusbar.pipeline.shared.ConnectivityConstants"
     private const val TAG = "ShowDataSimOnly"
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "show_data_sim_only")) return
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("show_data_sim_only")) return
+        if (ctx.packageName != "com.android.systemui") return
 
         when {
-            FlymeVersionUtils.isFlyme12() -> hookFlyme12(lpparam)
-            FlymeVersionUtils.isFlyme11() -> hookNotifyListeners(lpparam, "Flyme 11")
-            FlymeVersionUtils.isFlyme10() -> hookNotifyListeners(lpparam, "Flyme 10")
-            else -> hookNotifyListeners(lpparam, "Flyme 10")
+            FlymeVersionUtils.isFlyme12() -> hookFlyme12(ctx)
+            FlymeVersionUtils.isFlyme11() -> hookNotifyListeners(ctx, "Flyme 11")
+            FlymeVersionUtils.isFlyme10() -> hookNotifyListeners(ctx, "Flyme 10")
+            else -> hookNotifyListeners(ctx, "Flyme 10")
         }
     }
 
-    private fun hookFlyme12(lpparam: XC_LoadPackage.LoadPackageParam) {
-        hookNotifyListeners(lpparam, "Flyme 12")
+    private fun hookFlyme12(ctx: HookContext) {
+        hookNotifyListeners(ctx, "Flyme 12")
 
         try {
-            val vmClass = XposedHelpers.findClass(CELLULAR_ICON_VIEW_MODEL, lpparam.classLoader)
-            val interactorClass = XposedHelpers.findClass(MOBILE_ICON_INTERACTOR, lpparam.classLoader)
-            val airplaneClass = XposedHelpers.findClass(AIRPLANE_MODE_INTERACTOR, lpparam.classLoader)
-            val constantsClass = XposedHelpers.findClass(CONNECTIVITY_CONSTANTS, lpparam.classLoader)
-            val scopeClass = XposedHelpers.findClass("kotlinx.coroutines.CoroutineScope", lpparam.classLoader)
+            val vmClass = Reflect.findClass(CELLULAR_ICON_VIEW_MODEL, ctx.classLoader)
+            val interactorClass = Reflect.findClass(MOBILE_ICON_INTERACTOR, ctx.classLoader)
+            val airplaneClass = Reflect.findClass(AIRPLANE_MODE_INTERACTOR, ctx.classLoader)
+            val constantsClass = Reflect.findClass(CONNECTIVITY_CONSTANTS, ctx.classLoader)
+            val scopeClass = Reflect.findClass("kotlinx.coroutines.CoroutineScope", ctx.classLoader)
 
-            XposedHelpers.findAndHookConstructor(
+            Reflect.hookConstructorOn(
+                ctx.api,
                 vmClass,
                 Integer.TYPE,
                 interactorClass,
                 airplaneClass,
                 constantsClass,
                 scopeClass,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val subId = param.args[0] as Int
-                        val activeSubId = SubscriptionManager.getActiveDataSubscriptionId()
+            ) { chain ->
+                val result = chain.proceed()
+                val subId = chain.getArg(0) as Int
+                val activeSubId = SubscriptionManager.getActiveDataSubscriptionId()
 
-                        if (SubscriptionManager.isValidSubscriptionId(activeSubId) && subId != activeSubId) {
-                            val stateFlowKt = XposedHelpers.findClass(
-                                "kotlinx.coroutines.flow.StateFlowKt",
-                                lpparam.classLoader
-                            )
-                            val falseFlow = XposedHelpers.callStaticMethod(
-                                stateFlowKt,
-                                "MutableStateFlow",
-                                java.lang.Boolean.FALSE
-                            )
-                            XposedHelpers.setObjectField(param.thisObject, "isVisible", falseFlow)
-                            Logger.d(TAG) { "Pipeline: 拦截 subId=$subId, active=$activeSubId" }
-                        }
-                    }
+                if (SubscriptionManager.isValidSubscriptionId(activeSubId) && subId != activeSubId) {
+                    val stateFlowKt = Reflect.findClass(
+                        "kotlinx.coroutines.flow.StateFlowKt",
+                        ctx.classLoader
+                    )
+                    val falseFlow = Reflect.callStaticMethod(
+                        ctx.api,
+                        stateFlowKt,
+                        "MutableStateFlow",
+                        java.lang.Boolean.FALSE
+                    )
+                    Reflect.setObjectField(chain.getThisObject(), "isVisible", falseFlow)
+                    Logger.d(TAG) { "Pipeline: 拦截 subId=$subId, active=$activeSubId" }
                 }
-            )
+                result
+            }
 
             Logger.i(TAG, "已挂载 Flyme 12 Pipeline: CellularIconViewModel")
         } catch (e: Throwable) {
@@ -76,26 +75,26 @@ object ShowDataSimOnlyHook : FeatureHook {
         }
     }
 
-    private fun hookNotifyListeners(lpparam: XC_LoadPackage.LoadPackageParam, tag: String) {
+    private fun hookNotifyListeners(ctx: HookContext, tag: String) {
         try {
-            val controllerClass = XposedHelpers.findClass(MOBILE_SIGNAL_CONTROLLER, lpparam.classLoader)
-            val callbackClass = XposedHelpers.findClass(SIGNAL_CALLBACK, lpparam.classLoader)
+            val controllerClass = Reflect.findClass(MOBILE_SIGNAL_CONTROLLER, ctx.classLoader)
+            val callbackClass = Reflect.findClass(SIGNAL_CALLBACK, ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 controllerClass,
                 "notifyListeners",
                 callbackClass,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val currentState = XposedHelpers.getObjectField(param.thisObject, "mCurrentState")
-                        val dataSim = XposedHelpers.getBooleanField(currentState, "dataSim")
+            ) { chain ->
+                val currentState = Reflect.getObjectField(chain.getThisObject(), "mCurrentState")
+                val dataSim = currentState?.let { Reflect.getBooleanField(it, "dataSim") } ?: true
 
-                        if (!dataSim) {
-                            param.result = null
-                        }
-                    }
+                if (!dataSim) {
+                    null
+                } else {
+                    chain.proceed()
                 }
-            )
+            }
 
             Logger.i(TAG, "已挂载 $tag: MobileSignalController.notifyListeners")
         } catch (e: Throwable) {

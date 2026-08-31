@@ -5,13 +5,10 @@ import android.os.SystemClock
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.util.ArrayList
@@ -50,7 +47,7 @@ object SlideGestureMultiArcHook : FeatureHook {
     private val VIEW_CAPACITY_PER_ARC = intArrayOf(7, 5, 4, 3)
 
     private var prefsPackage: String = TARGET_PACKAGE
-    private var loadParam: XC_LoadPackage.LoadPackageParam? = null
+    private var loadParam: HookContext? = null
     private var launchItemConstructor: Constructor<*>? = null
     private var layoutParamFields: ArcLayoutFields? = null
     private var cachedArcCount = 1
@@ -62,22 +59,22 @@ object SlideGestureMultiArcHook : FeatureHook {
         val radiusMax: Field,
     )
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (lpparam.packageName != TARGET_PACKAGE) return
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
+    override fun handle(ctx: HookContext) {
+        if (ctx.packageName != TARGET_PACKAGE) return
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
 
-        prefsPackage = packageName
-        loadParam = lpparam
+        prefsPackage = ctx.packageName
+        loadParam = ctx
 
-        hookLauncherItems(lpparam)
-        hookArcLayout(lpparam)
+        hookLauncherItems(ctx)
+        hookArcLayout(ctx)
 
         Logger.i(TAG, "已加载，圆弧数=${readArcCount()}")
     }
 
-    private fun hookLauncherItems(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookLauncherItems(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(APP_LAUNCHER_WINDOW, lpparam.classLoader)
+            val clazz = Reflect.findClass(APP_LAUNCHER_WINDOW, ctx.classLoader)
             val method = clazz.declaredMethods.firstOrNull { method ->
                 List::class.java.isAssignableFrom(method.returnType) &&
                     method.parameterTypes.size == 1 &&
@@ -91,24 +88,24 @@ object SlideGestureMultiArcHook : FeatureHook {
             }
             method.isAccessible = true
 
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    try {
-                        val arcCount = readArcCount()
-                        if (arcCount <= 1) return
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val result = chain.proceed()
+                try {
+                    val arcCount = readArcCount()
+                    if (arcCount <= 1) return@hookMethod result
 
-                        val source = param.args.getOrNull(0) as? List<*> ?: return
-                        val original = param.result as? List<*> ?: return
-                        val expanded = buildExpandedLaunchItems(param.thisObject, source, original, arcCount)
-                        if (expanded.size > original.size) {
-                            param.result = expanded
-                            Logger.d(TAG) { "扩展快捷项 ${original.size} -> ${expanded.size}" }
-                        }
-                    } catch (t: Throwable) {
-                        Logger.e(TAG, "扩展快捷项失败", t)
+                    val source = chain.getArgs().getOrNull(0) as? List<*> ?: return@hookMethod result
+                    val original = result as? List<*> ?: return@hookMethod result
+                    val expanded = buildExpandedLaunchItems(chain.getThisObject(), source, original, arcCount)
+                    if (expanded.size > original.size) {
+                        Logger.d(TAG) { "扩展快捷项 ${original.size} -> ${expanded.size}" }
+                        return@hookMethod expanded
                     }
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "扩展快捷项失败", t)
                 }
-            })
+                return@hookMethod result
+            }
 
             Logger.i(TAG, "已挂载快捷项构建")
         } catch (t: Throwable) {
@@ -176,10 +173,11 @@ object SlideGestureMultiArcHook : FeatureHook {
         }
     }
 
-    private fun hookArcLayout(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookArcLayout(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(GESTURE_APP_LAUNCHER, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(
+            val clazz = Reflect.findClass(GESTURE_APP_LAUNCHER, ctx.classLoader)
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "onLayout",
                 Boolean::class.javaPrimitiveType,
@@ -187,19 +185,18 @@ object SlideGestureMultiArcHook : FeatureHook {
                 Int::class.javaPrimitiveType,
                 Int::class.javaPrimitiveType,
                 Int::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val arcCount = readArcCount()
-                            if (arcCount <= 1) return
-                            val launcher = param.thisObject as? ViewGroup ?: return
-                            applyMultiArcLayout(launcher, arcCount)
-                        } catch (t: Throwable) {
-                            Logger.e(TAG, "多圆弧布局失败", t)
-                        }
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+                try {
+                    val arcCount = readArcCount()
+                    if (arcCount <= 1) return@hookMethodOn result
+                    val launcher = chain.getThisObject() as? ViewGroup ?: return@hookMethodOn result
+                    applyMultiArcLayout(launcher, arcCount)
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "多圆弧布局失败", t)
                 }
-            )
+                return@hookMethodOn result
+            }
             Logger.i(TAG, "已挂载 GestureAppLauncher.onLayout")
         } catch (t: Throwable) {
             Logger.e(TAG, "Hook 圆弧布局失败", t)
@@ -395,8 +392,8 @@ object SlideGestureMultiArcHook : FeatureHook {
         val now = SystemClock.uptimeMillis()
         if (now - arcCountCachedAt < PREFS_TTL_MS) return cachedArcCount
         arcCountCachedAt = now
-        val lp = loadParam ?: return 1
-        cachedArcCount = XposedPrefs.getFeatureValue(lp, prefsPackage, FEATURE_KEY, 1).coerceIn(1, 4)
+        val ctx = loadParam ?: return 1
+        cachedArcCount = ctx.featureValue(FEATURE_KEY, 1).coerceIn(1, 4)
         return cachedArcCount
     }
 

@@ -4,13 +4,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.util.AttributeSet
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import java.util.Collections
 import java.util.HashSet
 
@@ -24,50 +21,51 @@ object NotificationManageHook : FeatureHook {
     private val developerChannelIds: MutableSet<String> =
         Collections.synchronizedSet(HashSet())
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "notification_manage")) return
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("notification_manage")) return
+        if (ctx.packageName != "com.android.systemui") return
 
-        hookNotificationInfo(lpparam)
-        hookDeveloperChannelId(lpparam)
-        hookDeveloperChannelCreation()
+        hookNotificationInfo(ctx)
+        hookDeveloperChannelId(ctx)
+        hookDeveloperChannelCreation(ctx)
     }
 
-    private fun hookNotificationInfo(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookNotificationInfo(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(NOTIFICATION_INFO, lpparam.classLoader)
+            val clazz = Reflect.findClass(NOTIFICATION_INFO, ctx.classLoader)
 
-            XposedHelpers.findAndHookConstructor(
+            Reflect.hookConstructorOn(
+                ctx.api,
                 clazz,
                 Context::class.java,
                 AttributeSet::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val notificationInfo = param.thisObject
-                        XposedHelpers.setObjectField(notificationInfo, "mDisableManagerPkgList", emptyList<String>())
-                        Logger.d(TAG) { "已清除 mDisableManagerPkgList" }
-                    }
-                }
-            )
+            ) { chain ->
+                val result = chain.proceed()
+                val notificationInfo = chain.getThisObject()
+                Reflect.setObjectField(notificationInfo, "mDisableManagerPkgList", emptyList<String>())
+                Logger.d(TAG) { "已清除 mDisableManagerPkgList" }
+                result
+            }
 
-            XposedBridge.hookAllMethods(clazz, "bindNotification", object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    try {
-                        val notificationInfo = param.thisObject
-                        val channel = XposedHelpers.getObjectField(
-                            notificationInfo,
-                            "mSingleNotificationChannel"
-                        ) as? NotificationChannel ?: return
-                        if (!isDeveloperChannel(channel)) return
+            Reflect.hookAllMethods(ctx.api, clazz, "bindNotification", excluded = { false }) { chain ->
+                val result = chain.proceed()
+                try {
+                    val notificationInfo = chain.getThisObject()
+                    val channel = Reflect.getObjectField(
+                        notificationInfo,
+                        "mSingleNotificationChannel"
+                    ) as? NotificationChannel ?: return@hookAllMethods result
+                    if (!isDeveloperChannel(channel)) return@hookAllMethods result
 
-                        channel.setBlockable(true)
-                        XposedHelpers.setBooleanField(notificationInfo, "mIsNonblockable", false)
-                        Logger.d(TAG) { "已解除开发者通知频道不可阻止状态" }
-                    } catch (t: Throwable) {
-                        Logger.e(TAG, "处理开发者通知频道状态失败", t)
-                    }
+                    channel.setBlockable(true)
+                    Reflect.setBooleanField(notificationInfo, "mIsNonblockable", false)
+                    Logger.d(TAG) { "已解除开发者通知频道不可阻止状态" }
+                    result
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "处理开发者通知频道状态失败", t)
+                    result
                 }
-            })
+            }
 
             Logger.i(TAG, "已挂载 NotificationInfo 构造器与 bindNotification")
         } catch (e: Throwable) {
@@ -75,56 +73,54 @@ object NotificationManageHook : FeatureHook {
         }
     }
 
-    private fun hookDeveloperChannelId(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookDeveloperChannelId(ctx: HookContext) {
         try {
-            val controllerClass = XposedHelpers.findClass(
+            val controllerClass = Reflect.findClass(
                 DEVELOPER_SETTINGS_CONTROLLER,
-                lpparam.classLoader
+                ctx.classLoader
             )
-            XposedHelpers.findAndHookMethod(
-                controllerClass,
-                "initRes",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val channelId = XposedHelpers.getObjectField(
-                                param.thisObject,
-                                "mDevNotiId"
-                            ) as? String ?: return
-                            if (channelId.isNotEmpty()) {
-                                developerChannelIds.add(channelId)
-                                Logger.d(TAG) { "记录开发者通知频道 ID" }
-                            }
-                        } catch (t: Throwable) {
-                            Logger.e(TAG, "记录开发者通知频道 ID 失败", t)
-                        }
+            Reflect.hookMethodOn(ctx.api, controllerClass, "initRes") { chain ->
+                val result = chain.proceed()
+                try {
+                    val channelId = Reflect.getObjectField(
+                        chain.getThisObject(),
+                        "mDevNotiId"
+                    ) as? String ?: return@hookMethodOn result
+                    if (channelId.isNotEmpty()) {
+                        developerChannelIds.add(channelId)
+                        Logger.d(TAG) { "记录开发者通知频道 ID" }
                     }
+                    result
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "记录开发者通知频道 ID 失败", t)
+                    result
                 }
-            )
+            }
             Logger.i(TAG, "已挂载 DeveloperSettingsController.initRes")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载开发者通知频道识别失败", e)
         }
     }
 
-    private fun hookDeveloperChannelCreation() {
+    private fun hookDeveloperChannelCreation(ctx: HookContext) {
         try {
-            XposedBridge.hookAllMethods(
+            Reflect.hookAllMethods(
+                ctx.api,
                 NotificationManager::class.java,
                 "createNotificationChannel",
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        try {
-                            val channel = param.args.firstOrNull() as? NotificationChannel ?: return
-                            if (!isDeveloperChannel(channel)) return
-                            channel.setBlockable(true)
-                            Logger.d(TAG) { "开发者通知频道已强制设为可阻止" }
-                        } catch (t: Throwable) {
-                            Logger.e(TAG, "处理开发者通知频道创建失败", t)
-                        }
-                    }
+                excluded = { false }
+            ) { chain ->
+                val channel = chain.getArgs().firstOrNull() as? NotificationChannel ?: return@hookAllMethods chain.proceed()
+                if (!isDeveloperChannel(channel)) return@hookAllMethods chain.proceed()
+                try {
+                    channel.setBlockable(true)
+                    Logger.d(TAG) { "开发者通知频道已强制设为可阻止" }
+                    chain.proceed()
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "处理开发者通知频道创建失败", t)
+                    chain.proceed()
                 }
-            )
+            }
             Logger.i(TAG, "已挂载 NotificationManager.createNotificationChannel")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载开发者通知频道创建失败", e)

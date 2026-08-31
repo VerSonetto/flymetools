@@ -10,13 +10,11 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.TextView
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.util.FlymeVersionUtils
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import io.github.libxposed.api.XposedInterface
 import java.lang.reflect.Method
 import java.util.Collections
 import java.util.WeakHashMap
@@ -69,7 +67,7 @@ object ForceCircleBatteryHook : FeatureHook {
     @Volatile
     private var offsetYDp = DEFAULT_OFFSET_DP
 
-    private var loadParam: XC_LoadPackage.LoadPackageParam? = null
+    private var loadParam: HookContext? = null
     private var prefsPackage: String = "com.android.systemui"
 
     private val targetBatteryViews: MutableMap<Any, Boolean> =
@@ -129,94 +127,89 @@ object ForceCircleBatteryHook : FeatureHook {
         }
     }
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (ctx.packageName != "com.android.systemui") return
         if (!FlymeVersionUtils.isFlyme12()) return
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_FORCE)) return
+        if (!ctx.featureEnabled(FEATURE_FORCE)) return
 
-        loadParam = lpparam
-        prefsPackage = packageName
-        replaceStatusBarIcon = XposedPrefs.isFeatureEnabled(
-            lpparam,
-            packageName,
-            FEATURE_REPLACE_STATUS_BAR
-        )
-        textMode = XposedPrefs.getFeatureValue(
-            lpparam,
-            packageName,
+        loadParam = ctx
+        prefsPackage = ctx.packageName
+        replaceStatusBarIcon = ctx.featureEnabled(FEATURE_REPLACE_STATUS_BAR)
+        textMode = ctx.featureValue(
             FEATURE_REPLACE_STATUS_BAR,
             TEXT_MODE_NONE
         ).coerceIn(TEXT_MODE_NONE, TEXT_MODE_SIDE)
         refreshLayoutPrefs()
 
-        hookCameraStateController(lpparam)
-        hookBatteryMeterView(lpparam)
+        hookCameraStateController(ctx)
+        hookBatteryMeterView(ctx)
     }
 
     private fun refreshLayoutPrefs() {
         val lp = loadParam ?: return
-        customLayoutEnabled = XposedPrefs.getFeatureExtraValue(
-            lp, prefsPackage, FEATURE_FORCE, EXTRA_CUSTOM_LAYOUT, 0
+        customLayoutEnabled = lp.featureExtraValue(
+            FEATURE_FORCE, EXTRA_CUSTOM_LAYOUT, 0
         ) == 1
-        sizeScale = XposedPrefs.getFeatureValue(
-            lp, prefsPackage, FEATURE_FORCE, DEFAULT_SIZE_SCALE
+        sizeScale = lp.featureValue(
+            FEATURE_FORCE, DEFAULT_SIZE_SCALE
         ).coerceIn(50, 150)
-        offsetXDp = XposedPrefs.getFeatureExtraValue(
-            lp, prefsPackage, FEATURE_FORCE, "offset_x_dp", DEFAULT_OFFSET_DP
+        offsetXDp = lp.featureExtraValue(
+            FEATURE_FORCE, "offset_x_dp", DEFAULT_OFFSET_DP
         ).coerceIn(-24, 24)
-        offsetYDp = XposedPrefs.getFeatureExtraValue(
-            lp, prefsPackage, FEATURE_FORCE, "offset_y_dp", DEFAULT_OFFSET_DP
+        offsetYDp = lp.featureExtraValue(
+            FEATURE_FORCE, "offset_y_dp", DEFAULT_OFFSET_DP
         ).coerceIn(-24, 24)
     }
 
-    private fun hookCameraStateController(lpparam: XC_LoadPackage.LoadPackageParam) {
-        val clazz = findClass(lpparam.classLoader, CAMERA_STATE_CONTROLLER) ?: return
+    private fun hookCameraStateController(ctx: HookContext) {
+        val clazz = findClass(ctx.classLoader, CAMERA_STATE_CONTROLLER) ?: return
 
-        hookBooleanNoArg(clazz, "isUserRequestCircleBattery") {
+        hookBooleanNoArg(ctx.api, clazz, "isUserRequestCircleBattery") {
             !replaceStatusBarIcon
         }
 
         if (replaceStatusBarIcon) {
-            hookBooleanOneBooleanArg(clazz, "shouldShowCircleBatteryView") { false }
-            hookBlockShowCircleWindow(clazz)
-            hookForceOriginalBatteryVisible(clazz)
+            hookBooleanOneBooleanArg(ctx.api, clazz, "shouldShowCircleBatteryView") { false }
+            hookBlockShowCircleWindow(ctx.api, clazz)
+            hookForceOriginalBatteryVisible(ctx.api, clazz)
         } else {
-            hookAlignCircleBatteryWindow(clazz)
-            hookApplyLayoutOnShowCircle(clazz)
+            hookAlignCircleBatteryWindow(ctx.api, clazz)
+            hookApplyLayoutOnShowCircle(ctx.api, clazz)
         }
 
         try {
-            XposedBridge.hookAllConstructors(clazz, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    applyCircleBatteryMode(param.thisObject)
-                }
-            })
+            Reflect.hookAllConstructors(ctx.api, clazz) { chain ->
+                val result = chain.proceed()
+                applyCircleBatteryMode(ctx.api, chain.getThisObject())
+                result
+            }
             Logger.i(TAG, "CameraStateController Hook 完成, replace=$replaceStatusBarIcon")
         } catch (e: Throwable) {
             Logger.e(TAG, "CameraStateController 构造 Hook 失败", e)
         }
     }
 
-    private fun hookBatteryMeterView(lpparam: XC_LoadPackage.LoadPackageParam) {
-        val clazz = findClass(lpparam.classLoader, FLYME_BATTERY_METER_VIEW) ?: return
+    private fun hookBatteryMeterView(ctx: HookContext) {
+        val clazz = findClass(ctx.classLoader, FLYME_BATTERY_METER_VIEW) ?: return
 
-        hookBooleanNoArg(clazz, "isShowingCircleBattery") {
+        hookBooleanNoArg(ctx.api, clazz, "isShowingCircleBattery") {
             !replaceStatusBarIcon
         }
 
         if (replaceStatusBarIcon) {
             // 标记与强制可见只服务「替换状态栏电池图标」模式；
             // 前摄孔位环（replace=false）下状态栏电池显隐交给系统 updateBatteryViewVisibility 管理
-            hookMarkTargetBatteryView(clazz)
-            hookDrawStatusBarCircle(clazz)
-            hookMeasureStatusBarCircle(clazz)
-            hookKeepStatusBarCircleVisible(clazz)
+            hookMarkTargetBatteryView(ctx.api, clazz)
+            hookDrawStatusBarCircle(ctx.api, clazz)
+            hookMeasureStatusBarCircle(ctx.api, clazz)
+            hookKeepStatusBarCircleVisible(ctx.api, clazz)
         }
 
         Logger.i(TAG, "FlymeBatteryMeterView Hook 完成, replace=$replaceStatusBarIcon")
     }
 
     private fun hookBooleanNoArg(
+        api: XposedInterface,
         clazz: Class<*>,
         methodName: String,
         resultProvider: () -> Boolean
@@ -231,14 +224,13 @@ object ForceCircleBatteryHook : FeatureHook {
             return
         }
         method.isAccessible = true
-        XposedBridge.hookMethod(method, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                param.result = resultProvider()
-            }
-        })
+        Reflect.hookMethod(api, method) { chain ->
+            resultProvider()
+        }
     }
 
     private fun hookBooleanOneBooleanArg(
+        api: XposedInterface,
         clazz: Class<*>,
         methodName: String,
         resultProvider: () -> Boolean
@@ -253,52 +245,48 @@ object ForceCircleBatteryHook : FeatureHook {
             return
         }
         method.isAccessible = true
-        XposedBridge.hookMethod(method, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                param.result = resultProvider()
-            }
-        })
+        Reflect.hookMethod(api, method) { chain ->
+            resultProvider()
+        }
     }
 
-    private fun hookBlockShowCircleWindow(clazz: Class<*>) {
+    private fun hookBlockShowCircleWindow(api: XposedInterface, clazz: Class<*>) {
         val method = findNoArgVoidMethod(clazz, "showCircleBatteryIfNecessary") ?: run {
             Logger.w(TAG, "未找到 showCircleBatteryIfNecessary()")
             return
         }
-        XposedBridge.hookMethod(method, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) {
-                hideCircleWindow(param.thisObject)
-                param.result = null
-            }
-        })
+        Reflect.hookMethod(api, method) { chain ->
+            hideCircleWindow(api, chain.getThisObject())
+            null
+        }
     }
 
-    private fun hookAlignCircleBatteryWindow(clazz: Class<*>) {
+    private fun hookAlignCircleBatteryWindow(api: XposedInterface, clazz: Class<*>) {
         val method = findNoArgMethod(clazz, "initBatteryWindowLp") ?: run {
             Logger.w(TAG, "未找到 initBatteryWindowLp()")
             return
         }
-        XposedBridge.hookMethod(method, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                applyCustomCircleBatteryLayout(param.thisObject)
-            }
-        })
+        Reflect.hookMethod(api, method) { chain ->
+            val result = chain.proceed()
+            applyCustomCircleBatteryLayout(api, chain.getThisObject())
+            result
+        }
     }
 
     /** 窗口可能已缓存 LayoutParams，展示时再应用一次自定义布局 */
-    private fun hookApplyLayoutOnShowCircle(clazz: Class<*>) {
+    private fun hookApplyLayoutOnShowCircle(api: XposedInterface, clazz: Class<*>) {
         val method = findNoArgVoidMethod(clazz, "showCircleBatteryIfNecessary") ?: run {
             Logger.w(TAG, "未找到 showCircleBatteryIfNecessary()（布局刷新）")
             return
         }
-        XposedBridge.hookMethod(method, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                applyCustomCircleBatteryLayout(param.thisObject)
-            }
-        })
+        Reflect.hookMethod(api, method) { chain ->
+            val result = chain.proceed()
+            applyCustomCircleBatteryLayout(api, chain.getThisObject())
+            result
+        }
     }
 
-    private fun hookForceOriginalBatteryVisible(clazz: Class<*>) {
+    private fun hookForceOriginalBatteryVisible(api: XposedInterface, clazz: Class<*>) {
         val method = clazz.declaredMethods.firstOrNull { method ->
             !method.isSynthetic &&
                 method.name == "updateBatteryViewVisibility" &&
@@ -309,88 +297,81 @@ object ForceCircleBatteryHook : FeatureHook {
             return
         }
         method.isAccessible = true
-        XposedBridge.hookMethod(method, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                forceOriginalBatteryViewsVisible(param.thisObject)
-            }
-        })
+        Reflect.hookMethod(api, method) { chain ->
+            val result = chain.proceed()
+            forceOriginalBatteryViewsVisible(chain.getThisObject())
+            result
+        }
     }
 
-    private fun hookMarkTargetBatteryView(clazz: Class<*>) {
+    private fun hookMarkTargetBatteryView(api: XposedInterface, clazz: Class<*>) {
         try {
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                api,
                 clazz,
                 "setBatteryPercentView",
                 TextView::class.java,
                 String::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val scene = param.args.getOrNull(1) as? String ?: return
-                        if (scene !in targetScenes) return
-                        targetBatteryViews[param.thisObject] = true
-                        (param.thisObject as? View)?.let { view ->
-                            view.visibility = View.VISIBLE
-                            applyTextMode(view)
-                            view.requestLayout()
-                            view.invalidate()
-                        }
-                        Logger.once(TAG, "circle_mark_$scene", "已标记 $scene 电池图标为环形绘制目标")
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+                val scene = chain.getArgs().getOrNull(1) as? String ?: return@hookMethodOn result
+                if (scene !in targetScenes) return@hookMethodOn result
+                targetBatteryViews[chain.getThisObject()] = true
+                (chain.getThisObject() as? View)?.let { view ->
+                    view.visibility = View.VISIBLE
+                    applyTextMode(view)
+                    view.requestLayout()
+                    view.invalidate()
                 }
-            )
+                Logger.once(TAG, "circle_mark_$scene", "已标记 $scene 电池图标为环形绘制目标")
+                result
+            }
         } catch (e: Throwable) {
             Logger.e(TAG, "setBatteryPercentView Hook 失败", e)
         }
     }
 
-    private fun hookDrawStatusBarCircle(clazz: Class<*>) {
+    private fun hookDrawStatusBarCircle(api: XposedInterface, clazz: Class<*>) {
         try {
-            XposedHelpers.findAndHookMethod(
-                clazz,
-                "onDraw",
-                Canvas::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val view = param.thisObject as? View ?: return
-                        if (!isTargetBatteryView(view)) return
-                        val canvas = param.args.getOrNull(0) as? Canvas ?: return
-                        drawCircleBattery(view, canvas)
-                        param.result = null
-                    }
-                }
-            )
+            Reflect.hookMethodOn(api, clazz, "onDraw", Canvas::class.java) { chain ->
+                val view = chain.getThisObject() as? View ?: return@hookMethodOn chain.proceed()
+                if (!isTargetBatteryView(view)) return@hookMethodOn chain.proceed()
+                val canvas = chain.getArgs().getOrNull(0) as? Canvas ?: return@hookMethodOn chain.proceed()
+                drawCircleBattery(view, canvas)
+                null
+            }
         } catch (e: Throwable) {
             Logger.e(TAG, "onDraw Hook 失败", e)
         }
     }
 
-    private fun hookMeasureStatusBarCircle(clazz: Class<*>) {
+    private fun hookMeasureStatusBarCircle(api: XposedInterface, clazz: Class<*>) {
         try {
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                api,
                 clazz,
                 "onMeasure",
-                Int::class.javaPrimitiveType,
-                Int::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val view = param.thisObject as? View ?: return
-                        if (!isTargetBatteryView(view)) return
-                        val size = getStatusBarCircleSize(view)
-                        val width = if (textMode == TEXT_MODE_SIDE) {
-                            size + getSideTextWidth(view) + getSideTextGap(view)
-                        } else {
-                            size
-                        }
-                        XposedHelpers.callMethod(view, "setMeasuredDimension", width, size)
-                    }
+                Int::class.javaPrimitiveType!!,
+                Int::class.javaPrimitiveType!!,
+            ) { chain ->
+                val result = chain.proceed()
+                val view = chain.getThisObject() as? View ?: return@hookMethodOn result
+                if (!isTargetBatteryView(view)) return@hookMethodOn result
+                val size = getStatusBarCircleSize(view)
+                val width = if (textMode == TEXT_MODE_SIDE) {
+                    size + getSideTextWidth(view) + getSideTextGap(view)
+                } else {
+                    size
                 }
-            )
+                Reflect.callMethod(api, view, "setMeasuredDimension", width, size)
+                result
+            }
         } catch (e: Throwable) {
             Logger.e(TAG, "onMeasure Hook 失败", e)
         }
     }
 
-    private fun hookKeepStatusBarCircleVisible(clazz: Class<*>) {
+    private fun hookKeepStatusBarCircleVisible(api: XposedInterface, clazz: Class<*>) {
         val method = clazz.declaredMethods.firstOrNull { method ->
             !method.isSynthetic &&
                 method.name == "apply" &&
@@ -401,43 +382,43 @@ object ForceCircleBatteryHook : FeatureHook {
             return
         }
         method.isAccessible = true
-        XposedBridge.hookMethod(method, object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val view = param.thisObject as? View ?: return
-                if (!isTargetBatteryView(view)) return
-                view.visibility = View.VISIBLE
-                applyTextMode(view)
-                view.requestLayout()
-                view.invalidate()
-            }
-        })
+        Reflect.hookMethod(api, method) { chain ->
+            val result = chain.proceed()
+            val view = chain.getThisObject() as? View ?: return@hookMethod result
+            if (!isTargetBatteryView(view)) return@hookMethod result
+            view.visibility = View.VISIBLE
+            applyTextMode(view)
+            view.requestLayout()
+            view.invalidate()
+            result
+        }
     }
 
-    private fun applyCircleBatteryMode(controller: Any) {
+    private fun applyCircleBatteryMode(api: XposedInterface, controller: Any) {
         try {
-            XposedHelpers.setBooleanField(controller, "mShowCircleBattery", !replaceStatusBarIcon)
+            Reflect.setBooleanField(controller, "mShowCircleBattery", !replaceStatusBarIcon)
         } catch (_: Throwable) {
         }
 
         if (replaceStatusBarIcon) {
-            hideCircleWindow(controller)
+            hideCircleWindow(api, controller)
             forceOriginalBatteryViewsVisible(controller)
         } else {
             try {
-                XposedHelpers.callMethod(controller, "updateCircleBatteryWindowVisibility")
+                Reflect.callMethod(api, controller, "updateCircleBatteryWindowVisibility")
             } catch (e: Throwable) {
                 Logger.w(TAG, "刷新环形电量窗口失败")
             }
         }
     }
 
-    private fun hideCircleWindow(controller: Any) {
+    private fun hideCircleWindow(api: XposedInterface, controller: Any) {
         try {
-            XposedHelpers.setBooleanField(controller, "mShowCircleBattery", false)
+            Reflect.setBooleanField(controller, "mShowCircleBattery", false)
         } catch (_: Throwable) {
         }
         try {
-            XposedHelpers.callMethod(controller, "hideCircleBatteryIfNecessary")
+            Reflect.callMethod(api, controller, "hideCircleBatteryIfNecessary")
         } catch (_: Throwable) {
         }
     }
@@ -447,12 +428,12 @@ object ForceCircleBatteryHook : FeatureHook {
      * - 默认：仅复用黑圈 gravity/x/y（保持系统窗口与圆环 dimen 尺寸）
      * - 开启「自定义大小与位置」后：按黑圈几何中心对齐，并套用缩放与 dp 偏移
      */
-    private fun applyCustomCircleBatteryLayout(controller: Any) {
+    private fun applyCustomCircleBatteryLayout(api: XposedInterface, controller: Any) {
         if (replaceStatusBarIcon) return
         try {
             refreshLayoutPrefs()
             val batteryLp = ensureBatteryWindowLayoutParams(controller) ?: return
-            val blackLp = ensureBlackWindowLayoutParams(controller) ?: return
+            val blackLp = ensureBlackWindowLayoutParams(api, controller) ?: return
 
             if (!customLayoutEnabled) {
                 applyLegacyAlign(batteryLp, blackLp)
@@ -501,10 +482,10 @@ object ForceCircleBatteryHook : FeatureHook {
     /**
      * 仅复用系统自身维护的前摄黑圈窗口坐标（含 Cutout 计算），拿不到就放弃干预。
      */
-    private fun ensureBlackWindowLayoutParams(controller: Any): WindowManager.LayoutParams? {
+    private fun ensureBlackWindowLayoutParams(api: XposedInterface, controller: Any): WindowManager.LayoutParams? {
         return try {
-            (XposedHelpers.getObjectField(controller, "mBlackLpChanged") as? WindowManager.LayoutParams)
-                ?: (XposedHelpers.callMethod(controller, "initBlackWindowLp") as? WindowManager.LayoutParams)
+            (Reflect.getObjectField(controller, "mBlackLpChanged") as? WindowManager.LayoutParams)
+                ?: (Reflect.callMethod(api, controller, "initBlackWindowLp") as? WindowManager.LayoutParams)
         } catch (_: Throwable) {
             null
         }
@@ -512,7 +493,7 @@ object ForceCircleBatteryHook : FeatureHook {
 
     private fun ensureBatteryWindowLayoutParams(controller: Any): WindowManager.LayoutParams? {
         return try {
-            XposedHelpers.getObjectField(controller, "mBatteryLpChanged") as? WindowManager.LayoutParams
+            Reflect.getObjectField(controller, "mBatteryLpChanged") as? WindowManager.LayoutParams
         } catch (_: Throwable) {
             null
         }
@@ -520,7 +501,7 @@ object ForceCircleBatteryHook : FeatureHook {
 
     private fun resolveDensity(controller: Any): Float {
         return try {
-            val context = XposedHelpers.getObjectField(controller, "mContext") as? Context
+            val context = Reflect.getObjectField(controller, "mContext") as? Context
             context?.resources?.displayMetrics?.density ?: 3f
         } catch (_: Throwable) {
             3f
@@ -532,7 +513,7 @@ object ForceCircleBatteryHook : FeatureHook {
      */
     private fun applyCircleBatteryViewSize(controller: Any, ringSizePx: Int) {
         val circleView = try {
-            XposedHelpers.getObjectField(controller, "mCircleBatteryView") as? View
+            Reflect.getObjectField(controller, "mCircleBatteryView") as? View
         } catch (_: Throwable) {
             null
         } ?: return
@@ -552,10 +533,10 @@ object ForceCircleBatteryHook : FeatureHook {
 
         val stroke = max(2f, ringSizePx * (6f / 61f))
         try {
-            XposedHelpers.setFloatField(circleView, "mWidth", ringSizePx.toFloat())
-            XposedHelpers.setFloatField(circleView, "mHeight", ringSizePx.toFloat())
-            XposedHelpers.setFloatField(circleView, "mStrokeWidth", stroke)
-            XposedHelpers.setObjectField(
+            Reflect.setFloatField(circleView, "mWidth", ringSizePx.toFloat())
+            Reflect.setFloatField(circleView, "mHeight", ringSizePx.toFloat())
+            Reflect.setFloatField(circleView, "mStrokeWidth", stroke)
+            Reflect.setObjectField(
                 circleView,
                 "mRectF",
                 RectF(
@@ -565,8 +546,8 @@ object ForceCircleBatteryHook : FeatureHook {
                     ringSizePx - stroke / 2f
                 )
             )
-            (XposedHelpers.getObjectField(circleView, "mPaint") as? Paint)?.strokeWidth = stroke
-            (XposedHelpers.getObjectField(circleView, "mBgPaint") as? Paint)?.strokeWidth = stroke
+            (Reflect.getObjectField(circleView, "mPaint") as? Paint)?.strokeWidth = stroke
+            (Reflect.getObjectField(circleView, "mBgPaint") as? Paint)?.strokeWidth = stroke
             circleView.requestLayout()
             circleView.invalidate()
         } catch (_: Throwable) {
@@ -579,11 +560,11 @@ object ForceCircleBatteryHook : FeatureHook {
         batteryLp: WindowManager.LayoutParams
     ) {
         try {
-            val attached = XposedHelpers.getBooleanField(controller, "mBatteryAttachToWindow")
+            val attached = Reflect.getBooleanField(controller, "mBatteryAttachToWindow")
             if (!attached) return
-            val root = XposedHelpers.getObjectField(controller, "mBlackCircleView") as? View ?: return
+            val root = Reflect.getObjectField(controller, "mBlackCircleView") as? View ?: return
             if (root.parent == null) return
-            val wm = XposedHelpers.getObjectField(controller, "mWindowManager") as? WindowManager
+            val wm = Reflect.getObjectField(controller, "mWindowManager") as? WindowManager
                 ?: return
             wm.updateViewLayout(root, batteryLp)
         } catch (_: Throwable) {
@@ -594,7 +575,7 @@ object ForceCircleBatteryHook : FeatureHook {
     private fun forceOriginalBatteryViewsVisible(controller: Any) {
         for (fieldName in listOf("mBatteryView", "mKeyguardBatteryView", "mKeyguardBouncerBatteryView")) {
             try {
-                (XposedHelpers.getObjectField(controller, fieldName) as? View)?.visibility = View.VISIBLE
+                (Reflect.getObjectField(controller, fieldName) as? View)?.visibility = View.VISIBLE
             } catch (_: Throwable) {
             }
         }
@@ -677,7 +658,7 @@ object ForceCircleBatteryHook : FeatureHook {
 
     private fun getBatteryPercentView(view: View): TextView? {
         return try {
-            XposedHelpers.getObjectField(view, "mBatteryPercentView") as? TextView
+            Reflect.getObjectField(view, "mBatteryPercentView") as? TextView
         } catch (_: Throwable) {
             null
         }
@@ -753,7 +734,7 @@ object ForceCircleBatteryHook : FeatureHook {
 
     private fun readIntField(instance: Any, fieldName: String, defaultValue: Int): Int {
         return try {
-            XposedHelpers.getIntField(instance, fieldName)
+            Reflect.getIntField(instance, fieldName)
         } catch (_: Throwable) {
             defaultValue
         }
@@ -761,7 +742,7 @@ object ForceCircleBatteryHook : FeatureHook {
 
     private fun readBooleanField(instance: Any, fieldName: String, defaultValue: Boolean): Boolean {
         return try {
-            XposedHelpers.getBooleanField(instance, fieldName)
+            Reflect.getBooleanField(instance, fieldName)
         } catch (_: Throwable) {
             defaultValue
         }
@@ -786,7 +767,7 @@ object ForceCircleBatteryHook : FeatureHook {
 
     private fun findClass(classLoader: ClassLoader, className: String): Class<*>? {
         return try {
-            XposedHelpers.findClass(className, classLoader)
+            Reflect.findClass(className, classLoader)
         } catch (e: Throwable) {
             Logger.w(TAG, "未找到类 $className")
             null

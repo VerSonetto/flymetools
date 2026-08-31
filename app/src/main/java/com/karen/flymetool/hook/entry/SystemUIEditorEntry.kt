@@ -1,7 +1,7 @@
 package com.karen.flymetool.hook.entry
 
 import com.karen.flymetool.hook.base.FeatureHook
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.HookContext
 
 object SystemUIEditorEntry : HookEntry {
     override val targetPackage = "com.flyme.systemuieditor"
@@ -15,7 +15,7 @@ object SystemUIEditorEntry : HookEntry {
         },
     )
 
-    override fun initHooks(lpparam: XC_LoadPackage.LoadPackageParam) {
-        safeInitHooks(targetPackage, lpparam, hookFactories)
+    override fun initHooks(ctx: HookContext) {
+        safeInitHooks(ctx, hookFactories)
     }
 }

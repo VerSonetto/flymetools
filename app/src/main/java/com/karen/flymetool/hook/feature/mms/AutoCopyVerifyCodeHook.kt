@@ -3,13 +3,10 @@ package com.karen.flymetool.hook.feature.mms
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 
 object AutoCopyVerifyCodeHook : FeatureHook {
 
@@ -22,32 +19,32 @@ object AutoCopyVerifyCodeHook : FeatureHook {
 
     private var appContext: Context? = null
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "auto_copy_verify_code")) return
-        if (lpparam.packageName != PACKAGE_NAME) return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("auto_copy_verify_code")) return
+        if (ctx.packageName != PACKAGE_NAME) return
 
-        hookMmsAppOnCreate(lpparam)
-        hookDexUtilParse(lpparam)
+        hookMmsAppOnCreate(ctx)
+        hookDexUtilParse(ctx)
     }
 
-    private fun hookMmsAppOnCreate(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookMmsAppOnCreate(ctx: HookContext) {
         try {
-            val mmsAppClass = lpparam.classLoader.loadClass(MMS_APP_CLASS)
+            val mmsAppClass = ctx.classLoader.loadClass(MMS_APP_CLASS)
 
             for (method in mmsAppClass.declaredMethods) {
                 if (method.parameterTypes.isEmpty() &&
                     (method.name == "onCreate" || method.returnType == Void.TYPE)) {
 
-                    XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            try {
-                                appContext = param.thisObject as? Context
-                                Logger.i(TAG, "已捕获 MmsApp context")
-                            } catch (e: Throwable) {
-                                Logger.e(TAG, "捕获 context 失败", e)
-                            }
+                    Reflect.hookMethod(ctx.api, method) { chain ->
+                        val result = chain.proceed()
+                        try {
+                            appContext = chain.getThisObject() as? Context
+                            Logger.i(TAG, "已捕获 MmsApp context")
+                        } catch (e: Throwable) {
+                            Logger.e(TAG, "捕获 context 失败", e)
                         }
-                    })
+                        result
+                    }
                     Logger.i(TAG, "已挂载 MmsApp.onCreate")
                     return
                 }
@@ -57,25 +54,25 @@ object AutoCopyVerifyCodeHook : FeatureHook {
         }
     }
 
-    private fun hookDexUtilParse(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookDexUtilParse(ctx: HookContext) {
         try {
-            val dexUtilClass = lpparam.classLoader.loadClass(DEX_UTIL_CLASS)
+            val dexUtilClass = ctx.classLoader.loadClass(DEX_UTIL_CLASS)
 
             for (method in dexUtilClass.declaredMethods) {
                 if (method.name == "parse" && method.parameterTypes.size == 1) {
 
-                    XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            try {
-                                val parseResult = param.result ?: return
+                    Reflect.hookMethod(ctx.api, method) { chain ->
+                        val result = chain.proceed()
+                        try {
+                            val parseResult = result ?: return@hookMethod result
 
-                                handleParseResult(parseResult)
+                            handleParseResult(parseResult)
 
-                            } catch (e: Throwable) {
-                                Logger.e(TAG, "parse Hook 异常", e)
-                            }
+                        } catch (e: Throwable) {
+                            Logger.e(TAG, "parse Hook 异常", e)
                         }
-                    })
+                        result
+                    }
 
                     Logger.i(TAG, "已挂载 DexUtil.parse")
                     return
@@ -91,14 +88,14 @@ object AutoCopyVerifyCodeHook : FeatureHook {
 
     private fun handleParseResult(parseResult: Any) {
         try {
-            val mType = XposedHelpers.getIntField(parseResult, "mType")
+            val mType = Reflect.getIntField(parseResult, "mType")
 
             if (mType != VERIFY_CODE_TYPE) {
                 Logger.d(TAG) { "非验证码短信, mType=$mType" }
                 return
             }
 
-            val mContent = XposedHelpers.getObjectField(parseResult, "mContent") as? String
+            val mContent = Reflect.getObjectField(parseResult, "mContent") as? String
             if (mContent.isNullOrBlank()) {
                 Logger.d(TAG) { "验证码内容为空" }
                 return

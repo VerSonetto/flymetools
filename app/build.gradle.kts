@@ -26,12 +26,10 @@ val featuresJsonFile = file("src/main/assets/features.json")
 val dateCode = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")).toInt()
 
 val generatedScopeDir = layout.buildDirectory.dir("generated/scope")
-val generatedScopeResDir = layout.buildDirectory.dir("generated/scope_res")
 
 val generateScope by tasks.registering {
     inputs.file(featuresJsonFile)
     outputs.dir(generatedScopeDir)
-    outputs.dir(generatedScopeResDir)
     doLast {
         val text = featuresJsonFile.readText()
         val packages = Regex("\"package\"\\s*:\\s*\"([^\"]+)\"")
@@ -39,17 +37,10 @@ val generateScope by tasks.registering {
             .map { it.groupValues[1] }
             .toList()
 
-        val scopeFile = generatedScopeDir.get().file("scope").asFile
+        // Modern API：作用域清单为 META-INF/xposed/scope.list（每行一个包名）
+        val scopeFile = generatedScopeDir.get().file("META-INF/xposed/scope.list").asFile
         scopeFile.parentFile.mkdirs()
         scopeFile.writeText(packages.joinToString("\n") + "\n")
-
-        val resFile = generatedScopeResDir.get().file("values/scope_arr.xml").asFile
-        resFile.parentFile.mkdirs()
-        resFile.writeText(
-            "<resources>\n    <string-array name=\"xposed_scope\">\n" +
-                packages.joinToString("\n") { "        <item>$it</item>" } +
-                "\n    </string-array>\n</resources>\n"
-        )
     }
 }
 
@@ -66,8 +57,8 @@ android {
     }
 
     sourceSets["main"].apply {
-        assets.srcDir(generatedScopeDir)
-        res.srcDir(generatedScopeResDir)
+        // 生成的 scope.list 打进 APK 的 META-INF/xposed/scope.list
+        resources.srcDir(generatedScopeDir)
     }
 
     signingConfigs {
@@ -156,7 +147,8 @@ tasks.register<Exec>("installSignedRelease") {
 }
 
 dependencies {
-    compileOnly(files("libs/api-82.jar"))
+    compileOnly("io.github.libxposed:api:101.0.0")
+    implementation("io.github.libxposed:service:101.0.0")
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

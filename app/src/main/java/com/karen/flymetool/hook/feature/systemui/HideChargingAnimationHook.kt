@@ -1,49 +1,45 @@
 package com.karen.flymetool.hook.feature.systemui
 
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 
 object HideChargingAnimationHook : FeatureHook {
 
     private const val CHARGE_ANIMATION_CONTROLLER = "com.flyme.keyguard.charging.ChargeAnimationController"
     private const val TAG = "HideChargingAnimation"
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "hide_charging_animation")) return
-        if (lpparam.packageName != "com.android.systemui") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("hide_charging_animation")) return
+        if (ctx.packageName != "com.android.systemui") return
 
-        hookStartWireAnimation(lpparam)
+        hookStartWireAnimation(ctx)
         Logger.i(TAG, "已加载")
     }
 
-    private fun hookStartWireAnimation(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookStartWireAnimation(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(CHARGE_ANIMATION_CONTROLLER, lpparam.classLoader)
+            val clazz = Reflect.findClass(CHARGE_ANIMATION_CONTROLLER, ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "startWireAnimation",
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        Logger.d(TAG) { "拦截充电动画" }
+            ) { chain ->
+                Logger.d(TAG) { "拦截充电动画" }
 
-                        val thisObject = param.thisObject
+                val thisObject = chain.getThisObject()
 
-                        XposedHelpers.setBooleanField(thisObject, "mAnimationStarted", true)
+                Reflect.setBooleanField(thisObject, "mAnimationStarted", true)
 
-                        val mHandler = XposedHelpers.getObjectField(thisObject, "mHandler") as? android.os.Handler
-                        val mRemoveWindow = XposedHelpers.getObjectField(thisObject, "mRemoveWindow") as Runnable?
+                val mHandler = Reflect.getObjectField(thisObject, "mHandler") as? android.os.Handler
+                val mRemoveWindow = Reflect.getObjectField(thisObject, "mRemoveWindow") as Runnable?
 
-                        mRemoveWindow?.let { mHandler?.postDelayed(it, 100) }
+                mRemoveWindow?.let { mHandler?.postDelayed(it, 100) }
 
-                        param.result = null
-                    }
-                }
-            )
+                null
+            }
 
             Logger.i(TAG, "已挂载 ChargeAnimationController.startWireAnimation")
         } catch (e: Throwable) {

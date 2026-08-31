@@ -10,12 +10,10 @@ import android.webkit.WebView
 import com.karen.flymetool.data.CustomSearchEngine
 import com.karen.flymetool.data.SearchEngines
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.Reflect
+import io.github.libxposed.api.XposedInterface.Chain
 import java.lang.reflect.Modifier
 
 /**
@@ -37,20 +35,18 @@ object CustomSearchEngineHook : FeatureHook {
 
     private val userEngines = mutableListOf<CustomSearchEngine>()
 
-    private var lpparam: XC_LoadPackage.LoadPackageParam? = null
-    private var classLoader: ClassLoader? = null
+    private var context: HookContext? = null
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (packageName != PACKAGE_NAME) return
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
+    override fun handle(ctx: HookContext) {
+        if (ctx.packageName != PACKAGE_NAME) return
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
 
-        this.lpparam = lpparam
-        this.classLoader = lpparam.classLoader
+        this.context = ctx
         refreshEngines()
 
-        hookListPreference()
-        hookWebView()
-        hookStartActivity()
+        hookListPreference(ctx)
+        hookWebView(ctx)
+        hookStartActivity(ctx)
 
         Logger.i(
             TAG,
@@ -59,8 +55,8 @@ object CustomSearchEngineHook : FeatureHook {
     }
 
     private fun refreshEngines() {
-        val lp = lpparam ?: return
-        val json = XposedPrefs.getFeatureString(lp, PACKAGE_NAME, FEATURE_KEY, "")
+        val ctx = context ?: return
+        val json = ctx.featureString(FEATURE_KEY, "")
         userEngines.clear()
         userEngines += CustomSearchEngine.decode(json)
     }
@@ -73,92 +69,99 @@ object CustomSearchEngineHook : FeatureHook {
     // 注入“设置 → 搜索引擎”列表 + 处理自定义引擎选择
     // ---------------------------------------------------------------------
 
-    private fun hookListPreference() {
+    private fun hookListPreference(ctx: HookContext) {
         try {
-            XposedBridge.hookAllMethods(ListPreference::class.java, "setEntries", object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    try {
-                        val pref = param.thisObject as? ListPreference ?: return
-                        if (pref.key != ENGINE_PREF_KEY) return
-                        val original = param.args.getOrNull(0) as? Array<*> ?: return
+            Reflect.hookAllMethods(ctx.api, ListPreference::class.java, "setEntries") { chain ->
+                try {
+                    val pref = chain.getThisObject() as? ListPreference ?: return@hookAllMethods chain.proceed()
+                    if (pref.key != ENGINE_PREF_KEY) return@hookAllMethods chain.proceed()
+                    val original = chain.getArgs().getOrNull(0) as? Array<*> ?: return@hookAllMethods chain.proceed()
 
+                    refreshEngines()
+                    val engines = allEngines()
+                    if (engines.isEmpty()) return@hookAllMethods chain.proceed()
+
+                    val total = original.size + engines.size
+                    val newEntries = arrayOfNulls<CharSequence>(total)
+                    System.arraycopy(original, 0, newEntries, 0, original.size)
+                    engines.forEachIndexed { index, engine ->
+                        newEntries[original.size + index] = engine.name
+                    }
+                    val newArgs = chain.getArgs().toMutableList().apply { set(0, newEntries) }.toTypedArray()
+                    return@hookAllMethods chain.proceed(newArgs)
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "注入 setEntries 失败", e)
+                }
+                chain.proceed()
+            }
+
+            Reflect.hookAllMethods(ctx.api, ListPreference::class.java, "setEntryValues") { chain ->
+                // ---- before ----
+                var replacement: Array<CharSequence?>? = null
+                try {
+                    val pref = chain.getThisObject() as? ListPreference
+                    val original = chain.getArgs().getOrNull(0) as? Array<*>
+                    if (pref != null && pref.key == ENGINE_PREF_KEY && original != null) {
                         refreshEngines()
                         val engines = allEngines()
-                        if (engines.isEmpty()) return
-
-                        val total = original.size + engines.size
-                        val newEntries = arrayOfNulls<CharSequence>(total)
-                        System.arraycopy(original, 0, newEntries, 0, original.size)
-                        engines.forEachIndexed { index, engine ->
-                            newEntries[original.size + index] = engine.name
+                        if (engines.isNotEmpty()) {
+                            val total = original.size + engines.size
+                            val newValues = arrayOfNulls<CharSequence>(total)
+                            System.arraycopy(original, 0, newValues, 0, original.size)
+                            engines.forEachIndexed { index, engine ->
+                                newValues[original.size + index] = engine.id.toString()
+                            }
+                            replacement = newValues
                         }
-                        param.args[0] = newEntries
-                    } catch (e: Throwable) {
-                        Logger.e(TAG, "注入 setEntries 失败", e)
                     }
-                }
-            })
-
-            XposedBridge.hookAllMethods(ListPreference::class.java, "setEntryValues", object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    try {
-                        val pref = param.thisObject as? ListPreference ?: return
-                        if (pref.key != ENGINE_PREF_KEY) return
-                        val original = param.args.getOrNull(0) as? Array<*> ?: return
-
-                        refreshEngines()
-                        val engines = allEngines()
-                        if (engines.isEmpty()) return
-
-                        val total = original.size + engines.size
-                        val newValues = arrayOfNulls<CharSequence>(total)
-                        System.arraycopy(original, 0, newValues, 0, original.size)
-                        engines.forEachIndexed { index, engine ->
-                            newValues[original.size + index] = engine.id.toString()
-                        }
-                        param.args[0] = newValues
-                    } catch (e: Throwable) {
-                        Logger.e(TAG, "注入 setEntryValues 失败", e)
-                    }
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "注入 setEntryValues 失败", e)
                 }
 
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    try {
-                        val pref = param.thisObject as? ListPreference ?: return
-                        if (pref.key != ENGINE_PREF_KEY) return
-
-                        val selectedId = readSelectedEngineId() ?: return
-                        val engine = allEngines().firstOrNull { it.id == selectedId } ?: return
-                        pref.value = engine.id.toString()
-                        pref.summary = engine.name
-                    } catch (e: Throwable) {
-                        Logger.e(TAG, "恢复自定义引擎选中状态失败", e)
-                    }
+                val result = if (replacement != null) {
+                    val newArgs = chain.getArgs().toMutableList().apply { set(0, replacement) }.toTypedArray()
+                    chain.proceed(newArgs)
+                } else {
+                    chain.proceed()
                 }
-            })
+
+                // ---- after ----
+                try {
+                    val pref = chain.getThisObject() as? ListPreference ?: return@hookAllMethods result
+                    if (pref.key != ENGINE_PREF_KEY) return@hookAllMethods result
+
+                    val selectedId = readSelectedEngineId() ?: return@hookAllMethods result
+                    val engine = allEngines().firstOrNull { it.id == selectedId } ?: return@hookAllMethods result
+                    pref.value = engine.id.toString()
+                    pref.summary = engine.name
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "恢复自定义引擎选中状态失败", e)
+                }
+
+                return@hookAllMethods result
+            }
 
             // 用户点击自定义引擎时，拦截 Preference.callChangeListener：
             // 自己保存选择并返回 true，避免 Flyme 搜索内部只认识服务端引擎的
             // OnPreferenceChangeListener 拿到自定义 id 后 m14597R -> -1 导致崩溃。
-            XposedBridge.hookAllMethods(Preference::class.java, "callChangeListener", object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    try {
-                        val pref = param.thisObject as? ListPreference ?: return
-                        if (pref.key != ENGINE_PREF_KEY) return
+            Reflect.hookAllMethods(ctx.api, Preference::class.java, "callChangeListener") { chain ->
+                try {
+                    val pref = chain.getThisObject() as? ListPreference ?: return@hookAllMethods chain.proceed()
+                    if (pref.key != ENGINE_PREF_KEY) return@hookAllMethods chain.proceed()
 
-                        val newValue = param.args.getOrNull(0) as? String ?: return
-                        val id = newValue.toIntOrNull() ?: return
-                        val engine = allEngines().firstOrNull { it.id == id } ?: return
+                    val newValue = chain.getArgs().getOrNull(0) as? String ?: return@hookAllMethods chain.proceed()
+                    val id = newValue.toIntOrNull() ?: return@hookAllMethods chain.proceed()
+                    val engine = allEngines().firstOrNull { it.id == id } ?: return@hookAllMethods chain.proceed()
 
-                        saveSelectedEngine(newValue)
-                        pref.summary = engine.name
-                        // 跳过真正的 OnPreferenceChangeListener，同时让 ListPreference 认为修改被接受
-                        param.result = true
-                    } catch (e: Throwable) {
-                        Logger.e(TAG, "自定义引擎选择处理失败", e)
-                    }
+                    saveSelectedEngine(newValue)
+                    pref.summary = engine.name
+                    // 跳过真正的 OnPreferenceChangeListener，同时让 ListPreference 认为修改被接受
+                    return@hookAllMethods true
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "自定义引擎选择处理失败", e)
                 }
-            })
+                chain.proceed()
+            }
 
             Logger.i(TAG, "已挂载 ListPreference 注入与自定义引擎选择")
         } catch (e: Throwable) {
@@ -170,22 +173,22 @@ object CustomSearchEngineHook : FeatureHook {
     // 重写搜索 URL
     // ---------------------------------------------------------------------
 
-    private fun hookWebView() {
+    private fun hookWebView(ctx: HookContext) {
         try {
-            val hook = object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    try {
-                        val url = param.args.getOrNull(0) as? String ?: return
-                        rewriteSearchUrl(url)?.let { newUrl ->
-                            param.args[0] = newUrl
-                        }
-                    } catch (e: Throwable) {
-                        Logger.e(TAG, "WebView.loadUrl 重写异常", e)
+            val hook: (Chain) -> Any? = hook@ { chain ->
+                try {
+                    val url = chain.getArgs().getOrNull(0) as? String ?: return@hook chain.proceed()
+                    rewriteSearchUrl(url)?.let { newUrl ->
+                        val newArgs = chain.getArgs().toMutableList().apply { set(0, newUrl) }.toTypedArray()
+                        return@hook chain.proceed(newArgs)
                     }
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "WebView.loadUrl 重写异常", e)
                 }
+                chain.proceed()
             }
 
-            XposedBridge.hookAllMethods(WebView::class.java, "loadUrl", hook)
+            Reflect.hookAllMethods(ctx.api, WebView::class.java, "loadUrl") { chain -> hook(chain) }
 
             Logger.i(TAG, "已挂载 WebView.loadUrl")
         } catch (e: Throwable) {
@@ -193,22 +196,21 @@ object CustomSearchEngineHook : FeatureHook {
         }
     }
 
-    private fun hookStartActivity() {
+    private fun hookStartActivity(ctx: HookContext) {
         try {
-            val hook = object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    try {
-                        val intent = param.args.getOrNull(0) as? Intent ?: return
-                        if (intent.action != Intent.ACTION_VIEW) return
-                        val url = intent.data?.toString() ?: return
-                        rewriteSearchUrl(url)?.let { newUrl ->
-                            intent.data = Uri.parse(newUrl)
-                            Logger.i(TAG, "已重写外部浏览器搜索 URL -> $newUrl")
-                        }
-                    } catch (e: Throwable) {
-                        Logger.e(TAG, "startActivity 重写异常", e)
+            val hook: (Chain) -> Any? = hook@ { chain ->
+                try {
+                    val intent = chain.getArgs().getOrNull(0) as? Intent ?: return@hook chain.proceed()
+                    if (intent.action != Intent.ACTION_VIEW) return@hook chain.proceed()
+                    val url = intent.data?.toString() ?: return@hook chain.proceed()
+                    rewriteSearchUrl(url)?.let { newUrl ->
+                        intent.data = Uri.parse(newUrl)
+                        Logger.i(TAG, "已重写外部浏览器搜索 URL -> $newUrl")
                     }
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "startActivity 重写异常", e)
                 }
+                chain.proceed()
             }
 
             for (method in ContextWrapper::class.java.declaredMethods) {
@@ -218,7 +220,7 @@ object CustomSearchEngineHook : FeatureHook {
                         (paramCount == 2 && method.parameterTypes[0] == Intent::class.java &&
                             method.parameterTypes[1] == android.os.Bundle::class.java)
                     ) {
-                        XposedBridge.hookMethod(method, hook)
+                        Reflect.hookMethod(ctx.api, method, hook)
                     }
                 }
             }
@@ -230,7 +232,7 @@ object CustomSearchEngineHook : FeatureHook {
                         (paramCount == 2 && method.parameterTypes[0] == Intent::class.java &&
                             method.parameterTypes[1] == android.os.Bundle::class.java)
                     ) {
-                        XposedBridge.hookMethod(method, hook)
+                        Reflect.hookMethod(ctx.api, method, hook)
                     }
                 }
             }
@@ -289,14 +291,14 @@ object CustomSearchEngineHook : FeatureHook {
      * 只有用户手动选择过引擎（user_set_engine=true）才读取 key_search_engine。
      */
     private fun readSelectedEngineId(): Int? {
-        val cl = classLoader ?: return null
+        val ctx = context ?: return null
         return try {
-            val mmkv = getSearchPreferencesMmkv(cl) ?: return null
-            val userSet = XposedHelpers.callMethod(mmkv, "getBoolean", USER_SET_ENGINE_KEY, false) as? Boolean
+            val mmkv = getSearchPreferencesMmkv(ctx.classLoader) ?: return null
+            val userSet = Reflect.callMethod(ctx.api, mmkv, "getBoolean", USER_SET_ENGINE_KEY, false) as? Boolean
                 ?: return null
             if (!userSet) return null
 
-            val idStr = XposedHelpers.callMethod(mmkv, "getString", KEY_SEARCH_ENGINE_KEY, "") as? String
+            val idStr = Reflect.callMethod(ctx.api, mmkv, "getString", KEY_SEARCH_ENGINE_KEY, "") as? String
                 ?: return null
             idStr.toIntOrNull()
         } catch (_: Throwable) {
@@ -305,11 +307,11 @@ object CustomSearchEngineHook : FeatureHook {
     }
 
     private fun saveSelectedEngine(idStr: String) {
-        val cl = classLoader ?: return
+        val ctx = context ?: return
         try {
-            val mmkv = getSearchPreferencesMmkv(cl) ?: return
-            XposedHelpers.callMethod(mmkv, "putBoolean", USER_SET_ENGINE_KEY, true)
-            XposedHelpers.callMethod(mmkv, "putString", KEY_SEARCH_ENGINE_KEY, idStr)
+            val mmkv = getSearchPreferencesMmkv(ctx.classLoader) ?: return
+            Reflect.callMethod(ctx.api, mmkv, "putBoolean", USER_SET_ENGINE_KEY, true)
+            Reflect.callMethod(ctx.api, mmkv, "putString", KEY_SEARCH_ENGINE_KEY, idStr)
             Logger.i(TAG, "已保存自定义搜索引擎选择: $idStr")
         } catch (e: Throwable) {
             Logger.e(TAG, "保存自定义搜索引擎选择失败", e)
@@ -318,7 +320,7 @@ object CustomSearchEngineHook : FeatureHook {
 
     private fun getSearchPreferencesMmkv(classLoader: ClassLoader): Any? {
         return try {
-            val mmkvClass = XposedHelpers.findClass("com.tencent.mmkv.MMKV", classLoader)
+            val mmkvClass = Reflect.findClass("com.tencent.mmkv.MMKV", classLoader)
             val factory = mmkvClass.declaredMethods.firstOrNull { method ->
                 Modifier.isStatic(method.modifiers) &&
                     method.parameterTypes.size == 2 &&

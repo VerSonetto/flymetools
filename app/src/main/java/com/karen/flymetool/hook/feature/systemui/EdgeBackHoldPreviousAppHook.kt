@@ -15,12 +15,10 @@ import android.os.Vibrator
 import android.view.MotionEvent
 import android.view.View
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.Reflect
+import io.github.libxposed.api.XposedInterface
 import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
@@ -78,7 +76,13 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
     private var iconSizeDp: Int = ICON_SIZE_DP_DEFAULT
     private var prefsCachedAt = 0L
     private var prefsPackage: String = "com.android.systemui"
-    private var loadParam: XC_LoadPackage.LoadPackageParam? = null
+    private var loadParam: HookContext? = null
+
+    /** 供属性 Runnable（holdReadyRunnable）在运行期取框架接口 */
+    @Volatile
+    private var loadedApi: XposedInterface? = null
+
+    private fun requireApi(): XposedInterface = checkNotNull(loadedApi)
 
     @Volatile
     private var armedAtElapsed: Long = 0L
@@ -118,8 +122,8 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         if (held < holdMs) return@Runnable
         val view = edgeViewRef?.get()
         // 必须幅度够（mTriggerBack）才展示预览，与松手判定一致
-        if (view == null || !isTriggerBack(view)) return@Runnable
-        preparePreviewIcon(view.context)
+        if (view == null || !isTriggerBack(requireApi(), view)) return@Runnable
+        preparePreviewIcon(requireApi(), view.context)
         showPreview = previewIcon != null && previewTaskId > 0
         Logger.d(TAG) {
             "长按就绪 show=$showPreview task=$previewTaskId pkg=$previewPkg"
@@ -130,15 +134,16 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         }
     }
 
-    private fun resolveContext(): Context? {
+    private fun resolveContext(api: XposedInterface): Context? {
         edgeViewRef?.get()?.context?.let {
             appContext = it.applicationContext ?: it
             return it
         }
         if (appContext != null) return appContext
         return try {
-            val app = XposedHelpers.callStaticMethod(
-                XposedHelpers.findClass("android.app.ActivityThread", classLoader),
+            val app = Reflect.callStaticMethod(
+                api,
+                Reflect.findClass("android.app.ActivityThread", classLoader),
                 "currentApplication"
             ) as? Context
             appContext = app
@@ -173,21 +178,21 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         prefsCachedAt = now
         val lp = loadParam
         holdMs = if (lp != null) {
-            XposedPrefs.getFeatureValue(lp, prefsPackage, FEATURE_KEY, DEFAULT_HOLD_MS)
+            lp.featureValue(FEATURE_KEY, DEFAULT_HOLD_MS)
                 .coerceIn(300, 2000)
         } else {
             DEFAULT_HOLD_MS
         }.toLong()
         thresholdDp = if (lp != null) {
-            XposedPrefs.getFeatureExtraValue(
-                lp, prefsPackage, FEATURE_KEY, "threshold_dp", DEFAULT_THRESHOLD_DP
+            lp.featureExtraValue(
+                FEATURE_KEY, "threshold_dp", DEFAULT_THRESHOLD_DP
             ).coerceIn(THRESHOLD_UI_MIN, THRESHOLD_UI_MAX)
         } else {
             DEFAULT_THRESHOLD_DP
         }
         iconSizeDp = if (lp != null) {
-            XposedPrefs.getFeatureExtraValue(
-                lp, prefsPackage, FEATURE_KEY, "icon_size_dp", ICON_SIZE_DP_DEFAULT
+            lp.featureExtraValue(
+                FEATURE_KEY, "icon_size_dp", ICON_SIZE_DP_DEFAULT
             ).coerceIn(ICON_SIZE_DP_MIN, ICON_SIZE_DP_MAX)
         } else {
             ICON_SIZE_DP_DEFAULT
@@ -212,26 +217,28 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         }
     }
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
-        if (lpparam.packageName != "com.android.systemui") return
-        classLoader = lpparam.classLoader
-        prefsPackage = packageName
-        loadParam = lpparam
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
+        if (ctx.packageName != "com.android.systemui") return
+        classLoader = ctx.classLoader
+        prefsPackage = ctx.packageName
+        loadParam = ctx
+        loadedApi = ctx.api
         refreshPrefsIfNeeded()
 
         try {
-            appContext = XposedHelpers.callStaticMethod(
-                XposedHelpers.findClass("android.app.ActivityThread", lpparam.classLoader),
+            appContext = Reflect.callStaticMethod(
+                ctx.api,
+                Reflect.findClass("android.app.ActivityThread", ctx.classLoader),
                 "currentApplication"
             ) as? Context
         } catch (_: Throwable) {
         }
 
         // Flyme 12 默认插件即 EdgeBackView（EdgeBackGestureHandler.onPluginDisconnected）
-        hookFlymeEdgeBackView(lpparam)
+        hookFlymeEdgeBackView(ctx)
         // 兜底：若插件路径未拦住，再拦 Handler 的 BackCallback.triggerBack
-        hookCallbackFromHandler(lpparam)
+        hookCallbackFromHandler(ctx)
 
         Logger.i(
             TAG,
@@ -240,155 +247,145 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         )
     }
 
-    private fun hookFlymeEdgeBackView(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookFlymeEdgeBackView(ctx: HookContext) {
         try {
-            val viewCl = XposedHelpers.findClass(EDGE_BACK_VIEW, lpparam.classLoader)
+            val viewCl = Reflect.findClass(EDGE_BACK_VIEW, ctx.classLoader)
 
-            for (ctor in viewCl.declaredConstructors) {
-                try {
-                    XposedBridge.hookMethod(ctor, object : XC_MethodHook() {
-                        override fun afterHookedMethod(param: MethodHookParam) {
-                            edgeViewRef = WeakReference(param.thisObject as View)
-                        }
-                    })
-                } catch (_: Throwable) {
-                }
+            Reflect.hookAllConstructors(ctx.api, viewCl) { chain ->
+                val result = chain.proceed()
+                edgeViewRef = WeakReference(chain.getThisObject() as View)
+                result
             }
 
             // DOWN：resetOnDown 后开表
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 viewCl,
                 "resetOnDown",
                 MotionEvent::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val view = param.thisObject as? View
-                        if (view != null) {
-                            edgeViewRef = WeakReference(view)
-                            appContext = view.context.applicationContext ?: view.context
-                        }
-                        startGestureTimer()
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+                val view = chain.getThisObject() as? View
+                if (view != null) {
+                    edgeViewRef = WeakReference(view)
+                    appContext = view.context.applicationContext ?: view.context
                 }
-            )
+                startGestureTimer()
+                result
+            }
 
             // MOVE：按配置幅度覆盖 mTriggerBack；幅度够则显示预览图标
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 viewCl,
                 "whetherTriggerBack",
                 MotionEvent::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val view = param.thisObject as View
-                            val event = param.args[0] as? MotionEvent ?: return
-                            edgeViewRef = WeakReference(view)
-                            appContext = view.context.applicationContext ?: view.context
-                            if (armedAtElapsed == 0L) {
-                                startGestureTimer()
-                            }
-                            refreshPrefsIfNeeded()
-                            // 系统 whetherTriggerBack 仍按 final 的 ~16dp 判定；此处按配置重算
-                            val trigger = overrideTriggerByConfig(view, event)
-                            val held = SystemClock.elapsedRealtime() - armedAtElapsed
-                            if (trigger && held >= holdMs) {
-                                if (!showPreview) {
-                                    preparePreviewIcon(view.context)
-                                    showPreview = previewIcon != null && previewTaskId > 0
-                                    if (showPreview) {
-                                        view.invalidate()
-                                        pulseInvalidate()
-                                    }
-                                }
-                            } else if (!trigger && showPreview) {
-                                showPreview = false
-                                previewIcon = null
-                                view.invalidate()
-                            }
-                        } catch (_: Throwable) {
-                        }
+            ) { chain ->
+                val result = chain.proceed()
+                try {
+                    val view = chain.getThisObject() as View
+                    val event = chain.getArg(0) as? MotionEvent ?: return@hookMethodOn result
+                    edgeViewRef = WeakReference(view)
+                    appContext = view.context.applicationContext ?: view.context
+                    if (armedAtElapsed == 0L) {
+                        startGestureTimer()
                     }
+                    refreshPrefsIfNeeded()
+                    // 系统 whetherTriggerBack 仍按 final 的 ~16dp 判定；此处按配置重算
+                    val trigger = overrideTriggerByConfig(ctx.api, view, event)
+                    val held = SystemClock.elapsedRealtime() - armedAtElapsed
+                    if (trigger && held >= holdMs) {
+                        if (!showPreview) {
+                            preparePreviewIcon(ctx.api, view.context)
+                            showPreview = previewIcon != null && previewTaskId > 0
+                            if (showPreview) {
+                                view.invalidate()
+                                pulseInvalidate()
+                            }
+                        }
+                    } else if (!trigger && showPreview) {
+                        showPreview = false
+                        previewIcon = null
+                        view.invalidate()
+                    }
+                    result
+                } catch (_: Throwable) {
+                    result
                 }
-            )
+            }
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 viewCl,
                 "onDraw",
                 Canvas::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        if (!showPreview) return
-                        val icon = previewIcon ?: return
-                        val view = param.thisObject as View
-                        val canvas = param.args[0] as? Canvas ?: return
-                        drawPreviewIcon(view, canvas, icon)
-                    }
-                }
-            )
+            ) { chain ->
+                val result = chain.proceed()
+                if (!showPreview) return@hookMethodOn result
+                val icon = previewIcon ?: return@hookMethodOn result
+                val view = chain.getThisObject() as View
+                val canvas = chain.getArg(0) as? Canvas ?: return@hookMethodOn result
+                drawPreviewIcon(ctx.api, view, canvas, icon)
+                result
+            }
 
             // UP 且 mTriggerBack：拦截系统返回，满足长按则切应用并走 cancelBack 收起
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 viewCl,
                 "triggerBack",
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        refreshPrefsIfNeeded()
-                        val view = param.thisObject as View
-                        val armed = armedAtElapsed
-                        val held = if (armed > 0L) SystemClock.elapsedRealtime() - armed else 0L
-                        val taskId = previewTaskId
-                        val shouldSwitch = held >= holdMs
-                        if (!shouldSwitch) {
-                            clearArmedState()
-                            return
-                        }
-                        val ok = if (taskId > 0) {
-                            startFromRecents(taskId)
-                        } else {
-                            switchToPreviousApp()
-                        }
-                        clearArmedState()
-                        if (!ok) return
-                        // 走 View.cancelBack 收起，不发返回键。
-                        switchingApp = true
-                        try {
-                            XposedHelpers.callMethod(view, "cancelBack")
-                        } catch (_: Throwable) {
-                            try {
-                                val cb = XposedHelpers.getObjectField(view, "mBackCallback")
-                                XposedHelpers.callMethod(cb, "cancelBack")
-                            } catch (_: Throwable) {
-                            }
-                            try {
-                                XposedHelpers.callMethod(view, "setVisibility", 8)
-                            } catch (_: Throwable) {
-                            }
-                        } finally {
-                            switchingApp = false
-                        }
-                        param.result = null
-                        vibrateConfirm()
-                        Logger.i(TAG, "EdgeBackView 长按 ${held}ms → 切换到上一个应用")
-                    }
+            ) { chain ->
+                refreshPrefsIfNeeded()
+                val view = chain.getThisObject() as View
+                val armed = armedAtElapsed
+                val held = if (armed > 0L) SystemClock.elapsedRealtime() - armed else 0L
+                val taskId = previewTaskId
+                val shouldSwitch = held >= holdMs
+                if (!shouldSwitch) {
+                    clearArmedState()
+                    return@hookMethodOn chain.proceed()
                 }
-            )
+                val ok = if (taskId > 0) {
+                    startFromRecents(ctx.api, taskId)
+                } else {
+                    switchToPreviousApp(ctx.api)
+                }
+                clearArmedState()
+                if (!ok) return@hookMethodOn chain.proceed()
+                // 走 View.cancelBack 收起，不发返回键。
+                switchingApp = true
+                try {
+                    Reflect.callMethod(ctx.api, view, "cancelBack")
+                } catch (_: Throwable) {
+                    try {
+                        val cb = Reflect.getObjectField(view, "mBackCallback")
+                        Reflect.callMethod(ctx.api, cb, "cancelBack")
+                    } catch (_: Throwable) {
+                    }
+                    try {
+                        Reflect.callMethod(ctx.api, view, "setVisibility", 8)
+                    } catch (_: Throwable) {
+                    }
+                } finally {
+                    switchingApp = false
+                }
+                vibrateConfirm()
+                Logger.i(TAG, "EdgeBackView 长按 ${held}ms → 切换到上一个应用")
+                null
+            }
 
             // 取消 / dismiss：清计时与预览，避免松手后仍弹出图标
             // switchingApp：triggerBack 内主动走 cancelBack 收起时跳过，避免竞态
             for (name in arrayOf("cancelBack", "dismiss")) {
                 try {
-                    XposedHelpers.findAndHookMethod(
-                        viewCl,
-                        name,
-                        object : XC_MethodHook() {
-                            override fun afterHookedMethod(param: MethodHookParam) {
-                                if (switchingApp) return
-                                if (armedAtElapsed > 0L || showPreview) {
-                                    clearArmedState()
-                                }
-                            }
+                    Reflect.hookMethodOn(ctx.api, viewCl, name) { chain ->
+                        val result = chain.proceed()
+                        if (switchingApp) return@hookMethodOn result
+                        if (armedAtElapsed > 0L || showPreview) {
+                            clearArmedState()
                         }
-                    )
+                        result
+                    }
                 } catch (t: Throwable) {
                     Logger.e(TAG, "挂载 $name 失败", t)
                 }
@@ -400,9 +397,9 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         }
     }
 
-    private fun isTriggerBack(view: View): Boolean {
+    private fun isTriggerBack(api: XposedInterface, view: View): Boolean {
         return try {
-            XposedHelpers.getBooleanField(view, "mTriggerBack")
+            Reflect.getBooleanField(view, "mTriggerBack")
         } catch (_: Throwable) {
             false
         }
@@ -436,28 +433,28 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
      * 画在灰色指示条鼓包内。
      * computePath：鼓包尖端偏移 ≈ interpolation(mScale) * mMaxHeight。
      */
-    private fun drawPreviewIcon(view: View, canvas: Canvas, icon: Drawable) {
+    private fun drawPreviewIcon(api: XposedInterface, view: View, canvas: Canvas, icon: Drawable) {
         try {
             val density = view.resources.displayMetrics.density
             refreshPrefsIfNeeded()
             val size = (iconSizeDp * density).toInt().coerceAtLeast(1)
             val centerY = try {
-                XposedHelpers.getFloatField(view, "mCenterY")
+                Reflect.getFloatField(view, "mCenterY")
             } catch (_: Throwable) {
                 view.height / 2f
             }
             val isLeft = try {
-                XposedHelpers.getBooleanField(view, "mIsLeftPanel")
+                Reflect.getBooleanField(view, "mIsLeftPanel")
             } catch (_: Throwable) {
                 true
             }
             val maxH = try {
-                XposedHelpers.getFloatField(view, "mMaxHeight")
+                Reflect.getFloatField(view, "mMaxHeight")
             } catch (_: Throwable) {
                 36f * density
             }
             val scale = try {
-                XposedHelpers.getFloatField(view, "mScale").coerceIn(0.15f, 1f)
+                Reflect.getFloatField(view, "mScale").coerceIn(0.15f, 1f)
             } catch (_: Throwable) {
                 0.5f
             }
@@ -466,8 +463,8 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                 (bulge * 0.45f).coerceAtLeast(size / 2f + 4f * density)
             } else {
                 val w = try {
-                    val lp = XposedHelpers.getObjectField(view, "mLayoutParams")
-                    XposedHelpers.getIntField(lp, "width").toFloat()
+                    val lp = Reflect.getObjectField(view, "mLayoutParams")
+                    Reflect.getIntField(lp!!, "width").toFloat()
                 } catch (_: Throwable) {
                     view.width.toFloat()
                 }
@@ -487,20 +484,20 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
     }
 
     /** 预加载上一任务图标与 taskId */
-    private fun preparePreviewIcon(hint: Context?) {
+    private fun preparePreviewIcon(api: XposedInterface, hint: Context?) {
         try {
-            val ctx = hint ?: resolveContext() ?: run {
+            val ctx = hint ?: resolveContext(api) ?: run {
                 Logger.d(TAG) { "preparePreview: 无 context" }
                 return
             }
             appContext = ctx.applicationContext ?: ctx
-            val target = findPreviousTask() ?: run {
+            val target = findPreviousTask(api) ?: run {
                 Logger.d(TAG) { "preparePreview: 无目标任务" }
                 return
             }
-            previewTaskId = getTaskId(target)
+            previewTaskId = getTaskId(api, target)
             if (previewTaskId <= 0) return
-            val pkg = resolveTaskPackage(target)
+            val pkg = resolveTaskPackage(api, target)
             previewPkg = pkg
             if (pkg.isNullOrEmpty()) {
                 Logger.d(TAG) { "preparePreview: 任务 $previewTaskId 无包名" }
@@ -519,16 +516,16 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         }
     }
 
-    private fun resolveTaskPackage(task: Any): String? {
+    private fun resolveTaskPackage(api: XposedInterface, task: Any): String? {
         try {
-            val intent = XposedHelpers.getObjectField(task, "baseIntent") as? Intent
+            val intent = Reflect.getObjectField(task, "baseIntent") as? Intent
             val pkg = intent?.component?.packageName ?: intent?.`package`
             if (!pkg.isNullOrEmpty()) return pkg
         } catch (_: Throwable) {
         }
         for (field in arrayOf("topActivity", "realActivity", "baseActivity", "origActivity")) {
             try {
-                val comp = XposedHelpers.getObjectField(task, field) as? ComponentName
+                val comp = Reflect.getObjectField(task, field) as? ComponentName
                 val pkg = comp?.packageName
                 if (!pkg.isNullOrEmpty()) return pkg
             } catch (_: Throwable) {
@@ -538,50 +535,43 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
     }
 
     /** 兜底挂载 EdgeBackGestureHandler.mBackCallback.triggerBack，防插件替换或漏挂。 */
-    private fun hookCallbackFromHandler(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookCallbackFromHandler(ctx: HookContext) {
         try {
-            val handlerCl = XposedHelpers.findClass(HANDLER, lpparam.classLoader)
-            val afterCtor = object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (!callbackHooked.compareAndSet(false, true)) return
-                    try {
-                        val cb = XposedHelpers.getObjectField(param.thisObject, "mBackCallback")
-                            ?: return
-                        val m = cb.javaClass.getDeclaredMethod("triggerBack")
-                        XposedBridge.hookMethod(m, object : XC_MethodHook() {
-                            override fun beforeHookedMethod(p: MethodHookParam) {
-                                refreshPrefsIfNeeded()
-                                val armed = armedAtElapsed
-                                val held =
-                                    if (armed > 0L) SystemClock.elapsedRealtime() - armed else 0L
-                                val taskId = previewTaskId
-                                if (held < holdMs) {
-                                    clearArmedState()
-                                    return
-                                }
-                                val ok = if (taskId > 0) {
-                                    startFromRecents(taskId)
-                                } else {
-                                    switchToPreviousApp()
-                                }
-                                clearArmedState()
-                                if (!ok) return
-                                p.result = null
-                                vibrateConfirm()
-                                Logger.i(TAG, "callback 长按 ${held}ms → 切换到上一个应用")
-                            }
-                        })
-                        Logger.i(TAG, "已挂载 callback ${cb.javaClass.name}")
-                    } catch (t: Throwable) {
-                        callbackHooked.set(false)
-                        Logger.e(TAG, "挂载 callback 失败", t)
-                    }
-                }
-            }
-            for (ctor in handlerCl.declaredConstructors) {
+            val handlerCl = Reflect.findClass(HANDLER, ctx.classLoader)
+            Reflect.hookAllConstructors(ctx.api, handlerCl) { chain ->
+                val result = chain.proceed()
+                if (!callbackHooked.compareAndSet(false, true)) return@hookAllConstructors result
                 try {
-                    XposedBridge.hookMethod(ctor, afterCtor)
-                } catch (_: Throwable) {
+                    val cb = Reflect.getObjectField(chain.getThisObject(), "mBackCallback")
+                        ?: return@hookAllConstructors result
+                    val m = cb.javaClass.getDeclaredMethod("triggerBack")
+                    Reflect.hookMethod(ctx.api, m) { p ->
+                        refreshPrefsIfNeeded()
+                        val armed = armedAtElapsed
+                        val held =
+                            if (armed > 0L) SystemClock.elapsedRealtime() - armed else 0L
+                        val taskId = previewTaskId
+                        if (held < holdMs) {
+                            clearArmedState()
+                            return@hookMethod p.proceed()
+                        }
+                        val ok = if (taskId > 0) {
+                            startFromRecents(ctx.api, taskId)
+                        } else {
+                            switchToPreviousApp(ctx.api)
+                        }
+                        clearArmedState()
+                        if (!ok) return@hookMethod p.proceed()
+                        vibrateConfirm()
+                        Logger.i(TAG, "callback 长按 ${held}ms → 切换到上一个应用")
+                        null
+                    }
+                    Logger.i(TAG, "已挂载 callback ${cb.javaClass.name}")
+                    result
+                } catch (t: Throwable) {
+                    callbackHooked.set(false)
+                    Logger.e(TAG, "挂载 callback 失败", t)
+                    result
                 }
             }
         } catch (e: Throwable) {
@@ -609,7 +599,7 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
      * mSwipeThreshold/mMinDeltaForSwitch 为 final，不能依赖改字段；只覆写非 final 的 mTriggerBack。
      * 位移仍用系统已更新的 mStartX / mTotalTouchDelta（与 getX 一致）。
      */
-    private fun overrideTriggerByConfig(view: View, event: MotionEvent): Boolean {
+    private fun overrideTriggerByConfig(api: XposedInterface, view: View, event: MotionEvent): Boolean {
         refreshPrefsIfNeeded()
         val density = view.resources.displayMetrics.density
         val effDp = effectiveThresholdDp(thresholdDp)
@@ -619,13 +609,13 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
             .coerceAtLeast(SYSTEM_MIN_DELTA_DP * density * 0.75f)
 
         val startX = try {
-            XposedHelpers.getFloatField(view, "mStartX")
+            Reflect.getFloatField(view, "mStartX")
         } catch (_: Throwable) {
             event.x
         }
         val absTravel = abs(event.x - startX)
         val totalDelta = try {
-            XposedHelpers.getFloatField(view, "mTotalTouchDelta")
+            Reflect.getFloatField(view, "mTotalTouchDelta")
         } catch (_: Throwable) {
             absTravel
         }
@@ -641,10 +631,10 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         }
 
         try {
-            XposedHelpers.setBooleanField(view, "mTriggerBack", trigger)
+            Reflect.setBooleanField(view, "mTriggerBack", trigger)
         } catch (t: Throwable) {
             Logger.e(TAG, "写入 mTriggerBack 失败", t)
-            return isTriggerBack(view)
+            return isTriggerBack(api, view)
         }
         Logger.d(TAG) {
             "trigger=$trigger abs=${"%.1f".format(absTravel)}px " +
@@ -654,12 +644,12 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         return trigger
     }
 
-    private fun switchToPreviousApp(): Boolean {
+    private fun switchToPreviousApp(api: XposedInterface): Boolean {
         return try {
-            val previous = findPreviousTask() ?: return false
-            val previousId = getTaskId(previous)
+            val previous = findPreviousTask(api) ?: return false
+            val previousId = getTaskId(api, previous)
             if (previousId <= 0) return false
-            startFromRecents(previousId)
+            startFromRecents(api, previousId)
         } catch (t: Throwable) {
             Logger.e(TAG, "switchToPreviousApp 失败", t)
             false
@@ -667,26 +657,26 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
     }
 
     /** 从最近任务里找「当前之外」的第一个可切换应用任务 */
-    private fun findPreviousTask(): Any? {
-        val tasks = getRecentTasks(12)
+    private fun findPreviousTask(api: XposedInterface): Any? {
+        val tasks = getRecentTasks(api, 12)
         if (tasks.isEmpty()) return null
-        val currentId = getRunningTaskId()
+        val currentId = getRunningTaskId(api)
         for (task in tasks) {
-            val id = getTaskId(task)
+            val id = getTaskId(api, task)
             if (id <= 0) continue
             if (currentId > 0 && id == currentId) continue
-            if (shouldSkipTask(task)) continue
+            if (shouldSkipTask(api, task)) continue
             return task
         }
         return null
     }
 
-    private fun shouldSkipTask(task: Any): Boolean {
-        val pkg = resolveTaskPackage(task) ?: return true
+    private fun shouldSkipTask(api: XposedInterface, task: Any): Boolean {
+        val pkg = resolveTaskPackage(api, task) ?: return true
         if (pkg in SKIP_PACKAGES) return true
         // 排除 FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
         try {
-            val intent = XposedHelpers.getObjectField(task, "baseIntent") as? Intent
+            val intent = Reflect.getObjectField(task, "baseIntent") as? Intent
             val flags = intent?.flags ?: 0
             if (flags and Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS != 0) return true
         } catch (_: Throwable) {
@@ -694,13 +684,14 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         return false
     }
 
-    private fun getRecentTasks(max: Int): List<Any> {
+    private fun getRecentTasks(api: XposedInterface, max: Int): List<Any> {
         val cl = classLoader ?: return emptyList()
         try {
-            val atmCl = XposedHelpers.findClass("android.app.ActivityTaskManager", cl)
-            val atm = XposedHelpers.callStaticMethod(atmCl, "getInstance")
+            val atmCl = Reflect.findClass("android.app.ActivityTaskManager", cl)
+            val atm = Reflect.callStaticMethod(api, atmCl, "getInstance")
             val userId = try {
-                XposedHelpers.callStaticMethod(
+                Reflect.callStaticMethod(
+                    api,
                     ActivityManager::class.java,
                     "getCurrentUser"
                 ) as Int
@@ -708,13 +699,13 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
                 0
             }
             val list = try {
-                XposedHelpers.callMethod(
-                    atm, "getRecentTasks", max, RECENT_IGNORE_UNAVAILABLE, userId
+                Reflect.callMethod(
+                    api, atm, "getRecentTasks", max, RECENT_IGNORE_UNAVAILABLE, userId
                 ) as? List<*>
             } catch (_: Throwable) {
                 try {
-                    XposedHelpers.callMethod(
-                        atm, "getRecentTasks", max, RECENT_IGNORE_UNAVAILABLE
+                    Reflect.callMethod(
+                        api, atm, "getRecentTasks", max, RECENT_IGNORE_UNAVAILABLE
                     ) as? List<*>
                 } catch (_: Throwable) {
                     null
@@ -734,29 +725,29 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         return emptyList()
     }
 
-    private fun getTaskId(task: Any): Int {
+    private fun getTaskId(api: XposedInterface, task: Any): Int {
         return try {
-            XposedHelpers.getIntField(task, "taskId")
+            Reflect.getIntField(task, "taskId")
         } catch (_: Throwable) {
             try {
-                XposedHelpers.getIntField(task, "persistentId")
+                Reflect.getIntField(task, "persistentId")
             } catch (_: Throwable) {
                 -1
             }
         }
     }
 
-    private fun getRunningTaskId(): Int {
+    private fun getRunningTaskId(api: XposedInterface): Int {
         return try {
             val cl = classLoader ?: return -1
-            val wrapperCl = XposedHelpers.findClass(
+            val wrapperCl = Reflect.findClass(
                 "com.android.systemui.shared.system.ActivityManagerWrapper",
                 cl
             )
-            val inst = XposedHelpers.callStaticMethod(wrapperCl, "getInstance")
+            val inst = Reflect.callStaticMethod(api, wrapperCl, "getInstance")
             // Flyme 走 getRunningTaskInfoListMz / WindowManagerExt.getFilteredTasks
-            val task = XposedHelpers.callMethod(inst, "getRunningTask") ?: return -1
-            XposedHelpers.getIntField(task, "taskId")
+            val task = Reflect.callMethod(api, inst, "getRunningTask") ?: return -1
+            Reflect.getIntField(task, "taskId")
         } catch (_: Throwable) {
             try {
                 val ctx = appContext ?: return -1
@@ -771,12 +762,13 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         }
     }
 
-    private fun startFromRecents(taskId: Int): Boolean {
+    private fun startFromRecents(api: XposedInterface, taskId: Int): Boolean {
         val cl = classLoader ?: return false
         return try {
-            val atmCl = XposedHelpers.findClass("android.app.ActivityTaskManager", cl)
-            val service = XposedHelpers.callStaticMethod(atmCl, "getService")
-            XposedHelpers.callMethod(
+            val atmCl = Reflect.findClass("android.app.ActivityTaskManager", cl)
+            val service = Reflect.callStaticMethod(api, atmCl, "getService")
+            Reflect.callMethod(
+                api,
                 service,
                 "startActivityFromRecents",
                 taskId,
@@ -786,11 +778,12 @@ object EdgeBackHoldPreviousAppHook : FeatureHook {
         } catch (t: Throwable) {
             Logger.e(TAG, "startActivityFromRecents 失败", t)
             try {
-                val service = XposedHelpers.callStaticMethod(
+                val service = Reflect.callStaticMethod(
+                    api,
                     ActivityManager::class.java,
                     "getService"
                 )
-                XposedHelpers.callMethod(service, "moveTaskToFront", taskId, 0)
+                Reflect.callMethod(api, service, "moveTaskToFront", taskId, 0)
                 true
             } catch (t2: Throwable) {
                 Logger.e(TAG, "moveTaskToFront 失败", t2)

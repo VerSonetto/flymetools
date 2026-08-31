@@ -5,13 +5,12 @@ import android.graphics.drawable.Icon
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.util.FlymeVersionUtils
+import io.github.libxposed.api.XposedInterface
 
 object ForceLiveNotificationHook : FeatureHook {
 
@@ -19,22 +18,22 @@ object ForceLiveNotificationHook : FeatureHook {
     private val iconColorCache = mutableMapOf<String, Int>()
     private var systemColor = -1
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
+    override fun handle(ctx: HookContext) {
         if (!FlymeVersionUtils.isFlyme12()) return
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "force_live_notification")) return
+        if (!ctx.featureEnabled("force_live_notification")) return
 
-        val targetApps = XposedPrefs.getFeatureStringSet(
-            lpparam, packageName, "force_live_notification", emptySet()
+        val targetApps = ctx.featureStringSet(
+            "force_live_notification", emptySet()
         )
         if (targetApps.isEmpty()) return
 
         try {
-            hookStatusBarNotification(lpparam, targetApps)
-            hookNotificationEntry(lpparam, targetApps)
-            hookNotificationRowDismiss(lpparam, targetApps)
-            hookLiveNotificationController(lpparam)
-            hookTickerController(lpparam, targetApps)
-            revertLiveCardStyling(lpparam, targetApps)
+            hookStatusBarNotification(ctx, targetApps)
+            hookNotificationEntry(ctx, targetApps)
+            hookNotificationRowDismiss(ctx, targetApps)
+            hookLiveNotificationController(ctx)
+            hookTickerController(ctx, targetApps)
+            revertLiveCardStyling(ctx, targetApps)
             Logger.i(TAG, "已强制灵动通知: $targetApps")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载失败", e)
@@ -50,97 +49,92 @@ object ForceLiveNotificationHook : FeatureHook {
      * 这里执行完后把实况通知加的样式退掉，让通知保持标准卡片样式。
      */
     private fun revertLiveCardStyling(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         targetApps: Set<String>
     ) {
-        val ncvClass = XposedHelpers.findClass(
+        val ncvClass = Reflect.findClass(
             "com.android.systemui.statusbar.notification.row.NotificationContentView",
-            lpparam.classLoader
+            ctx.classLoader
         )
-        val sbnClass = XposedHelpers.findClass(
-            "android.service.notification.StatusBarNotification", lpparam.classLoader
+        val sbnClass = Reflect.findClass(
+            "android.service.notification.StatusBarNotification", ctx.classLoader
         )
 
-        XposedHelpers.findAndHookMethod(
-            ncvClass, "buildContentContainer", View::class.java, sbnClass,
-            object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val sbn = param.args[1]
-                    val pkg = XposedHelpers.callMethod(sbn, "getPackageName") as? String ?: return
-                    if (pkg !in targetApps) return
+        Reflect.hookMethodOn(
+            ctx.api, ncvClass, "buildContentContainer", View::class.java, sbnClass,
+        ) { chain ->
+            val result = chain.proceed()
+            val sbn = chain.getArg(1)
+            val pkg = Reflect.callMethod(ctx.api, sbn, "getPackageName") as? String ?: return@hookMethodOn result
+            if (pkg !in targetApps) return@hookMethodOn result
 
-                    val view = param.result as? View ?: return
-                    view.setClipToOutline(false)
-                    val lp = view.layoutParams as? ViewGroup.MarginLayoutParams ?: return
-                    lp.setMargins(0, 0, 0, 0)
-                    view.layoutParams = lp
-                }
-            }
-        )
+            val view = result as? View ?: return@hookMethodOn result
+            view.setClipToOutline(false)
+            val lp = view.layoutParams as? ViewGroup.MarginLayoutParams ?: return@hookMethodOn result
+            lp.setMargins(0, 0, 0, 0)
+            view.layoutParams = lp
+            result
+        }
     }
 
-    private fun hookLiveNotificationController(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookLiveNotificationController(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(
+            val clazz = Reflect.findClass(
                 "com.flyme.statusbar.livenotification.LiveNotificationController",
-                lpparam.classLoader
+                ctx.classLoader
             )
-            XposedHelpers.findAndHookMethod(clazz, "onDarkChanged",
-                java.util.ArrayList::class.java, Float::class.javaPrimitiveType, Int::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val ctrl = param.thisObject
-                        val c = XposedHelpers.getIntField(ctrl, "mSystemColor")
-                        if (c == 0) return
-                        systemColor = c or -0x1000000
-                        // onDarkChanged 只在 mLyricsInofo != null 时才调 updateStatusBarIcons，
-                        // 对于普通通知胶囊，颜色不会刷新，需要手动触发
-                        XposedHelpers.callMethod(ctrl, "updateStatusBarIcons", false)
-                    }
-                }
-            )
+            Reflect.hookMethodOn(ctx.api, clazz, "onDarkChanged",
+                java.util.ArrayList::class.java, Float::class.javaPrimitiveType!!, Int::class.javaPrimitiveType!!,
+            ) { chain ->
+                val result = chain.proceed()
+                val ctrl = chain.getThisObject()
+                val c = Reflect.getIntField(ctrl, "mSystemColor")
+                if (c == 0) return@hookMethodOn result
+                systemColor = c or -0x1000000
+                // onDarkChanged 只在 mLyricsInofo != null 时才调 updateStatusBarIcons，
+                // 对于普通通知胶囊，颜色不会刷新，需要手动触发
+                Reflect.callMethod(ctx.api, ctrl, "updateStatusBarIcons", false)
+                result
+            }
         } catch (_: Throwable) { }
     }
 
     private fun hookTickerController(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         targetApps: Set<String>
     ) {
         try {
-            val clazz = XposedHelpers.findClass(
+            val clazz = Reflect.findClass(
                 "com.flyme.systemui.statusbar.ticker.NotificationTickController",
-                lpparam.classLoader
+                ctx.classLoader
             )
-            val entryClass = XposedHelpers.findClass(
+            val entryClass = Reflect.findClass(
                 "com.android.systemui.statusbar.notification.collection.NotificationEntry",
-                lpparam.classLoader
+                ctx.classLoader
             )
-            XposedHelpers.findAndHookMethod(clazz, "tick", entryClass, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val entry = param.args[0] ?: return
-                    val sbn = XposedHelpers.callMethod(entry, "getSbn") ?: return
-                    val pkg = XposedHelpers.callMethod(sbn, "getPackageName") as? String ?: return
-                    if (pkg in targetApps) param.result = null
-                }
-            })
-            XposedHelpers.findAndHookMethod(clazz, "updateNotificationTicker", entryClass, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val entry = param.args[0] ?: return
-                    val sbn = XposedHelpers.callMethod(entry, "getSbn") ?: return
-                    val pkg = XposedHelpers.callMethod(sbn, "getPackageName") as? String ?: return
-                    if (pkg in targetApps) param.result = false
-                }
-            })
+            Reflect.hookMethodOn(ctx.api, clazz, "tick", entryClass) { chain ->
+                val entry = chain.getArg(0) ?: return@hookMethodOn chain.proceed()
+                val sbn = Reflect.callMethod(ctx.api, entry, "getSbn") ?: return@hookMethodOn chain.proceed()
+                val pkg = Reflect.callMethod(ctx.api, sbn, "getPackageName") as? String ?: return@hookMethodOn chain.proceed()
+                if (pkg in targetApps) null else chain.proceed()
+            }
+            Reflect.hookMethodOn(ctx.api, clazz, "updateNotificationTicker", entryClass) { chain ->
+                val entry = chain.getArg(0) ?: return@hookMethodOn chain.proceed()
+                val sbn = Reflect.callMethod(ctx.api, entry, "getSbn") ?: return@hookMethodOn chain.proceed()
+                val pkg = Reflect.callMethod(ctx.api, sbn, "getPackageName") as? String ?: return@hookMethodOn chain.proceed()
+                if (pkg in targetApps) false else chain.proceed()
+            }
             Logger.i(TAG, "已挂载 NotificationTickController 的 Ticker Hook")
         } catch (e: Throwable) {
             Logger.e(TAG, "Ticker Hook 挂载失败", e)
         }
     }
 
-    private fun loadAppIconBitmap(pkg: String): android.graphics.Bitmap? {
+    private fun loadAppIconBitmap(api: XposedInterface, pkg: String): android.graphics.Bitmap? {
         return try {
-            val app = XposedHelpers.callStaticMethod(
-                XposedHelpers.findClass("android.app.ActivityThread", null),
+            val app = Reflect.callStaticMethod(
+                api,
+                Reflect.findClass("android.app.ActivityThread", null),
                 "currentApplication"
             ) as? android.app.Application ?: return null
             val drawable = app.packageManager.getApplicationIcon(pkg)
@@ -183,146 +177,137 @@ object ForceLiveNotificationHook : FeatureHook {
     }
 
     private fun hookStatusBarNotification(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         targetApps: Set<String>
     ) {
-        val sbnClass = XposedHelpers.findClass(
-            "android.service.notification.StatusBarNotification", lpparam.classLoader
+        val sbnClass = Reflect.findClass(
+            "android.service.notification.StatusBarNotification", ctx.classLoader
         )
 
-        XposedHelpers.findAndHookMethod(sbnClass, "isLive", object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                if (param.result == true) return
-                val sbn = param.thisObject
-                val pkg = XposedHelpers.callMethod(sbn, "getPackageName") as? String ?: return
-                if (pkg in targetApps) param.result = true
+        Reflect.hookMethodOn(ctx.api, sbnClass, "isLive") { chain ->
+            val result = chain.proceed()
+            if (result == true) return@hookMethodOn result
+            val sbn = chain.getThisObject()
+            val pkg = Reflect.callMethod(ctx.api, sbn, "getPackageName") as? String ?: return@hookMethodOn result
+            if (pkg in targetApps) true else result
+        }
+
+        Reflect.hookMethodOn(ctx.api, sbnClass, "getCapsuleStatus") { chain ->
+            val result = chain.proceed()
+            if ((result as? Int) == 1) return@hookMethodOn result
+            val sbn = chain.getThisObject()
+            val pkg = Reflect.callMethod(ctx.api, sbn, "getPackageName") as? String ?: return@hookMethodOn result
+            if (pkg in targetApps) 1 else result
+        }
+
+        Reflect.hookMethodOn(ctx.api, sbnClass, "getCapsuleContent") { chain ->
+            val result = chain.proceed()
+            val text = result as? CharSequence
+            if (!text.isNullOrEmpty()) return@hookMethodOn result
+            val sbn = chain.getThisObject()
+            val pkg = Reflect.callMethod(ctx.api, sbn, "getPackageName") as? String ?: return@hookMethodOn result
+            if (pkg !in targetApps) return@hookMethodOn result
+
+            val notification = Reflect.callMethod(ctx.api, sbn, "getNotification") ?: return@hookMethodOn result
+            val extras = Reflect.getObjectField(notification, "extras") as? Bundle ?: return@hookMethodOn result
+            val title = extras.getString("android.title")
+            val content = extras.getString("android.text")
+            when {
+                !title.isNullOrEmpty() && !content.isNullOrEmpty() -> "$title: $content"
+                !title.isNullOrEmpty() -> title
+                !content.isNullOrEmpty() -> content
+                else -> ""
             }
-        })
+        }
 
-        XposedHelpers.findAndHookMethod(sbnClass, "getCapsuleStatus", object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                if ((param.result as? Int) == 1) return
-                val sbn = param.thisObject
-                val pkg = XposedHelpers.callMethod(sbn, "getPackageName") as? String ?: return
-                if (pkg in targetApps) param.result = 1
-            }
-        })
+        Reflect.hookMethodOn(ctx.api, sbnClass, "getCapsuleIcon") { chain ->
+            val result = chain.proceed()
+            val sbn = chain.getThisObject()
+            val pkg = Reflect.callMethod(ctx.api, sbn, "getPackageName") as? String ?: return@hookMethodOn result
+            if (pkg !in targetApps) return@hookMethodOn result
+            val bmp = loadAppIconBitmap(ctx.api, pkg) ?: return@hookMethodOn result
+            Icon.createWithBitmap(bmp)
+        }
 
-        XposedHelpers.findAndHookMethod(sbnClass, "getCapsuleContent", object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val text = param.result as? CharSequence
-                if (!text.isNullOrEmpty()) return
-                val sbn = param.thisObject
-                val pkg = XposedHelpers.callMethod(sbn, "getPackageName") as? String ?: return
-                if (pkg !in targetApps) return
+        Reflect.hookMethodOn(ctx.api, sbnClass, "getCapsuleBgColor") { chain ->
+            val result = chain.proceed()
+            val sbn = chain.getThisObject()
+            val pkg = Reflect.callMethod(ctx.api, sbn, "getPackageName") as? String ?: return@hookMethodOn result
+            if (pkg !in targetApps) return@hookMethodOn result
 
-                val notification = XposedHelpers.callMethod(sbn, "getNotification")
-                val extras = XposedHelpers.getObjectField(notification, "extras") as? Bundle ?: return
-                val title = extras.getString("android.title")
-                val content = extras.getString("android.text")
-                param.result = when {
-                    !title.isNullOrEmpty() && !content.isNullOrEmpty() -> "$title: $content"
-                    !title.isNullOrEmpty() -> title
-                    !content.isNullOrEmpty() -> content
-                    else -> ""
-                }
-            }
-        })
+            val cached = iconColorCache[pkg]
+            if (cached != null) { return@hookMethodOn cached }
 
-        XposedHelpers.findAndHookMethod(sbnClass, "getCapsuleIcon", object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val sbn = param.thisObject
-                val pkg = XposedHelpers.callMethod(sbn, "getPackageName") as? String ?: return
-                if (pkg !in targetApps) return
-                val bmp = loadAppIconBitmap(pkg) ?: return
-                param.result = Icon.createWithBitmap(bmp)
-            }
-        })
+            val bmp = loadAppIconBitmap(ctx.api, pkg) ?: return@hookMethodOn result
+            iconColorCache[pkg] = dominantColor(bmp)
+            return@hookMethodOn iconColorCache[pkg]!!
+        }
 
-        XposedHelpers.findAndHookMethod(sbnClass, "getCapsuleBgColor", object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val sbn = param.thisObject
-                val pkg = XposedHelpers.callMethod(sbn, "getPackageName") as? String ?: return
-                if (pkg !in targetApps) return
-
-                val cached = iconColorCache[pkg]
-                if (cached != null) { param.result = cached; return }
-
-                val bmp = loadAppIconBitmap(pkg) ?: return
-                iconColorCache[pkg] = dominantColor(bmp)
-                param.result = iconColorCache[pkg]!!
-            }
-        })
-
-        XposedHelpers.findAndHookMethod(sbnClass, "getCapsuleContentColor", object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                val sbn = param.thisObject
-                val pkg = XposedHelpers.callMethod(sbn, "getPackageName") as? String ?: return
-                if (pkg !in targetApps) return
-                param.result = systemColor
-            }
-        })
+        Reflect.hookMethodOn(ctx.api, sbnClass, "getCapsuleContentColor") { chain ->
+            val result = chain.proceed()
+            val sbn = chain.getThisObject()
+            val pkg = Reflect.callMethod(ctx.api, sbn, "getPackageName") as? String ?: return@hookMethodOn result
+            if (pkg !in targetApps) return@hookMethodOn result
+            systemColor
+        }
     }
 
     private fun hookNotificationEntry(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         targetApps: Set<String>
     ) {
-        val entryClass = XposedHelpers.findClass(
+        val entryClass = Reflect.findClass(
             "com.android.systemui.statusbar.notification.collection.NotificationEntry",
-            lpparam.classLoader
+            ctx.classLoader
         )
 
-        XposedHelpers.findAndHookMethod(entryClass, "allowLive", object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                if (param.result == true) return
-                val entry = param.thisObject
-                val sbn = XposedHelpers.callMethod(entry, "getSbn")
-                val pkg = XposedHelpers.callMethod(sbn, "getPackageName") as? String ?: return
-                if (pkg in targetApps) param.result = true
-            }
-        })
+        Reflect.hookMethodOn(ctx.api, entryClass, "allowLive") { chain ->
+            val result = chain.proceed()
+            if (result == true) return@hookMethodOn result
+            val entry = chain.getThisObject()
+            val sbn = Reflect.callMethod(ctx.api, entry, "getSbn")
+            val pkg = Reflect.callMethod(ctx.api, sbn, "getPackageName") as? String ?: return@hookMethodOn result
+            if (pkg in targetApps) true else result
+        }
 
-        XposedHelpers.findAndHookMethod(
+        Reflect.hookMethodOn(
+            ctx.api,
             entryClass,
             "isDismissableForState",
-            Boolean::class.javaPrimitiveType,
-            object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    if (param.result == true) return
-                    val entry = param.thisObject
-                    if (!shouldForceDirectDismiss(entry, targetApps)) return
-                    param.result = true
-                }
-            }
-        )
+            Boolean::class.javaPrimitiveType!!,
+        ) { chain ->
+            val result = chain.proceed()
+            if (result == true) return@hookMethodOn result
+            val entry = chain.getThisObject()
+            if (!shouldForceDirectDismiss(ctx.api, entry, targetApps)) return@hookMethodOn result
+            true
+        }
     }
 
     private fun hookNotificationRowDismiss(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         targetApps: Set<String>
     ) {
-        val rowClass = XposedHelpers.findClass(
+        val rowClass = Reflect.findClass(
             "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow",
-            lpparam.classLoader
+            ctx.classLoader
         )
 
-        XposedHelpers.findAndHookMethod(rowClass, "canViewBeDismissed", object : XC_MethodHook() {
-            override fun afterHookedMethod(param: MethodHookParam) {
-                if (param.result == true) return
-                val row = param.thisObject
-                val entry = XposedHelpers.getObjectField(row, "mEntry")
-                if (!shouldForceDirectDismiss(entry, targetApps)) return
-                param.result = true
-            }
-        })
+        Reflect.hookMethodOn(ctx.api, rowClass, "canViewBeDismissed") { chain ->
+            val result = chain.proceed()
+            if (result == true) return@hookMethodOn result
+            val row = chain.getThisObject()
+            val entry = Reflect.getObjectField(row, "mEntry")
+            if (!shouldForceDirectDismiss(ctx.api, entry, targetApps)) return@hookMethodOn result
+            true
+        }
     }
 
-    private fun shouldForceDirectDismiss(entry: Any?, targetApps: Set<String>): Boolean {
-        val sbn = runCatching { XposedHelpers.callMethod(entry, "getSbn") }.getOrNull() ?: return false
-        val pkg = runCatching { XposedHelpers.callMethod(sbn, "getPackageName") as? String }.getOrNull()
+    private fun shouldForceDirectDismiss(api: XposedInterface, entry: Any?, targetApps: Set<String>): Boolean {
+        val sbn = runCatching { Reflect.callMethod(api, entry, "getSbn") }.getOrNull() ?: return false
+        val pkg = runCatching { Reflect.callMethod(api, sbn, "getPackageName") as? String }.getOrNull()
             ?: return false
         if (pkg !in targetApps) return false
-        return runCatching { XposedHelpers.callMethod(sbn, "canDelete") as? Boolean }.getOrNull() == true
+        return runCatching { Reflect.callMethod(api, sbn, "canDelete") as? Boolean }.getOrNull() == true
     }
 }

@@ -1,11 +1,9 @@
 package com.karen.flymetool.hook.feature.packageinstaller
 
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 
 object PackageInstallerHook : FeatureHook {
 
@@ -14,59 +12,57 @@ object PackageInstallerHook : FeatureHook {
 
     private var autoInstallEnabled = false
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "skip_install_scan")) return
-        if (lpparam.packageName != "com.android.packageinstaller") return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("skip_install_scan")) return
+        if (ctx.packageName != "com.android.packageinstaller") return
 
-        autoInstallEnabled = XposedPrefs.isFeatureEnabled(lpparam, packageName, "auto_install")
+        autoInstallEnabled = ctx.featureEnabled("auto_install")
 
         try {
-            hookStartInstallScan(lpparam)
+            hookStartInstallScan(ctx)
             Logger.i(TAG, "已成功安装 Hook")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载失败", e)
         }
     }
 
-    private fun hookStartInstallScan(lpparam: XC_LoadPackage.LoadPackageParam) {
-        val clazz = XposedHelpers.findClass(ACTIVITY_CLASS, lpparam.classLoader)
+    private fun hookStartInstallScan(ctx: HookContext) {
+        val clazz = Reflect.findClass(ACTIVITY_CLASS, ctx.classLoader)
 
-        XposedHelpers.findAndHookMethod(
+        Reflect.hookMethodOn(
+            ctx.api,
             clazz,
             "startInstallScan",
-            object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    val thisObject = param.thisObject
+        ) { chain ->
+            val thisObject = chain.getThisObject()
 
-                    XposedHelpers.setBooleanField(thisObject, "mIsVirusCheckFinish", true)
-                    XposedHelpers.setBooleanField(thisObject, "mIsVirusCheckResultSafe", true)
-                    XposedHelpers.setBooleanField(thisObject, "receivedMzStoreInfo", true)
-                    XposedHelpers.setIntField(thisObject, "isDisposaled", 0)
-                    XposedHelpers.setBooleanField(thisObject, "isBlackApp", false)
+            Reflect.setBooleanField(thisObject, "mIsVirusCheckFinish", true)
+            Reflect.setBooleanField(thisObject, "mIsVirusCheckResultSafe", true)
+            Reflect.setBooleanField(thisObject, "receivedMzStoreInfo", true)
+            Reflect.setIntField(thisObject, "isDisposaled", 0)
+            Reflect.setBooleanField(thisObject, "isBlackApp", false)
 
-                    val mzStoreAppInfo = XposedHelpers.getObjectField(thisObject, "mzStoreAppInfo")
-                    if (mzStoreAppInfo != null) {
-                        XposedHelpers.setBooleanField(mzStoreAppInfo, "querySuccess", false)
-                        XposedHelpers.setBooleanField(mzStoreAppInfo, "showConfirm", false)
-                        XposedHelpers.setBooleanField(mzStoreAppInfo, "icpStatus", false)
-                        XposedHelpers.setBooleanField(mzStoreAppInfo, "isDisposalApp", false)
-                        XposedHelpers.setBooleanField(mzStoreAppInfo, "isBlackApp", false)
-                    }
-
-                    Logger.d(TAG) { "跳过安装扫描" }
-
-                    if (autoInstallEnabled) {
-                        XposedHelpers.callMethod(thisObject, "doInstallFlyme")
-                        Logger.d(TAG) { "已触发自动安装" }
-                    } else {
-                        XposedHelpers.callMethod(thisObject, "updateViewForNewState", 3)
-                        Logger.d(TAG) { "显示安装确认界面" }
-                    }
-
-                    param.result = null
-                }
+            val mzStoreAppInfo = Reflect.getObjectField(thisObject, "mzStoreAppInfo")
+            if (mzStoreAppInfo != null) {
+                Reflect.setBooleanField(mzStoreAppInfo, "querySuccess", false)
+                Reflect.setBooleanField(mzStoreAppInfo, "showConfirm", false)
+                Reflect.setBooleanField(mzStoreAppInfo, "icpStatus", false)
+                Reflect.setBooleanField(mzStoreAppInfo, "isDisposalApp", false)
+                Reflect.setBooleanField(mzStoreAppInfo, "isBlackApp", false)
             }
-        )
+
+            Logger.d(TAG) { "跳过安装扫描" }
+
+            if (autoInstallEnabled) {
+                Reflect.callMethod(ctx.api, thisObject, "doInstallFlyme")
+                Logger.d(TAG) { "已触发自动安装" }
+            } else {
+                Reflect.callMethod(ctx.api, thisObject, "updateViewForNewState", 3)
+                Logger.d(TAG) { "显示安装确认界面" }
+            }
+
+            null
+        }
 
         Logger.i(TAG, "已挂载 startInstallScan")
     }

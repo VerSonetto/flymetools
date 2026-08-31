@@ -21,12 +21,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import org.json.JSONObject
 import java.io.File
 import java.lang.ref.WeakReference
@@ -74,31 +72,32 @@ object ClassicClockDepthOverlayHook : FeatureHook {
     private var wallpaperChangedReceiver: BroadcastReceiver? = null
     private var observedContentResolver: ContentResolver? = null
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, EDITOR_PACKAGE, FEATURE_KEY)) return
+    override fun handle(ctx: HookContext) {
+        if (!XposedPrefs.isFeatureEnabled(EDITOR_PACKAGE, FEATURE_KEY)) return
 
         try {
-            val sectionClass = XposedHelpers.findClass(DATE_CLOCK_SECTION, lpparam.classLoader)
-            XposedBridge.hookAllMethods(
+            val sectionClass = Reflect.findClass(DATE_CLOCK_SECTION, ctx.classLoader)
+            Reflect.hookAllMethods(
+                ctx.api,
                 sectionClass,
                 "addViews",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val host = param.args.firstOrNull() as? ViewGroup ?: return
-                        val clock = findClassicClock(host) ?: return
-                        watchedClocks[clock] = Unit
-                        // 主动尝试一次预热：handle() 阶段已注册的 ContentObserver 此刻已就绪，
-                        // 锁屏 view 树一旦建好就能立即挂抠图，不再等下一次 addViews。
-                        primeBitmapFromConfig(clock.context.applicationContext)
-                        clock.post { installOrClear(host, clock) }
-                    }
-                },
-            )
+                excluded = { false }
+            ) { chain ->
+                val result = chain.proceed()
+                val host = chain.getArgs().firstOrNull() as? ViewGroup ?: return@hookAllMethods result
+                val clock = findClassicClock(host) ?: return@hookAllMethods result
+                watchedClocks[clock] = Unit
+                // 主动尝试一次预热：handle() 阶段已注册的 ContentObserver 此刻已就绪，
+                // 锁屏 view 树一旦建好就能立即挂抠图，不再等下一次 addViews。
+                primeBitmapFromConfig(clock.context.applicationContext)
+                clock.post { installOrClear(host, clock) }
+                result
+            }
             Logger.i(TAG, "已挂载经典时钟景深挖空层")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载经典时钟景深挖空层失败", e)
         }
-        hookDozingState(lpparam.classLoader)
+        hookDozingState(ctx)
         // SystemUI 进程起来就注册 ContentObserver + 提前预热当前壁纸的抠图到内存，
         // 重启后第一次进锁屏时不再走磁盘 IO，避免景深延迟一帧出现。
         primeBitmapFromConfig(null)
@@ -108,30 +107,30 @@ object ClassicClockDepthOverlayHook : FeatureHook {
      * DateClockSection 同时服务锁屏和跟随锁屏的 AOD。以时钟公开的 dozing 回调作为边界，
      * 而不是猜测父容器或依赖混淆后的 AOD 控制器。
      */
-    private fun hookDozingState(classLoader: ClassLoader) {
+    private fun hookDozingState(ctx: HookContext) {
         try {
-            val clockClass = XposedHelpers.findClass(KEYGUARD_DATE_CLOCK_VIEW, classLoader)
-            XposedHelpers.findAndHookMethod(
+            val clockClass = Reflect.findClass(KEYGUARD_DATE_CLOCK_VIEW, ctx.classLoader)
+            Reflect.hookMethodOn(
+                ctx.api,
                 clockClass,
                 "setDozing",
-                Boolean::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val clock = param.thisObject as? View ?: return
-                        if (!watchedClocks.containsKey(clock)) return
-                        if (param.args.firstOrNull() as? Boolean == true) {
-                            dozingClocks[clock] = Unit
-                            removeCutout(clock)
-                        } else {
-                            dozingClocks.remove(clock)
-                            val host = clock.parent as? ViewGroup ?: return
-                            // AOD→锁屏过渡会连续触发多次 dozing 翻转。延迟一帧让 view 树
-                            // 完成重建再判断，避免景深挖空层跟着 AOD 一起闪烁一帧。
-                            clock.postDelayed({ installOrClear(host, clock) }, 80L)
-                        }
-                    }
-                },
-            )
+                Boolean::class.javaPrimitiveType!!,
+            ) { chain ->
+                val result = chain.proceed()
+                val clock = chain.getThisObject() as? View ?: return@hookMethodOn result
+                if (!watchedClocks.containsKey(clock)) return@hookMethodOn result
+                if (chain.getArgs().firstOrNull() as? Boolean == true) {
+                    dozingClocks[clock] = Unit
+                    removeCutout(clock)
+                } else {
+                    dozingClocks.remove(clock)
+                    val host = clock.parent as? ViewGroup ?: return@hookMethodOn result
+                    // AOD→锁屏过渡会连续触发多次 dozing 翻转。延迟一帧让 view 树
+                    // 完成重建再判断，避免景深挖空层跟着 AOD 一起闪烁一帧。
+                    clock.postDelayed({ installOrClear(host, clock) }, 80L)
+                }
+                result
+            }
             Logger.i(TAG, "已挂载经典时钟 AOD 状态隔离")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载经典时钟 AOD 状态隔离失败", e)

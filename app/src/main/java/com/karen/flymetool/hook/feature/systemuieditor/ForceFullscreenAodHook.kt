@@ -2,12 +2,9 @@ package com.karen.flymetool.hook.feature.systemuieditor
 
 import android.content.Context
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.Reflect
 import java.lang.reflect.Field
 import java.lang.reflect.Modifier
 
@@ -26,18 +23,20 @@ object ForceFullscreenAodHook : FeatureHook {
     private const val FULLSCREEN_DRAWABLE = "alive_photo_wallpaper_aod_fullscreen"
     private const val FULLSCREEN_LABEL = "full_image"
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
 
         try {
-            XposedBridge.hookAllMethods(
-                XposedHelpers.findClass("androidx.recyclerview.widget.RecyclerView\$Adapter", lpparam.classLoader),
+            Reflect.hookAllMethods(
+                ctx.api,
+                Reflect.findClass("androidx.recyclerview.widget.RecyclerView\$Adapter", ctx.classLoader),
                 "notifyItemRangeInserted",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        restoreFullscreenEffect(param.thisObject ?: return)
-                    }
-                },
+                block = { chain ->
+                    val result = chain.proceed()
+                    val adapter = chain.getThisObject() ?: return@hookAllMethods result
+                    restoreFullscreenEffect(adapter)
+                    result
+                }
             )
             Logger.i(TAG, "已挂载 AOD 效果列表监听")
         } catch (e: Throwable) {

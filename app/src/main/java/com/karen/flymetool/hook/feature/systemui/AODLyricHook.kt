@@ -11,12 +11,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
+import com.karen.flymetool.hook.base.Reflect
 import com.karen.flymetool.util.FlymeVersionUtils
 
 object AODLyricHook : FeatureHook {
@@ -43,58 +41,58 @@ object AODLyricHook : FeatureHook {
     @Volatile
     private var isDozing: Boolean = false
     private var featurePackageName: String = ""
-    private var loadParam: XC_LoadPackage.LoadPackageParam? = null
+    private var loadParam: HookContext? = null
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, "aod_lyric")) return
-        if (lpparam.packageName != "com.android.systemui") return
-        featurePackageName = packageName
-        loadParam = lpparam
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled("aod_lyric")) return
+        if (ctx.packageName != "com.android.systemui") return
+        featurePackageName = ctx.packageName
+        loadParam = ctx
 
         // 经典 AOD：时钟在 date_time_layout（含 aod_time），插到其下方（仅 AOD 树，无锁屏问题）
-        hookInsertBelowNamedChild(lpparam, AOD_BASIC_VIEW, "date_time_layout", aodOnly = false)
+        hookInsertBelowNamedChild(ctx, AOD_BASIC_VIEW, "date_time_layout", aodOnly = false)
         if (FlymeVersionUtils.isFlyme12()) {
-            hookInsertBelowSelf(lpparam, CLOCK_VIEW, aodOnly = false)
+            hookInsertBelowSelf(ctx, CLOCK_VIEW, aodOnly = false)
             // 跟随锁屏：挂在 KeyguardDateClockView，需配合 setDozing 只在 AOD 显示
-            hookInsertBelowNamedChild(lpparam, KEYGUARD_DATE_CLOCK, "normal_clock_view", aodOnly = true)
-            hookKeyguardDozing(lpparam)
+            hookInsertBelowNamedChild(ctx, KEYGUARD_DATE_CLOCK, "normal_clock_view", aodOnly = true)
+            hookKeyguardDozing(ctx)
         }
 
         when {
             FlymeVersionUtils.isFlyme12() -> {
-                hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_NEW, "Flyme 12")
-                hookLyricsNotifications(lpparam)
+                hookAdvertTickerView(ctx, ADVERT_TICKER_VIEW_NEW, "Flyme 12")
+                hookLyricsNotifications(ctx)
             }
-            else -> hookAdvertTickerView(lpparam, ADVERT_TICKER_VIEW_OLD, "Flyme 10")
+            else -> hookAdvertTickerView(ctx, ADVERT_TICKER_VIEW_OLD, "Flyme 10")
         }
     }
 
     /** host 内按资源名找时钟行，插到其正下方；aodOnly=true 表示跟随锁屏共用树，仅 AOD 可见 */
     private fun hookInsertBelowNamedChild(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         hostClass: String,
         childName: String,
         aodOnly: Boolean
     ) {
         try {
-            val clazz = XposedHelpers.findClass(hostClass, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(
+            val clazz = Reflect.findClass(hostClass, ctx.classLoader)
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "onFinishInflate",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val host = param.thisObject as ViewGroup
-                            val clockRow = findViewByName(host, childName) ?: host
-                            val parent = (clockRow.parent as? ViewGroup) ?: host
-                            val anchor = if (clockRow.parent is ViewGroup) clockRow else host.getChildAt(0) ?: return
-                            attachBelow(parent, anchor, aodOnly)
-                        } catch (t: Throwable) {
-                            Logger.e(TAG, "插入歌词失败", t, "child" to childName)
-                        }
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+                try {
+                    val host = chain.getThisObject() as ViewGroup
+                    val clockRow = findViewByName(host, childName) ?: host
+                    val parent = (clockRow.parent as? ViewGroup) ?: host
+                    val anchor = if (clockRow.parent is ViewGroup) clockRow else host.getChildAt(0) ?: return@hookMethodOn result
+                    attachBelow(parent, anchor, aodOnly)
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "插入歌词失败", t, "child" to childName)
                 }
-            )
+                result
+            }
             Logger.i(TAG, "已挂载 $hostClass 歌词插入（下方 $childName, aodOnly=$aodOnly）")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载歌词插入失败", e, "host" to hostClass)
@@ -103,27 +101,27 @@ object AODLyricHook : FeatureHook {
 
     /** 把歌词插到控件自身在父布局中的正下方 */
     private fun hookInsertBelowSelf(
-        lpparam: XC_LoadPackage.LoadPackageParam,
+        ctx: HookContext,
         className: String,
         aodOnly: Boolean
     ) {
         try {
-            val clazz = XposedHelpers.findClass(className, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(
+            val clazz = Reflect.findClass(className, ctx.classLoader)
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "onFinishInflate",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val clock = param.thisObject as View
-                            val parent = clock.parent as? ViewGroup ?: return
-                            attachBelow(parent, clock, aodOnly)
-                        } catch (t: Throwable) {
-                            Logger.e(TAG, "插入歌词失败", t, "host" to className)
-                        }
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+                try {
+                    val clock = chain.getThisObject() as View
+                    val parent = clock.parent as? ViewGroup ?: return@hookMethodOn result
+                    attachBelow(parent, clock, aodOnly)
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "插入歌词失败", t, "host" to className)
                 }
-            )
+                result
+            }
             Logger.i(TAG, "已挂载 $className 歌词插入（自身下方, aodOnly=$aodOnly）")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载歌词插入失败", e, "host" to className)
@@ -131,24 +129,24 @@ object AODLyricHook : FeatureHook {
     }
 
     /** 跟随锁屏时钟 setDozing：亮屏锁屏隐藏歌词，进入 AOD 再显示 */
-    private fun hookKeyguardDozing(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookKeyguardDozing(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(KEYGUARD_DATE_CLOCK, lpparam.classLoader)
-            XposedHelpers.findAndHookMethod(
+            val clazz = Reflect.findClass(KEYGUARD_DATE_CLOCK, ctx.classLoader)
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "setDozing",
                 Boolean::class.javaPrimitiveType,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            isDozing = param.args[0] as? Boolean ?: false
-                            refreshAllLyricViews()
-                        } catch (t: Throwable) {
-                            Logger.e(TAG, "setDozing 回调异常", t)
-                        }
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+                try {
+                    isDozing = chain.getArg(0) as? Boolean ?: false
+                    refreshAllLyricViews()
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "setDozing 回调异常", t)
                 }
-            )
+                result
+            }
             Logger.i(TAG, "已挂载 KeyguardDateClockView.setDozing")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 setDozing 失败", e)
@@ -197,86 +195,86 @@ object AODLyricHook : FeatureHook {
         applyLyricToView(tv, currentLyric)
     }
 
-    private fun hookLyricsNotifications(lpparam: XC_LoadPackage.LoadPackageParam) {
+    private fun hookLyricsNotifications(ctx: HookContext) {
         try {
-            val clazz = XposedHelpers.findClass(LIVE_NOTI_CONTROLLER, lpparam.classLoader)
-            val entryClass = XposedHelpers.findClass(
+            val clazz = Reflect.findClass(LIVE_NOTI_CONTROLLER, ctx.classLoader)
+            val entryClass = Reflect.findClass(
                 "com.android.systemui.statusbar.notification.collection.NotificationEntry",
-                lpparam.classLoader
+                ctx.classLoader
             )
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "getLyricsNotifications",
                 CharSequence::class.java,
                 Drawable::class.java,
                 entryClass,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val text = param.args[0] as? CharSequence
-                            if (!text.isNullOrEmpty() && text != currentLyric) {
-                                currentLyric = text
-                                updateLyricText(text)
-                            }
-                        } catch (t: Throwable) {
-                            Logger.e(TAG, "getLyricsNotifications 回调异常", t)
-                        }
+            ) { chain ->
+                val result = chain.proceed()
+                try {
+                    val text = chain.getArg(0) as? CharSequence
+                    if (!text.isNullOrEmpty() && text != currentLyric) {
+                        currentLyric = text
+                        updateLyricText(text)
                     }
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "getLyricsNotifications 回调异常", t)
                 }
-            )
+                result
+            }
             Logger.i(TAG, "已挂载 LiveNotificationController.getLyricsNotifications")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载 getLyricsNotifications 失败", e)
         }
     }
 
-    private fun hookAdvertTickerView(lpparam: XC_LoadPackage.LoadPackageParam, className: String, versionTag: String) {
+    private fun hookAdvertTickerView(ctx: HookContext, className: String, versionTag: String) {
         try {
-            val clazz = XposedHelpers.findClass(className, lpparam.classLoader)
+            val clazz = Reflect.findClass(className, ctx.classLoader)
 
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "addNotification",
-                "android.service.notification.StatusBarNotification",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            val sbn = param.args[0] ?: return
-                            val notification = XposedHelpers.getObjectField(sbn, "notification") ?: return
-                            val tickerText = XposedHelpers.getObjectField(notification, "tickerText") as? CharSequence
-                            if (tickerText.isNullOrEmpty()) return
+                Reflect.findClass("android.service.notification.StatusBarNotification", ctx.classLoader),
+            ) { chain ->
+                val result = chain.proceed()
+                try {
+                    val sbn = chain.getArg(0) ?: return@hookMethodOn result
+                    val notification = Reflect.getObjectField(sbn, "notification") ?: return@hookMethodOn result
+                    val tickerText = Reflect.getObjectField(notification, "tickerText") as? CharSequence
+                    if (tickerText.isNullOrEmpty()) return@hookMethodOn result
 
-                            if (!isLyricNotification(sbn, notification, param.result)) {
-                                Logger.d(TAG) { "跳过非歌词通知" }
-                                return
-                            }
-
-                            if (tickerText != currentLyric) {
-                                currentLyric = tickerText
-                                updateLyricText(tickerText)
-                            }
-                        } catch (t: Throwable) {
-                            Logger.e(TAG, "addNotification 回调异常", t)
-                        }
+                    if (!isLyricNotification(ctx, sbn, notification, result)) {
+                        Logger.d(TAG) { "跳过非歌词通知" }
+                        return@hookMethodOn result
                     }
-                }
-            )
 
-            XposedHelpers.findAndHookMethod(
+                    if (tickerText != currentLyric) {
+                        currentLyric = tickerText
+                        updateLyricText(tickerText)
+                    }
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "addNotification 回调异常", t)
+                }
+                result
+            }
+
+            Reflect.hookMethodOn(
+                ctx.api,
                 clazz,
                 "removeNotification",
                 String::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        try {
-                            currentLyric = ""
-                            updateLyricText("")
-                        } catch (t: Throwable) {
-                            Logger.e(TAG, "removeNotification 回调异常", t)
-                        }
-                    }
+            ) { chain ->
+                val result = chain.proceed()
+                try {
+                    currentLyric = ""
+                    updateLyricText("")
+                } catch (t: Throwable) {
+                    Logger.e(TAG, "removeNotification 回调异常", t)
                 }
-            )
+                result
+            }
 
             Logger.i(TAG, "已挂载 $versionTag 歌词组件: $className")
         } catch (e: Throwable) {
@@ -284,20 +282,20 @@ object AODLyricHook : FeatureHook {
         }
     }
 
-    private fun isLyricNotification(sbn: Any, notification: Any, addResult: Any?): Boolean {
+    private fun isLyricNotification(ctx: HookContext, sbn: Any, notification: Any, addResult: Any?): Boolean {
         if (addResult as? Boolean == true) return true
 
         try {
-            val flags = XposedHelpers.getIntField(notification, "flags")
+            val flags = Reflect.getIntField(notification, "flags")
             if (flags and FLYME_LYRIC_FLAG != 0) {
-                val clearable = XposedHelpers.callMethod(sbn, "isClearable") as? Boolean ?: true
+                val clearable = Reflect.callMethod(ctx.api, sbn, "isClearable") as? Boolean ?: true
                 if (!clearable) return true
             }
         } catch (_: Throwable) {
         }
 
         return try {
-            XposedHelpers.callMethod(notification, "isMediaNotification") as? Boolean == true
+            Reflect.callMethod(ctx.api, notification, "isMediaNotification") as? Boolean == true
         } catch (_: Throwable) {
             false
         }
@@ -305,8 +303,8 @@ object AODLyricHook : FeatureHook {
 
     private fun resolveTextSizeSp(): Float {
         val lp = loadParam ?: return DEFAULT_TEXT_SIZE_SP.toFloat()
-        val pkg = featurePackageName.ifEmpty { return DEFAULT_TEXT_SIZE_SP.toFloat() }
-        return XposedPrefs.getFeatureValue(lp, pkg, "aod_lyric", DEFAULT_TEXT_SIZE_SP)
+        if (featurePackageName.isEmpty()) return DEFAULT_TEXT_SIZE_SP.toFloat()
+        return lp.featureValue("aod_lyric", DEFAULT_TEXT_SIZE_SP)
             .coerceIn(8, 28)
             .toFloat()
     }

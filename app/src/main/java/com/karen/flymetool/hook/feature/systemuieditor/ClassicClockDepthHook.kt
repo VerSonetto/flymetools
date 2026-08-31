@@ -32,12 +32,10 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import com.karen.flymetool.hook.base.FeatureHook
+import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
-import com.karen.flymetool.hook.base.XposedPrefs
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage
+import com.karen.flymetool.hook.base.Reflect
+import io.github.libxposed.api.XposedInterface.Chain
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -83,15 +81,16 @@ object ClassicClockDepthHook : FeatureHook {
     private val resultHookedClasses = WeakHashMap<Class<*>, Unit>()
     /** 基类与具体实现类的回调可能各触发一次，用该标志保证一次选择只导入一次。 */
     private val importPending = AtomicBoolean(false)
-    private val pickResultHook = object : XC_MethodHook() {
-        override fun afterHookedMethod(param: MethodHookParam) {
-            val requestCode = param.args.firstOrNull() as? Int ?: return
-            if (requestCode != PICK_MASK_REQUEST_CODE) return
-            if (param.args.getOrNull(1) as? Int != Activity.RESULT_OK) return
-            val intent = param.args.getOrNull(2) as? Intent ?: return
-            val uri = intent.data ?: return
-            val context = (param.thisObject as? Activity)?.applicationContext ?: return
-            if (!importPending.compareAndSet(false, true)) return
+    private val pickResultHook: (Chain) -> Any? = { chain ->
+        val result = chain.proceed()
+        run {
+            val requestCode = chain.getArg(0) as? Int ?: return@run
+            if (requestCode != PICK_MASK_REQUEST_CODE) return@run
+            if (chain.getArg(1) as? Int != Activity.RESULT_OK) return@run
+            val intent = chain.getArg(2) as? Intent ?: return@run
+            val uri = intent.data ?: return@run
+            val context = (chain.getThisObject() as? Activity)?.applicationContext ?: return@run
+            if (!importPending.compareAndSet(false, true)) return@run
             executor.execute {
                 try {
                     importCustomMask(context, uri)
@@ -100,38 +99,40 @@ object ClassicClockDepthHook : FeatureHook {
                 }
             }
         }
+        result
     }
 
-    override fun handle(lpparam: XC_LoadPackage.LoadPackageParam, packageName: String) {
-        if (!XposedPrefs.isFeatureEnabled(lpparam, packageName, FEATURE_KEY)) return
+    override fun handle(ctx: HookContext) {
+        if (!ctx.featureEnabled(FEATURE_KEY)) return
 
         try {
-            XposedBridge.hookAllMethods(
+            Reflect.hookAllMethods(
+                ctx.api,
                 LayoutInflater::class.java,
                 "inflate",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val layoutId = param.args.firstOrNull() as? Int ?: return
-                        val root = param.result as? View ?: return
-                        if (!isLegacyButtonLayout(root.context, layoutId)) return
-                        installWallpaperChangedReceiver(root.context.applicationContext)
-                        addDepthButton(root)
-                    }
-                },
+                block = { chain ->
+                    val result = chain.proceed()
+                    val layoutId = chain.getArg(0) as? Int ?: return@hookAllMethods result
+                    val root = result as? View ?: return@hookAllMethods result
+                    if (!isLegacyButtonLayout(root.context, layoutId)) return@hookAllMethods result
+                    installWallpaperChangedReceiver(ctx, root.context.applicationContext)
+                    addDepthButton(ctx, root)
+                    result
+                }
             )
             Logger.i(TAG, "已挂载经典时钟景深按钮")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载经典时钟景深按钮失败", e)
         }
         try {
-            XposedHelpers.findAndHookMethod(
+            Reflect.hookMethodOn(
+                ctx.api,
                 Activity::class.java,
                 "onActivityResult",
                 Int::class.javaPrimitiveType,
                 Int::class.javaPrimitiveType,
                 Intent::class.java,
-                pickResultHook,
-            )
+            ) { chain -> pickResultHook(chain) }
             Logger.i(TAG, "已挂载蒙版选择结果回调")
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载蒙版选择结果回调失败", e)
@@ -144,7 +145,7 @@ object ClassicClockDepthHook : FeatureHook {
         false
     }
 
-    private fun addDepthButton(root: View) {
+    private fun addDepthButton(ctx: HookContext, root: View) {
         try {
             val container = root as? LinearLayout ?: return
             if (container.findViewWithTag<View>(BUTTON_TAG) != null) return
@@ -155,11 +156,11 @@ object ClassicClockDepthHook : FeatureHook {
                 BUTTON_TAG,
                 string(context, "depth_of_field", "景深"),
             )
-            button.setOnClickListener { toggleDepth(context, button, label) }
+            button.setOnClickListener { toggleDepth(ctx, context, button, label) }
             container.addView(button)
             depthButtons[button] = label
             // 编辑器 Activity 可能重写 onActivityResult 且不调 super，按特征补挂具体类。
-            findActivity(context)?.let(::hookConcreteActivityResult)
+            findActivity(context)?.let { hookConcreteActivityResult(ctx, it) }
 
             val (maskButton, _) = createToolbarButton(context, MASK_BUTTON_TAG, "蒙版")
             maskButton.setOnClickListener { pickCustomMask(context) }
@@ -171,7 +172,7 @@ object ClassicClockDepthHook : FeatureHook {
             // 编辑器等待它永远不会创建的原生抠图任务，从而一直显示“处理中”。
             clearLegacyDofFlagAsync(context)
             migrateMaskToSharedStorageAsync(context, root.rootView)
-            regenerateForCurrentWallpaperAsync(context, 0)
+            regenerateForCurrentWallpaperAsync(ctx, context, 0)
             root.rootView.post { updateEditorPreview(root.rootView) }
         } catch (e: Throwable) {
             Logger.e(TAG, "添加经典时钟景深按钮失败", e)
@@ -221,7 +222,7 @@ object ClassicClockDepthHook : FeatureHook {
         return button to label
     }
 
-    private fun toggleDepth(context: Context, button: View, label: TextView) {
+    private fun toggleDepth(ctx: HookContext, context: Context, button: View, label: TextView) {
         if (!button.isEnabled) return
         button.isEnabled = false
         val generation = wallpaperTaskGeneration.incrementAndGet()
@@ -244,7 +245,7 @@ object ClassicClockDepthHook : FeatureHook {
                     ?: throw IllegalStateException("未找到当前已应用的锁屏壁纸")
                 val wallpaperId = currentLockscreenWallpaperId(context)
                 if (wallpaperId < 0) throw IllegalStateException("无法读取当前锁屏壁纸 ID")
-                val mask = createMask(context, source.imagePath, wallpaperId.toString())
+                val mask = createMask(ctx, context, source.imagePath, wallpaperId.toString())
                     ?: throw IllegalStateException("当前照片不支持景深效果")
                 if (!isWallpaperSourceStable(context, generation, wallpaperId, source)) {
                     mask.delete()
@@ -277,12 +278,12 @@ object ClassicClockDepthHook : FeatureHook {
         return current
     }
 
-    private fun hookConcreteActivityResult(activity: Activity) {
+    private fun hookConcreteActivityResult(ctx: HookContext, activity: Activity) {
         val clazz = activity.javaClass
         if (resultHookedClasses.containsKey(clazz)) return
         resultHookedClasses[clazz] = Unit
         try {
-            XposedBridge.hookAllMethods(clazz, "onActivityResult", pickResultHook)
+            Reflect.hookAllMethods(ctx.api, clazz, "onActivityResult") { chain -> pickResultHook(chain) }
         } catch (e: Throwable) {
             Logger.e(TAG, "挂载蒙版选择回调失败", e)
         }
@@ -467,14 +468,14 @@ object ClassicClockDepthHook : FeatureHook {
         }
     }
 
-    private fun createMask(context: Context, imagePath: String, cacheKey: String): File? {
+    private fun createMask(ctx: HookContext, context: Context, imagePath: String, cacheKey: String): File? {
         val source = loadMattingSource(context, imagePath)
         try {
             val helper = Class.forName(MATTING_HELPER, true, context.classLoader)
-            XposedHelpers.callStaticMethod(helper, "init", MATTING_MODEL)
-            val result = XposedHelpers.callStaticMethod(helper, "matting", source)
+            Reflect.callStaticMethod(ctx.api, helper, "init", MATTING_MODEL)
+            val result = Reflect.callStaticMethod(ctx.api, helper, "matting", source)
                 ?: return null
-            val mask = XposedHelpers.callMethod(result, "getResultBitmap") as? Bitmap ?: return null
+            val mask = Reflect.callMethod(ctx.api, result, "getResultBitmap") as? Bitmap ?: return null
             try {
                 val outputDirectory = sharedOutputDirectory()
                 val output = File(
@@ -629,14 +630,14 @@ object ClassicClockDepthHook : FeatureHook {
         label.text = string(context, "depth_of_field", "景深")
     }
 
-    private fun installWallpaperChangedReceiver(context: Context?) {
+    private fun installWallpaperChangedReceiver(ctx: HookContext, context: Context?) {
         if (context == null || wallpaperChangedReceiver != null) return
         try {
             val appContext = context.applicationContext
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(receiverContext: Context, intent: Intent) {
                     if (intent.action == ACTION_WALLPAPER_CHANGED) {
-                        invalidateMaskForWallpaperChangeAsync(appContext)
+                        invalidateMaskForWallpaperChangeAsync(ctx, appContext)
                     }
                 }
             }
@@ -657,19 +658,20 @@ object ClassicClockDepthHook : FeatureHook {
      * 在壁纸应用完成后重新抠图。ID 已一致时不重复计算；否则绝不继续沿用旧前景。
      */
     private fun regenerateForCurrentWallpaperAsync(
+        ctx: HookContext,
         context: Context,
         delayMillis: Long,
         retryWhenUnchanged: Boolean = false,
     ) {
         val generation = wallpaperTaskGeneration.incrementAndGet()
-        scheduleWallpaperRegeneration(context, delayMillis, generation, 0, retryWhenUnchanged)
+        scheduleWallpaperRegeneration(ctx, context, delayMillis, generation, 0, retryWhenUnchanged)
     }
 
     /**
      * 锁屏壁纸 ID 改变时，先原子地撤销旧景深并清理模块缓存。
      * 等数据库提交了不同的新预览成品后才重新抠图，绝不让旧主体进入新底图。
      */
-    private fun invalidateMaskForWallpaperChangeAsync(context: Context) {
+    private fun invalidateMaskForWallpaperChangeAsync(ctx: HookContext, context: Context) {
         val generation = wallpaperTaskGeneration.incrementAndGet()
         executor.execute {
             try {
@@ -681,7 +683,7 @@ object ClassicClockDepthHook : FeatureHook {
                 if (config.optBoolean("custom")) {
                     // 同图重新应用时壁纸 ID 会变但蒙版仍有效：交给延迟任务按源图重新绑定，
                     // 真换了图才关闭。期间 SystemUI 的 ID 校验会先移除旧挖空层，不会残留。
-                    scheduleWallpaperRegeneration(context, 700, generation, 0, retryWhenUnchanged = true)
+                    scheduleWallpaperRegeneration(ctx, context, 700, generation, 0, retryWhenUnchanged = true)
                     Logger.i(TAG, "锁屏壁纸已变更，稍后尝试重新绑定自定义蒙版")
                     return@execute
                 }
@@ -692,7 +694,7 @@ object ClassicClockDepthHook : FeatureHook {
                 onMain {
                     refreshAllEditorPreviews()
                     // 广播可能早于数据库应用记录，延迟后通过 pendingSource 判断是否已切到新成品。
-                    scheduleWallpaperRegeneration(context, 700, generation, 0, retryWhenUnchanged = true)
+                    scheduleWallpaperRegeneration(ctx, context, 700, generation, 0, retryWhenUnchanged = true)
                 }
                 Logger.i(TAG, "已清除旧锁屏壁纸景深缓存")
             } catch (e: Throwable) {
@@ -702,6 +704,7 @@ object ClassicClockDepthHook : FeatureHook {
     }
 
     private fun scheduleWallpaperRegeneration(
+        ctx: HookContext,
         context: Context,
         delayMillis: Long,
         generation: Long,
@@ -735,6 +738,7 @@ object ClassicClockDepthHook : FeatureHook {
                     if (pendingSource.isNotBlank() && pendingSource == source.imagePath) {
                         if (retryWhenUnchanged && retryCount < 5) {
                             scheduleWallpaperRegeneration(
+                                ctx,
                                 context,
                                 700,
                                 generation,
@@ -744,7 +748,7 @@ object ClassicClockDepthHook : FeatureHook {
                         }
                         return@execute
                     }
-                    val mask = createMask(context, source.imagePath, wallpaperId.toString())
+                    val mask = createMask(ctx, context, source.imagePath, wallpaperId.toString())
                         ?: throw IllegalStateException("当前锁屏壁纸不支持景深效果")
                     if (!isWallpaperSourceStable(context, generation, wallpaperId, source)) {
                         mask.delete()
