@@ -161,7 +161,12 @@ object ClassicClockDepthOverlayHook : FeatureHook {
             val currentWallpaperId = currentLockscreenWallpaperId(clock.context)
             if (expectedWallpaperId < 0 || expectedWallpaperId != currentWallpaperId) {
                 removeCutout(clock)
-                Logger.w(TAG, "景深抠图与当前锁屏壁纸不匹配，已跳过旧抠图")
+                Logger.w(
+                    TAG,
+                    "景深抠图与当前锁屏壁纸不匹配，已跳过旧抠图",
+                    "expected" to expectedWallpaperId,
+                    "current" to currentWallpaperId,
+                )
                 return
             }
             val path = config.optString("mask_path").takeIf { it.isNotBlank() } ?: run {
@@ -377,10 +382,17 @@ object ClassicClockDepthOverlayHook : FeatureHook {
         null
     }
 
+    /**
+     * 部分息屏样式下系统不保留锁屏专属壁纸条目（锁屏复用系统壁纸条目，此时
+     * getWallpaperId(FLAG_LOCK) 返回 -1）。锁屏显示的正是该系统壁纸，退回其 ID
+     * 才能与编辑器侧得到一致的校验基准，否则景深在该类样式下永远无法通过校验。
+     */
     private fun currentLockscreenWallpaperId(context: Context): Int = try {
         val wallpaperManager = context.getSystemService(WallpaperManager::class.java)
             ?: return -1
         wallpaperManager.getWallpaperId(WallpaperManager.FLAG_LOCK)
+            .takeIf { it >= 0 }
+            ?: wallpaperManager.getWallpaperId(WallpaperManager.FLAG_SYSTEM)
     } catch (e: Throwable) {
         Logger.e(TAG, "读取当前锁屏壁纸 ID 失败", e)
         -1

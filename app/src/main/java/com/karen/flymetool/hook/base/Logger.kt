@@ -84,8 +84,8 @@ object Logger {
     }
 
     /** 警告：预期内降级（未找到方法/类/字段）、可恢复分支。 */
-    fun w(tag: String, message: String) {
-        log(LEVEL_W, tag, message, null, null)
+    fun w(tag: String, message: String, vararg extra: Pair<String, Any?>) {
+        log(LEVEL_W, tag, message, null, extra)
     }
 
     /**

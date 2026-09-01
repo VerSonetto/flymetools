@@ -259,7 +259,7 @@ object ClassicClockDepthHook : FeatureHook {
                     updateEditorPreview(button.rootView)
                 }
             } catch (e: Throwable) {
-                Logger.e(TAG, "生成经典时钟景深失败", e)
+                Logger.e(TAG, "生成经典时钟景深失败", e, "reason" to e.message)
                 onMain {
                     toast(context, string(context, "depth_of_field_unsupported", "当前照片不支持景深效果"))
                     updateButtonState(context, button, label)
@@ -375,7 +375,7 @@ object ClassicClockDepthHook : FeatureHook {
                 if (mask != null && !mask.isRecycled) mask.recycle()
             }
         } catch (e: Throwable) {
-            Logger.e(TAG, "导入自定义景深蒙版失败", e)
+            Logger.e(TAG, "导入自定义景深蒙版失败", e, "reason" to e.message)
             onMain { toast(context, e.message ?: "导入自定义景深蒙版失败") }
         }
     }
@@ -760,7 +760,7 @@ object ClassicClockDepthHook : FeatureHook {
                     Logger.i(TAG, "已按新锁屏壁纸重新生成景深抠图")
                 } catch (e: Throwable) {
                     // 不写入旧 ID；SystemUI 的 ID 校验会保持景深关闭，直到下次生成成功。
-                    Logger.e(TAG, "按新锁屏壁纸重新生成景深抠图失败", e)
+                    Logger.e(TAG, "按新锁屏壁纸重新生成景深抠图失败", e, "reason" to e.message)
                 }
             }
         }, delayMillis)
@@ -983,10 +983,17 @@ object ClassicClockDepthHook : FeatureHook {
         }
     }
 
+    /**
+     * 部分息屏样式下系统不保留锁屏专属壁纸条目（锁屏复用系统壁纸条目，此时
+     * getWallpaperId(FLAG_LOCK) 返回 -1）。锁屏显示的正是该系统壁纸，退回其 ID
+     * 才能与 SystemUI 侧得到一致的校验基准，否则景深在该类样式下无法开启。
+     */
     private fun currentLockscreenWallpaperId(context: Context): Int = try {
         val wallpaperManager = context.getSystemService(WallpaperManager::class.java)
             ?: return -1
         wallpaperManager.getWallpaperId(WallpaperManager.FLAG_LOCK)
+            .takeIf { it >= 0 }
+            ?: wallpaperManager.getWallpaperId(WallpaperManager.FLAG_SYSTEM)
     } catch (e: Throwable) {
         Logger.e(TAG, "读取当前锁屏壁纸 ID 失败", e)
         -1
