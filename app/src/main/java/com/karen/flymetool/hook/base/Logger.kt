@@ -103,7 +103,7 @@ object Logger {
     }
 
     /** 只打一次的日志；[key] 显式指定去重键，FIFO 有界。 */
-    fun once(tag: String, key: String, message: String) {
+    fun once(tag: String, key: String, message: String, vararg extra: Pair<String, Any?>) {
         val dedupKey = "$tag:$key"
         val shouldLog = synchronized(loggedOnce) {
             if (dedupKey in loggedOnce) {
@@ -114,7 +114,7 @@ object Logger {
             }
         }
         if (shouldLog) {
-            i(tag, message)
+            log(LEVEL_I, tag, message, null, extra)
         }
     }
 

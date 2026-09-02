@@ -16,6 +16,7 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
@@ -47,14 +48,26 @@ object ClassicClockDepthOverlayHook : FeatureHook {
         "com.flyme.systemui.keyguard.ui.view.layout.sections.DateClockSection"
     private const val KEYGUARD_DATE_CLOCK_VIEW = "com.flyme.keyguard.clock.KeyguardDateClockView"
     private const val SETTING_KEY = "flymetool_classic_clock_dof_data"
+    private const val AOD_STYLE_SETTING_KEY = "aod_current_style"
     private const val ACTION_WALLPAPER_CHANGED = "android.intent.action.WALLPAPER_CHANGED"
     private const val WALLPAPER_REFRESH_INTERVAL_MS = 500L
     private const val WALLPAPER_REFRESH_RETRIES = 12
+
+    /**
+     * 息屏样式切换的壁纸重绑宽限窗口。样式键写入在前、壁纸重绑在后，
+     * 实测间隔为秒级，15 秒足以覆盖且把误宽限暴露面压到最低。
+     */
+    private const val STYLE_REBIND_WINDOW_MS = 15_000L
 
     private val cutouts = WeakHashMap<View, CutoutState>()
     private val watchedClocks = WeakHashMap<View, Unit>()
     /** AOD 会复用锁屏的 DateClockSection；息屏态绝不向该树注入挖空 View。 */
     private val dozingClocks = WeakHashMap<View, Unit>()
+    /**
+     * 已验证与抠图同源的壁纸 ID 集合（按时钟弱引用）。绑定成功时加入当前 ID；
+     * 息屏样式切换的重绑会保留并追加新 ID；仅严格失配与功能关闭时清空。
+     */
+    private val trustedWallpaperIds = WeakHashMap<View, MutableSet<Int>>()
     /**
      * 预解码的抠图缓存。锁屏 view 树首次挂载时 decode 一次即可，
      * 后续 wallpaper 未变、bitmap 未失效就直接命中，避免进锁屏瞬间的卡顿。
@@ -71,6 +84,13 @@ object ClassicClockDepthOverlayHook : FeatureHook {
     private var configObserver: ContentObserver? = null
     private var wallpaperChangedReceiver: BroadcastReceiver? = null
     private var observedContentResolver: ContentResolver? = null
+
+    /** 最近一次息屏样式变更时间（uptimeMillis），0 表示当前无宽限。主线程读写。 */
+    private var styleChangeAt = 0L
+    /** 样式键最近一次的值，用于过滤重复写入。主线程读写。 */
+    private var lastStyleValue: String? = null
+    private var styleObserver: ContentObserver? = null
+    private var observedStyleResolver: ContentResolver? = null
 
     override fun handle(ctx: HookContext) {
         if (!XposedPrefs.isFeatureEnabled(EDITOR_PACKAGE, FEATURE_KEY)) return
@@ -147,6 +167,7 @@ object ClassicClockDepthOverlayHook : FeatureHook {
         try {
             // 一进 view 树就注册 observer，让后续任何 Settings.Secure 变化立即生效。
             installConfigObserver(clock.context.applicationContext)
+            installStyleChangeObserver(clock.context.applicationContext)
             installWallpaperChangedReceiver(clock.context.applicationContext)
             if (dozingClocks.containsKey(clock)) {
                 removeCutout(clock)
@@ -155,23 +176,50 @@ object ClassicClockDepthOverlayHook : FeatureHook {
             val config = readConfig(clock) ?: return
             if (!config.optBoolean("enabled")) {
                 removeCutout(clock)
-                return
-            }
-            val expectedWallpaperId = config.optInt("wallpaper_id", -1)
-            val currentWallpaperId = currentLockscreenWallpaperId(clock.context)
-            if (expectedWallpaperId < 0 || expectedWallpaperId != currentWallpaperId) {
-                removeCutout(clock)
-                Logger.w(
-                    TAG,
-                    "景深抠图与当前锁屏壁纸不匹配，已跳过旧抠图",
-                    "expected" to expectedWallpaperId,
-                    "current" to currentWallpaperId,
-                )
+                trustedWallpaperIds.remove(clock)
                 return
             }
             val path = config.optString("mask_path").takeIf { it.isNotBlank() } ?: run {
                 removeCutout(clock)
+                trustedWallpaperIds.remove(clock)
                 return
+            }
+            val expectedWallpaperId = config.optInt("wallpaper_id", -1)
+            val currentWallpaperId = currentLockscreenWallpaperId(clock.context)
+            val idMatches = expectedWallpaperId >= 0 && expectedWallpaperId == currentWallpaperId
+            if (idMatches) {
+                trustedWallpaperIds.getOrPut(clock) { mutableSetOf() }.add(currentWallpaperId)
+            } else {
+                val trusted = trustedWallpaperIds[clock]
+                val styleGrace = styleChangeAt > 0 &&
+                    SystemClock.uptimeMillis() - styleChangeAt <= STYLE_REBIND_WINDOW_MS
+                val keep = trusted != null && (currentWallpaperId in trusted || styleGrace)
+                if (!keep) {
+                    removeCutout(clock)
+                    trustedWallpaperIds.remove(clock)
+                    Logger.w(
+                        TAG,
+                        "景深抠图与当前锁屏壁纸不匹配，已跳过旧抠图",
+                        "expected" to expectedWallpaperId,
+                        "current" to currentWallpaperId,
+                    )
+                    return
+                }
+                if (currentWallpaperId !in trusted) {
+                    // 息屏样式切换会让系统重绑同一张壁纸（ID 变内容不变）。样式键刚变更过
+                    // 且绑定此前已验证时，信任新 ID 并持久记账，用户无需回编辑器重新开启。
+                    // 宽限随即消费：窗口内后续的普通壁纸变更仍走严格校验。
+                    trusted.add(currentWallpaperId)
+                    styleChangeAt = 0
+                    Logger.once(
+                        TAG,
+                        "dof-keep-$currentWallpaperId",
+                        "息屏样式切换重绑壁纸，已保留经典时钟景深",
+                        "expected" to expectedWallpaperId,
+                        "current" to currentWallpaperId,
+                    )
+                }
+                if (cutouts[clock]?.maskPath == path) return
             }
             if (
                 cutouts[clock]?.let { it.wallpaperId == currentWallpaperId && it.maskPath == path } == true
@@ -313,6 +361,38 @@ object ClassicClockDepthOverlayHook : FeatureHook {
             observedContentResolver = resolver
         } catch (e: Throwable) {
             Logger.e(TAG, "监听经典时钟景深配置失败", e)
+        }
+    }
+
+    /**
+     * 监听息屏样式键（Settings.System）：样式切换会让系统随后重绑同一张壁纸
+     * （ID 变内容不变）。宽限窗口内到达的壁纸 ID 失配按重绑处理而不是清除景深。
+     */
+    private fun installStyleChangeObserver(context: Context) {
+        val resolver = context.contentResolver
+        if (styleObserver != null && observedStyleResolver === resolver) return
+        try {
+            styleObserver?.let { observedStyleResolver?.unregisterContentObserver(it) }
+            lastStyleValue = Settings.System.getString(resolver, AOD_STYLE_SETTING_KEY)
+            val observer = object : ContentObserver(mainHandler) {
+                override fun onChange(selfChange: Boolean) {
+                    val value = Settings.System.getString(resolver, AOD_STYLE_SETTING_KEY)
+                    if (value != null && value != lastStyleValue) {
+                        lastStyleValue = value
+                        styleChangeAt = SystemClock.uptimeMillis()
+                        Logger.d(TAG) { "检测到息屏样式变更，开启壁纸重绑宽限" }
+                    }
+                }
+            }
+            resolver.registerContentObserver(
+                Settings.System.getUriFor(AOD_STYLE_SETTING_KEY),
+                false,
+                observer,
+            )
+            styleObserver = observer
+            observedStyleResolver = resolver
+        } catch (e: Throwable) {
+            Logger.e(TAG, "监听息屏样式变更失败", e)
         }
     }
 
