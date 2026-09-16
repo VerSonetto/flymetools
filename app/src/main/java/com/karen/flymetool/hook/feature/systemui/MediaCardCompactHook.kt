@@ -59,6 +59,7 @@ object MediaCardCompactHook : FeatureHook {
     private const val CLS_BLUR_UTILS = "com.flyme.systemui.utils.MzBlurUtils"
     private const val CLS_WALLPAPER_BLUR_MANAGER =
         "com.flyme.systemui.wallpaper.WallpaperBlurDrawableManager"
+    private const val CLS_COMMON_UTILS = "com.flyme.systemui.utils.SystemUICommonUtils"
 
     // androidx.constraintlayout.widget.ConstraintSet 常量（不能直接引用模块自带的 androidx 类）
     private const val PARENT_ID = 0
@@ -739,8 +740,7 @@ object MediaCardCompactHook : FeatureHook {
         if (player !is ViewGroup) return
         val pills = pillIdCache[player] ?: return
         val context = player.context ?: return
-        val night = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
-            Configuration.UI_MODE_NIGHT_YES
+        val night = isNight(context, player.javaClass.classLoader)
         val radius = BTN_H / 2f * context.resources.displayMetrics.density
         val stateTag = "pill:${if (night) "night" else "day"}:${blurSettingsKey()}"
         val cl = player.javaClass.classLoader
@@ -750,7 +750,8 @@ object MediaCardCompactHook : FeatureHook {
             if (pill.tag == stateTag && pill.background != null) continue
             val ok = applyPillBlur(api, pill, player, radius, night, cl)
             if (!ok) {
-                val color = if (night) 0x33FFFFFF else 0x59FFFFFF
+                // 夜间无模糊兜底：同样不能给白色，改用极淡白抬亮卡片底色
+                val color = if (night) 0x1AFFFFFF else 0x59FFFFFF
                 pill.background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
                     setColor(color)
@@ -779,9 +780,33 @@ object MediaCardCompactHook : FeatureHook {
         return "blur:$intensity:$opacity:$beautify:${if (stackCap) "cap" else "nocap"}"
     }
 
-    /** 胶囊前景色：比卡片(70% 白 / 70% 深灰)略白一档。 */
+    /**
+     * 胶囊前景色：比卡片(日 70% 白 / 夜 70% 深灰)亮一档。
+     *
+     * 夜间不能套白色——白罩色压到深色卡片上会翻成一块亮灰，与卡片"同质感"的层次直接断掉。
+     * 夜里"更亮一层"= 同 alpha 下把底色抬亮，与日间 0xD9FFFFFF 对称。
+     */
     private fun pillForegroundColor(night: Boolean): Int =
-        if (night) 0x4DFFFFFF else 0xD9FFFFFF.toInt()
+        if (night) 0xD93A3A3A.toInt() else 0xD9FFFFFF.toInt()
+
+    /**
+     * 深浅色判定：与卡片自身同一口径。
+     *
+     * MediaCarouseTransitionLayout.isInNightMode() 走的是 SystemUICommonUtils.isNightModel()，
+     * 而后者直接返回静态字段 sIsNightMode；国内版该值由 UiModeManager.getNightMode()==2 得出，
+     * 并不总等于 Configuration.uiMode。若用 uiMode 判定，会出现卡片按深色、胶囊按浅色取色的错配。
+     */
+    private fun isNight(context: Context, cl: ClassLoader?): Boolean {
+        try {
+            val utils = Reflect.findClass(CLS_COMMON_UTILS, cl)
+            val v = Reflect.getStaticObjectField(utils, "sIsNightMode") as? Boolean
+            if (v != null) return v
+        } catch (_: Throwable) {
+        }
+        Logger.once(TAG, "night_fallback", "未取到 SystemUICommonUtils#sIsNightMode，退回 uiMode 判定")
+        return (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+    }
 
     /**
      * 给胶囊套上和卡片同源的模糊背景。
