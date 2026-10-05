@@ -39,9 +39,6 @@ object IosDepthStackRecentsHook : FeatureHook {
     private const val LEFT_PEEK_FACTOR = 0.24f
     private const val LEFT_DECAY = 0.28f
     private const val RIGHT_SPACING_FACTOR = 0.85f
-    private const val FOCUSED_SCALE = 1f
-    private const val MIN_LEFT_SCALE = 0.956f
-    private const val LEFT_SCALE_DECAY = 0.50f
     private const val DEPTH_Z_STEP_DP = 1f
     private const val EPSILON = 0.0005f
     // 清空模式复位超时：原生清空动画 300ms + 错峰 30ms*卡数，无 dismiss setter 超过该时长即退出。
@@ -721,6 +718,25 @@ object IosDepthStackRecentsHook : FeatureHook {
             // depthStep 与卡无关（同一 display），每帧提一次，省去每卡 resources 读取。
             val depthStepPx = DEPTH_Z_STEP_DP * recents.resources.displayMetrics.density
 
+            fun stackRelativeFor(relativePosition: Float): Float = when {
+                axis.invertStackDepth -> -relativePosition
+                state.quickswitchStray && relativePosition > 0.55f -> -relativePosition
+                else -> relativePosition
+            }
+            val stackOverscroll = if (axis.invertStackDepth) -overscroll else overscroll
+            // TaskViewSimulator.apply() 单独提交实时 Surface，View.scale 不会同步过去。
+            // 以真实运行卡的深度为整组缩放基准，让它保持 1，其余卡保留相对大小。
+            val hasRunningLiveTile = runningOrdinal >= 0 && readLiveTileEnabled(recents, hooks) &&
+                !readRemoteTargetHandles(recents, hooks).isNullOrEmpty()
+            val runningDepthScale = if (hasRunningLiveTile) {
+                val relative = stackRelativeFor(
+                    effectiveOrdinalFor(runningOrdinal, runningTaskView === dismissing) - clampedPosition,
+                )
+                RecentsDepthScale.at(relative) * overscrollSinkScale(relative, stackOverscroll)
+            } else {
+                1f
+            }
+
             pages.forEachIndexed { ordinal, page ->
                 val task = page.view
                 val taskState = state.taskStates.getOrPut(task) { TaskVisualState(task.translationZ) }
@@ -740,12 +756,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val relativePosition = effectiveOrdinal - clampedPosition
                 // Seascape 下 ordinal 与屏幕左右相反：曲线在视觉空间采样（stackRelative=-rel），
                 // 坐标再镜像回 layout；quickswitch 错位态把右侧滞留旧卡折叠到对称堆叠位。
-                val stackRelative = when {
-                    axis.invertStackDepth -> -relativePosition
-                    state.quickswitchStray && relativePosition > 0.55f -> -relativePosition
-                    else -> relativePosition
-                }
-                val stackOverscroll = if (axis.invertStackDepth) -overscroll else overscroll
+                val stackRelative = stackRelativeFor(relativePosition)
                 val visual = stackVisual(
                     visualCenter,
                     cardPrimarySize,
@@ -769,7 +780,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                         primaryScroll
                     val customPrimaryOffset = (targetPrimaryCenter - layoutCenter) * stackLayoutAmount
                     applyCustomPrimaryOffset(task, taskState, hooks, axis, customPrimaryOffset)
-                    if (isRunning) {
+                    if (isRunning || (hasRunningLiveTile && isRunningView)) {
                         syncRunningLiveTile(
                             recents,
                             hooks,
@@ -778,8 +789,12 @@ object IosDepthStackRecentsHook : FeatureHook {
                         )
                     }
                 }
-                // running task 恢复原生缩放(factor=1)，其余卡用堆叠缩放。
-                val scaleFactor = if (isRunning) 1f else lerp(1f, visual.scale, stackLayoutAmount)
+                // 入场仍保留锚定运行卡的原生缩放；稳态按视觉深度排序，不单独截断右侧卡。
+                val scaleFactor = when {
+                    hasRunningLiveTile -> RecentsDepthScale.withLiveTileBaseline(visual.scale, runningDepthScale)
+                    isRunning && !settledOverview -> 1f
+                    else -> lerp(1f, visual.scale, stackLayoutAmount)
+                }
                 applyScale(task, taskState, hooks, scaleFactor)
                 if (TRACE_TASK_FRAMES && (abs(stackRelative) < 0.35f || isRunning)) {
                     val thumbnail = thumbnailViewForTask(ctx, task)
@@ -886,7 +901,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         overscroll: Float,
     ): StackVisual {
         scratchVisual.primaryCenter = stackPrimaryCenter(viewportCenter, cardPrimarySize, relativePosition, overscroll)
-        scratchVisual.scale = depthScale(relativePosition) * overscrollSinkScale(relativePosition, overscroll)
+        scratchVisual.scale = RecentsDepthScale.at(relativePosition) * overscrollSinkScale(relativePosition, overscroll)
         scratchVisual.alpha = when {
             relativePosition >= -2f -> 1f
             relativePosition <= -3f -> 0f
@@ -922,11 +937,6 @@ object IosDepthStackRecentsHook : FeatureHook {
         val absOverscroll = abs(overscroll)
         val damped = absOverscroll / (1f + absOverscroll * 0.8f)
         return base - overscroll.sign * damped * rightSpacing * weight
-    }
-
-    private fun depthScale(relativePosition: Float): Float {
-        val depthAmount = (FOCUSED_SCALE - MIN_LEFT_SCALE) * (1f - LEFT_SCALE_DECAY.pow(abs(relativePosition)))
-        return (FOCUSED_SCALE + depthAmount * relativePosition.sign).coerceIn(MIN_LEFT_SCALE, FOCUSED_SCALE)
     }
 
     private fun overscrollSinkScale(relativePosition: Float, overscroll: Float): Float {
