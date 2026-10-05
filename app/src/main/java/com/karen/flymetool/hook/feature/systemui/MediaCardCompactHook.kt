@@ -93,6 +93,9 @@ object MediaCardCompactHook : FeatureHook {
     private const val TIME_GAP = 4
     private const val ROW_GAP = 6
 
+    /** 补套紧凑版式时的位置过渡时长，对齐系统自身的 ALPHA_ANIMATION_DURATION。 */
+    private const val REAPPLY_ANIM_MS = 300L
+
     private val PREV_WORDS = listOf("上一", "prev", "pre", "previous", "rewind")
     private val NEXT_WORDS = listOf("下一", "next", "forward")
     private val PLAY_WORDS = listOf("播放", "暂停", "play", "pause", "toggle")
@@ -249,7 +252,8 @@ object MediaCardCompactHook : FeatureHook {
      * 起始就同步把 media_seamless_text / icon 翻回 VISIBLE（原版约束位置）。而 bindPlayer 与
      * loadLayoutConstraints 都不会重跑，紧凑版式无人恢复。
      * 故在 refreshMusicWallpaperState 收到 toOpen=false 后补套：动画路径等收起动画结束后补
-     * （对齐系统自身 settle 时机 +300ms）；无动画路径当帧补。
+     * （须晚于系统自身在 duration+300ms 的收尾刷新，否则过渡会被那次强制刷新掐成跳变）；
+     * 无动画路径当帧补。补套走带过渡的刷新，避免版式当帧跳位。
      */
     private fun hookMusicWallpaperTransition(ctx: HookContext) {
         try {
@@ -312,8 +316,11 @@ object MediaCardCompactHook : FeatureHook {
         } catch (_: Throwable) {
             1500L
         }
-        mainHandler.postDelayed(reapply, duration + 300)
-        mainHandler.postDelayed(reapply, duration + 800)
+        // 系统在 duration + 300ms 处有自身收尾刷新（updateMediaPanelView + refreshMediaState），
+        // 那次刷新走 forceSetState，会把进行中的过渡直接取消成跳变，补套必须排在它之后。
+        val settle = duration + 300L
+        mainHandler.postDelayed(reapply, settle + 120)
+        mainHandler.postDelayed(reapply, settle + 620)
     }
 
     private fun markWallpaper(api: XposedInterface, panel: Any, inWallpaper: Boolean) {
@@ -371,6 +378,8 @@ object MediaCardCompactHook : FeatureHook {
         val player = Reflect.callMethod(api, holder, "getPlayer") as? View ?: return
         val context = player.context ?: return
 
+        // 胶囊首次注入时当前态里还没有它的位置，补间只会让它从原点突兀滑入，故仅重排时过渡
+        val hadPills = pillIdCache.containsKey(player)
         val pills = ensurePillViews(player)
         val ordered = computeButtonOrder(api, context, holder, set)
         val timeWidthPx = measureTimeWidthPx(api, context, holder)
@@ -385,7 +394,42 @@ object MediaCardCompactHook : FeatureHook {
         } catch (_: Throwable) {
         }
 
-        Reflect.callMethod(api, viewController, "refreshState")
+        refreshAnimated(api, viewController, hadPills)
+    }
+
+    /**
+     * 重排后刷新，让元素从当前版式补间到紧凑版式，而不是当帧跳位。
+     *
+     * refreshState() 内部固定以 forceSetState=true 请求，TransitionLayoutController 收到该
+     * 标志就直接应用目标态、不起 animator，所以只能绕开它：先按 refreshState 的做法清掉
+     * viewStates（目标态按 CacheKey 缓存，改约束集不改键，不清会算出改动前的旧版式），
+     * 再置 animateNextStateChange 并以 forceSetState=false 走 setCurrentState，
+     * 由系统自己的 animator 从当前态插值到目标态，插值器与原生切换一致。
+     */
+    private fun refreshAnimated(api: XposedInterface, viewController: Any, animate: Boolean) {
+        if (!animate) {
+            Reflect.callMethod(api, viewController, "refreshState")
+            return
+        }
+        try {
+            // 首轮测量未完成时目标态可能算不出来，动画会被静默跳过，此时按原样强制刷新
+            if (Reflect.getBooleanField(viewController, "firstRefresh")) {
+                Reflect.callMethod(api, viewController, "refreshState")
+                return
+            }
+            val start = Reflect.getIntField(viewController, "currentStartLocation")
+            val end = Reflect.getIntField(viewController, "currentEndLocation")
+            val progress = Reflect.getFloatField(viewController, "currentTransitionProgress")
+            (Reflect.getObjectField(viewController, "viewStates") as? MutableMap<*, *>)?.clear()
+            Reflect.callMethod(api, viewController, "animatePendingStateChange", REAPPLY_ANIM_MS, 0L)
+            Reflect.callMethod(api, viewController, "setCurrentState", start, end, progress, false, false)
+        } catch (e: Throwable) {
+            Logger.once(TAG, "anim_unavailable", "版式过渡不可用，退回当帧刷新：${e.javaClass.simpleName}")
+            try {
+                Reflect.callMethod(api, viewController, "refreshState")
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     /**
