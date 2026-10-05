@@ -56,6 +56,17 @@ internal class RecentsStackGeometry {
     }
 
     companion object {
+        fun stackRelative(relative: Float, invertDepth: Boolean): Float =
+            if (invertDepth) -relative else relative
+
+        /** 一旦接管轴心就保持到会话清理，不能跨过中央便恢复入场时的远轴心。 */
+        fun shouldCenterPivot(scaleFactor: Float, alreadyCentered: Boolean, settled: Boolean): Boolean =
+            alreadyCentered || settled || abs(scaleFactor - 1f) > 0.0005f
+
+        /** Android View 以 pivot 缩放后，显示中心相对布局中心的偏移（不包含 translation）。 */
+        fun scaleCenterShift(size: Float, pivot: Float, scale: Float): Float =
+            (size / 2f - pivot) * (scale - 1f)
+
         fun overscrollSinkScale(relative: Float, overscroll: Float): Float {
             if (overscroll <= 0f) return 1f
             val distance = (-relative).coerceAtLeast(0f)

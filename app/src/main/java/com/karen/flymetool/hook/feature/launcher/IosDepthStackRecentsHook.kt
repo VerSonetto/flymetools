@@ -249,6 +249,12 @@ object IosDepthStackRecentsHook : FeatureHook {
                     "relative" to visual?.frameRelativePosition,
                     "z" to task.z, "alpha" to task.alpha, "visibility" to task.visibility,
                     "tx" to task.translationX, "ty" to task.translationY, "scale" to task.scaleX,
+                    "width" to task.width, "height" to task.height,
+                    "pivotX" to task.pivotX, "pivotY" to task.pivotY,
+                    "nativePivotX" to visual?.nativePivotX, "nativePivotY" to visual?.nativePivotY,
+                    "centerPivot" to visual?.centerPivotApplied,
+                    "scaleCenterShiftX" to RecentsStackGeometry.scaleCenterShift(task.width.toFloat(), task.pivotX, task.scaleX),
+                    "scaleCenterShiftY" to RecentsStackGeometry.scaleCenterShift(task.height.toFloat(), task.pivotY, task.scaleY),
                     "customOffset" to visual?.customPrimaryOffset,
                 )
             }
@@ -265,8 +271,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                 "currentPage" to current, "runningIndex" to hooks.runningTaskIndex?.invoke(recents),
                 "expectedIndex" to expectedIndex, "nativeIds" to ids,
                 "scrollX" to recents.scrollX, "scrollY" to recents.scrollY,
-                "rotation" to state.rotation, "stray" to state.quickswitchStray,
-                "strayHandled" to state.strayHandled, "committed" to state.overviewCommitted,
+                "rotation" to state.rotation, "committed" to state.overviewCommitted,
                 "pending" to state.orderSyncPending, "mode" to state.probe.lastMode,
                 "fullscreen" to state.fullscreenProgress, "contentAlpha" to state.contentAlpha,
                 "adjacentScale" to state.adjacentPageScale,
@@ -355,6 +360,8 @@ object IosDepthStackRecentsHook : FeatureHook {
         state.orderSyncPending = false
         if (invokeBoolean(hooks.showAsGrid, recents) || invokeBoolean(hooks.isSplitSelectionActive, recents)) return
         try {
+            // moveRunningTaskToExpectedPosition 会 remove/add + setCurrentPage，不能在横滑中执行。
+            if (hooks.pageInTransitionField?.getBoolean(recents) == true) return
             val running = resolveRunningTaskView(recents, hooks) ?: return
             val runningIndex = recents.indexOfChild(running)
             if (hooks.currentPage?.invoke(recents) != runningIndex || isDesktopTaskView(running)) return
@@ -506,9 +513,6 @@ object IosDepthStackRecentsHook : FeatureHook {
                     state.overviewCommitted = false
                     state.orderSyncPending = false
                     resetAllTransforms(ctx, recents, state, hooks)
-                    state.quickswitchStray = false
-                    state.strayHandled = false
-                    state.strayAnchorSettled = false
                     state.rotation = -1
                     state.cachedPages = null
                     state.cachedAxis = null
@@ -798,9 +802,6 @@ object IosDepthStackRecentsHook : FeatureHook {
                 state.overviewCommitted = false
                 state.orderSyncPending = false
                 resetAllTransforms(ctx, recents, state, hooks)
-                state.quickswitchStray = false
-                state.strayHandled = false
-                state.strayAnchorSettled = false
                 state.rotation = -1
                 state.cachedPages = null
                 state.cachedAxis = null
@@ -833,9 +834,6 @@ object IosDepthStackRecentsHook : FeatureHook {
                 invokeBoolean(hooks.isSplitSelectionActive, recents)
             if (!active || unsupported || recents.width <= 0 || recents.height <= 0) {
                 resetAllTransforms(ctx, recents, state, hooks)
-                state.quickswitchStray = false
-                state.strayHandled = false
-                state.strayAnchorSettled = false
                 state.rotation = -1
                 state.cachedPages = null
                 state.cachedAxis = null
@@ -968,38 +966,12 @@ object IosDepthStackRecentsHook : FeatureHook {
                 state.contentAlpha >= 0.98f &&
                 (!state.fullscreenProgressKnown || state.fullscreenProgress <= 0.02f) &&
                 state.adjacentPageScale <= 0.02f
-            // quickswitch 错位修正：入场/稳态时 running 锚定主位但不在最新位则进入；
-            // running 归位最新位或用户翻页（偏离锚点 >0.2 页）后退出，入场动画 scroll 不作依据。
-            val enteringOverview = state.fullscreenProgressKnown && state.fullscreenProgress > 0.02f
-            if (!state.quickswitchStray) {
-                if (!state.strayHandled && anchoredRunning != null && runningOrdinal < pages.lastIndex &&
-                    (settledOverview || enteringOverview)
-                ) {
-                    state.quickswitchStray = true
-                    state.strayAnchorScroll = clampedPosition
-                    state.strayAnchorSettled = false
-                }
-            } else {
-                if (runningOrdinal < 0 || runningOrdinal >= pages.lastIndex) {
-                    state.quickswitchStray = false
-                } else if (settledOverview) {
-                    if (!state.strayAnchorSettled) {
-                        state.strayAnchorScroll = clampedPosition
-                        state.strayAnchorSettled = true
-                    } else if (abs(clampedPosition - state.strayAnchorScroll) > 0.2f) {
-                        state.quickswitchStray = false
-                        state.strayHandled = true
-                    }
-                }
-            }
             // depthStep 与卡无关（同一 display），每帧提一次，省去每卡 resources 读取。
             val depthStepPx = DEPTH_Z_STEP_DP * recents.resources.displayMetrics.density
 
-            fun stackRelativeFor(relativePosition: Float): Float = when {
-                axis.invertStackDepth -> -relativePosition
-                state.quickswitchStray && relativePosition > 0.55f -> -relativePosition
-                else -> relativePosition
-            }
+            // 顺序交给原生重排；不能按运行卡身份或翻页阈值突然把 +relative 改成 -relative。
+            fun stackRelativeFor(relativePosition: Float): Float =
+                RecentsStackGeometry.stackRelative(relativePosition, axis.invertStackDepth)
             val stackOverscroll = if (axis.invertStackDepth) -overscroll else overscroll
             // TaskViewSimulator.apply() 单独提交实时 Surface，View.scale 不会同步过去。
             // 以真实运行卡的深度为整组缩放基准，让它保持 1，其余卡保留相对大小。
@@ -1012,7 +984,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                 probe.pageCount = pages.size
                 probe.frameBudgetNs = (1_000_000_000.0 / (recents.display?.refreshRate ?: 60f)).toLong()
                 val mode = (if (settledOverview) 1 else 0) or (if (scrolling) 2 else 0) or
-                    (if (state.quickswitchStray) 4 else 0) or (if (hasRunningLiveTile) 8 else 0) or
+                    (if (hasRunningLiveTile) 8 else 0) or
                     (if (dismissing != null) 16 else 0) or (rotation shl 5)
                 if (probe.lastMode != mode) {
                     probe.lastMode = mode
@@ -1047,7 +1019,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val effectiveOrdinal = effectiveOrdinalFor(ordinal, isDismissing)
                 val relativePosition = effectiveOrdinal - clampedPosition
                 // Seascape 下 ordinal 与屏幕左右相反：曲线在视觉空间采样（stackRelative=-rel），
-                // 坐标再镜像回 layout；quickswitch 错位态把右侧滞留旧卡折叠到对称堆叠位。
+                // 坐标再镜像回 layout；同一卡片的相对位置在整次翻页中保持连续。
                 val stackRelative = stackRelativeFor(relativePosition)
                 // 深处完全透明的卡片不参与绘制：稳态连续隐藏时保留上次 RenderNode，
                 // 到达淡入边界即恢复全部通道同步。运行卡、删除和退场动画始终走完整路径。
@@ -1073,7 +1045,16 @@ object IosDepthStackRecentsHook : FeatureHook {
                     visual.primaryCenter
                 }
 
-                updateStackPivot(task, taskState, stackRelative < -EPSILON)
+                val scaleFactor = when {
+                    hasRunningLiveTile -> RecentsDepthScale.withLiveTileBaseline(visual.scale, runningDepthScale)
+                    isRunning && !settledOverview -> 1f
+                    else -> lerp(1f, visual.scale, stackLayoutAmount)
+                }
+                // 实时卡归一化后 relative=0 不再意味着 scaleFactor=1。
+                // 跨过中央时恢复入场远轴心会产生 (center-pivot)*(scale-1) 的整卡跳变。
+                updateStackPivot(task, taskState, RecentsStackGeometry.shouldCenterPivot(
+                    scaleFactor, taskState.centerPivotApplied, settledOverview,
+                ))
                 // 被删卡的主轴位移交给原生(飞出/回弹)。running task 的 live tile surface 同步到相同 offset，
                 // 保持原始堆叠手感，同时避免 TaskView 底板与 surface 分离露出纯色占位层。
                 if (!isDismissing) {
@@ -1096,12 +1077,6 @@ object IosDepthStackRecentsHook : FeatureHook {
                         )
                     }
                 }
-                // 入场仍保留锚定运行卡的原生缩放；稳态按视觉深度排序，不单独截断右侧卡。
-                val scaleFactor = when {
-                    hasRunningLiveTile -> RecentsDepthScale.withLiveTileBaseline(visual.scale, runningDepthScale)
-                    isRunning && !settledOverview -> 1f
-                    else -> lerp(1f, visual.scale, stackLayoutAmount)
-                }
                 applyScale(task, taskState, hooks, scaleFactor)
                 if (TRACE_TASK_FRAMES && (abs(stackRelative) < 0.35f || isRunning)) {
                     val thumbnail = thumbnailViewForTask(ctx, task)
@@ -1114,10 +1089,9 @@ object IosDepthStackRecentsHook : FeatureHook {
                             "pending=${task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)} hasThumb=${thumbnail?.let { hasThumbnailView(ctx, it) }} bounds=${task.left},${task.top},${task.right},${task.bottom}"
                     }
                 }
-                // Z 序：默认/Seascape 按 ordinal；quickswitch 错位态按视觉堆叠深度；被删卡保持自身层级飞出。
+                // Z 序始终跟随实际页面顺序；被删卡保持自身层级飞出。
                 val depthOrder = when {
                     isDismissing -> if (axis.invertStackDepth) (pages.lastIndex - effectiveOrdinal) else effectiveOrdinal
-                    state.quickswitchStray -> -abs(stackRelative)
                     axis.invertStackDepth -> (pages.lastIndex - effectiveOrdinal)
                     else -> effectiveOrdinal
                 }
@@ -1461,7 +1435,11 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     private fun updateStackPivot(task: View, state: TaskVisualState, useCenter: Boolean) {
         if (useCenter) {
-            if (!state.centerPivotApplied) {
+            if (!state.centerPivotApplied ||
+                abs(task.pivotX - state.lastStackPivotX) > EPSILON ||
+                abs(task.pivotY - state.lastStackPivotY) > EPSILON
+            ) {
+                // 原生 onLayout/updatePageScales 可能重写轴心，保留最新原生值供退出时恢复。
                 state.nativePivotX = task.pivotX
                 state.nativePivotY = task.pivotY
                 state.centerPivotApplied = true
@@ -1469,6 +1447,8 @@ object IosDepthStackRecentsHook : FeatureHook {
             val cx = task.width / 2f; val cy = task.height / 2f
             if (abs(task.pivotX - cx) > EPSILON) task.pivotX = cx
             if (abs(task.pivotY - cy) > EPSILON) task.pivotY = cy
+            state.lastStackPivotX = cx
+            state.lastStackPivotY = cy
         } else if (state.centerPivotApplied) {
             task.pivotX = state.nativePivotX
             task.pivotY = state.nativePivotY
@@ -1916,14 +1896,6 @@ object IosDepthStackRecentsHook : FeatureHook {
         var contentAlpha = 0f
         var fullscreenProgress = 0f
         var fullscreenProgressKnown = false
-        // quickswitch 错位态：running 卡锚定主位但不在最新位（滞留旧卡占着最右）。
-        // 进入后保持（滚动中不跳变），running 归位最右或 overview 退出时解除。
-        var quickswitchStray = false
-        // 会话标记：本次 overview 内已因用户滑动退出过修正，不再重新进入（避免滑动中反复跳变）。
-        var strayHandled = false
-        var strayAnchorScroll = 0f
-        // 锚点在首次稳态时才记录（入场动画中 scroll 由动画驱动，不能作为用户翻页的判定基准）。
-        var strayAnchorSettled = false
         var lastPrimaryScroll = Float.NaN
         var runtimeFailureLogged = false
         // Flyme ADJACENT_PAGE_SCALE：0=贴合 overview，1=退桌 detached。
@@ -1969,6 +1941,8 @@ object IosDepthStackRecentsHook : FeatureHook {
         var centerPivotApplied = false
         var nativePivotX = 0f
         var nativePivotY = 0f
+        var lastStackPivotX = 0f
+        var lastStackPivotY = 0f
         // 标题遮挡淡出：app_name 视图与其原生 alpha 基线。
         var titleResolved = false
         var titleView: View? = null
