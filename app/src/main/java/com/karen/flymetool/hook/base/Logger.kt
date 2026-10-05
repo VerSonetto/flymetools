@@ -78,6 +78,11 @@ object Logger {
         }
     }
 
+    /** 结构化调试信息：调用方在热路径先检查 debugEnabled，避免构造额外参数。 */
+    fun d(tag: String, message: String, vararg extra: Pair<String, Any?>) {
+        if (debugEnabled) log(LEVEL_D, tag, message, null, extra)
+    }
+
     /** 普通信息：挂载成功、状态变化、配置结果。 */
     fun i(tag: String, message: String) {
         log(LEVEL_I, tag, message, null, null)

@@ -9,7 +9,6 @@ import android.graphics.Shader
 import android.graphics.drawable.Drawable
 import android.os.SystemClock
 import android.util.FloatProperty
-import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -20,25 +19,18 @@ import com.karen.flymetool.hook.base.Reflect
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.IdentityHashMap
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
-import kotlin.math.pow
 import kotlin.math.roundToInt
-import kotlin.math.sign
 
 
 object IosDepthStackRecentsHook : FeatureHook {
 
     private const val TAG = "IosDepthStackRecents"
-    private const val LOGCAT_TAG = "FT_IosRecents"
     private const val TRACE_PLACEHOLDER = false
     private const val TRACE_TASK_FRAMES = false
     private const val TARGET_PACKAGE = "com.meizu.flyme.launcher"
     private const val FEATURE_KEY = "ios_stacked_recents"
 
-    private const val LEFT_PEEK_FACTOR = 0.24f
-    private const val LEFT_DECAY = 0.28f
-    private const val RIGHT_SPACING_FACTOR = 0.85f
     private const val DEPTH_Z_STEP_DP = 1f
     private const val EPSILON = 0.0005f
     // 清空模式复位超时：原生清空动画 300ms + 错峰 30ms*卡数，无 dismiss setter 超过该时长即退出。
@@ -126,50 +118,325 @@ object IosDepthStackRecentsHook : FeatureHook {
             // Flyme 退桌动画驱动 ADJACENT_PAGE_SCALE(0→1)，contentAlpha 直到动画结束才置 0。
             adjacentPageScaleField = findField(recentsClass, "mAdjacentPageScale"),
             pageInTransitionField = findField(recentsClass, "mIsPageInTransition"),
+            moveRunningTask = findMethod(recentsClass, "moveRunningTaskToExpectedPosition", Void.TYPE),
+            pageScrollsInitialized = findMethod(recentsClass, "isPageScrollsInitialized", Boolean::class.javaPrimitiveType),
+            currentPage = findMethod(recentsClass, "getCurrentPage", Int::class.javaPrimitiveType),
+            runningTaskIndex = findMethod(recentsClass, "getRunningTaskIndex", Int::class.javaPrimitiveType),
+            taskViewId = findMethod(taskClass, "getTaskViewId", Int::class.javaPrimitiveType),
+            pageScrollsField = findField(recentsClass, "mPageScrolls"),
         )
 
-        hookLayoutCallbacks(ctx, recentsClass, hooks)
-        hookStateCallbacks(ctx, recentsClass, hooks)
-        hookPageScaleUpdates(ctx, recentsClass, hooks)
-        hookRemoteTargetLifecycle(ctx, recentsClass, hooks)
-        hookPlaceholderDrawing(ctx)
-        hookScreenshotSwitch(ctx, taskClass)
-        hookDismissChannel(ctx, taskClass, hooks)
-        hookDismissAll(ctx, recentsClass)
-        hookReset(ctx, recentsClass, hooks)
-        hookDismissGestureUnlock(ctx)
-        // quickswitch 重排：复位错位修正状态并强制重建，保证每轮 running 重排后
-        // 都能重新进入 anchoredRunning/quickswitchStray 修正（防止滑动期 running 卡邻卡化）。
-        findMethod(recentsClass, "moveRunningTaskToExpectedPosition", Void.TYPE)?.let { m ->
-            Reflect.hookMethod(ctx.api, m) { chain ->
-                val result = chain.proceed()
-                val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
-                stateFor(recents).apply {
-                    quickswitchStray = false
-                    strayHandled = false
-                    strayAnchorSettled = false
-                    cachedPages = null
-                    cachedPagesChildCount = -1
-                }
-                requestStackApply(recents, rebuildPages = true)
-                result
-            }
-        }
+        mountPart("布局") { hookLayoutCallbacks(ctx, recentsClass, hooks) }
+        mountPart("状态") { hookStateCallbacks(ctx, recentsClass, hooks) }
+        mountPart("缩放") { hookPageScaleUpdates(ctx, recentsClass, hooks) }
+        mountPart("实时画面") { hookRemoteTargetLifecycle(ctx, recentsClass, hooks) }
+        mountPart("占位层") { hookPlaceholderDrawing(ctx) }
+        mountPart("截图切换") { hookScreenshotSwitch(ctx, taskClass) }
+        mountPart("删除位移") { hookDismissChannel(ctx, taskClass, hooks) }
+        mountPart("清空任务") { hookDismissAll(ctx, recentsClass) }
+        mountPart("复位") { hookReset(ctx, recentsClass, hooks) }
+        mountPart("连续删除") { hookDismissGestureUnlock(ctx) }
+        hookTaskOrder(ctx, recentsClass, hooks)
+        hookTaskLifecycle(ctx, recentsClass)
 
-        Logger.i(TAG, "已挂载堆叠最近任务")
+        mountPart("诊断探针") { hookProbeLifecycle(ctx, recentsClass, hooks) }
+        Logger.i(TAG, "已挂载堆叠最近任务（运行卡归首修正 4，保留调试探针）")
     }
 
     // === Hooks ===
+
+    private inline fun mountPart(part: String, install: () -> Unit) {
+        try {
+            install()
+        } catch (throwable: Throwable) {
+            Logger.e(TAG, "挂载堆叠子功能失败", throwable, "part" to part)
+        }
+    }
+
+    /** 仅观察生命周期，不改写参数或结果；通过事件前后快照判断原生是否真正移动了运行卡。 */
+    private fun hookProbeLifecycle(ctx: HookContext, recentsClass: Class<*>, hooks: ResolvedHooks) {
+        mountPart("布局请求探针") {
+            findMethod(recentsClass, "requestLayout", Void.TYPE)?.let { method ->
+                Reflect.hookMethod(ctx.api, method) { chain ->
+                    if (Logger.debugEnabled) {
+                        val recents = chain.getThisObject() as? ViewGroup
+                        val state = recents?.let { stateByRecents[it] }
+                        if (state != null && (state.overviewEnabled || state.contentAlpha > EPSILON)) {
+                            val probe = state.probe
+                            probe.layoutRequests++
+                            val now = SystemClock.uptimeMillis()
+                            // 每个汇总窗口最多采两次调用源，避免逐帧抓栈污染测量。
+                            if (probe.layoutStacks < 2 && now - probe.lastLayoutStackTime > 500) {
+                                probe.layoutStacks++
+                                probe.lastLayoutStackTime = now
+                                val callers = Throwable().stackTrace.filter {
+                                    it.className.startsWith("com.android.quickstep") ||
+                                        it.className.startsWith("android.widget") ||
+                                        it.className.startsWith("android.view.ViewOverlay")
+                                }.take(8)
+                                probe.event(recents, "event" to "request-layout-source", "callers" to callers)
+                            }
+                        }
+                    }
+                    chain.proceed()
+                }
+            }
+        }
+        for ((name, count) in listOf(
+            "onGestureAnimationStart" to 1,
+            "onPrepareGestureEndAnimation" to 3,
+            "onGestureAnimationEnd" to 0,
+            "onSwipeUpAnimationSuccess" to 0,
+            "setCurrentTask" to 1,
+        )) {
+            mountPart(name) {
+                val method = findMethodsInHierarchy(recentsClass).firstOrNull {
+                    it.name == name && it.returnType == Void.TYPE && it.parameterTypes.size == count
+                }?.apply { isAccessible = true } ?: return@mountPart
+                Reflect.hookMethod(ctx.api, method) { chain ->
+                    if (!Logger.debugEnabled) return@hookMethod chain.proceed()
+                    val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod chain.proceed()
+                    val argument = when (name) {
+                        "onPrepareGestureEndAnimation" -> (chain.getArg(1) as? Enum<*>)?.name
+                        "setCurrentTask" -> chain.getArg(0)
+                        else -> null
+                    }
+                    probeSnapshot(recents, hooks, name, "before", argument)
+                    val result = chain.proceed()
+                    probeSnapshot(recents, hooks, name, "after", argument)
+                    result
+                }
+            }
+        }
+    }
+
+    private fun probeSnapshot(
+        recents: ViewGroup,
+        hooks: ResolvedHooks,
+        event: String,
+        phase: String = "frame",
+        argument: Any? = null,
+    ) {
+        if (!Logger.debugEnabled) return
+        try {
+            val state = stateFor(recents)
+            val pages = state.cachedPages
+            val running = resolveRunningTaskView(recents, hooks)
+            val current = (hooks.currentPage?.invoke(recents) as? Int) ?: -1
+            val tasks = ArrayList<View>()
+            val ids = ArrayList<Any?>()
+            for (index in 0 until recents.childCount) {
+                val child = recents.getChildAt(index)
+                if (!hooks.taskClass.isInstance(child)) continue
+                tasks.add(child)
+                ids.add(hooks.taskViewId?.invoke(child))
+            }
+            val selected = LinkedHashSet<View>()
+            running?.let { selected.add(it) }
+            recents.getChildAt(current)?.takeIf { hooks.taskClass.isInstance(it) }?.let { selected.add(it) }
+            tasks.maxByOrNull { it.z }?.let { selected.add(it) }
+            tasks.filter { it.alpha > 0.05f && it.visibility == View.VISIBLE }
+                .maxByOrNull { it.z }?.let { selected.add(it) }
+            tasks.firstOrNull()?.let { selected.add(it) }
+            tasks.lastOrNull()?.let { selected.add(it) }
+            val cards = selected.map { task ->
+                val visual = state.taskStates[task]
+                linkedMapOf<String, Any?>(
+                    "id" to hooks.taskViewId?.invoke(task),
+                    "app" to (hooks.taskComponent?.invoke(task) as? ComponentName)?.packageName,
+                    "child" to recents.indexOfChild(task),
+                    "ordinal" to pages?.indexOfFirst { it.view === task },
+                    "relative" to visual?.frameRelativePosition,
+                    "z" to task.z, "alpha" to task.alpha, "visibility" to task.visibility,
+                    "tx" to task.translationX, "ty" to task.translationY, "scale" to task.scaleX,
+                    "customOffset" to visual?.customPrimaryOffset,
+                )
+            }
+            val expectedIndex = try {
+                val utils = Reflect.getObjectField(recents, "mUtils")
+                val method = utils?.let {
+                    findMethod(it.javaClass, "getRunningTaskExpectedIndex", Int::class.javaPrimitiveType, hooks.taskClass)
+                }
+                if (running != null) method?.invoke(utils, running) else null
+            } catch (_: Throwable) { null }
+            state.probe.event(recents,
+                "serial" to ++state.probe.serial, "t" to SystemClock.uptimeMillis(),
+                "event" to event, "phase" to phase, "arg" to argument,
+                "currentPage" to current, "runningIndex" to hooks.runningTaskIndex?.invoke(recents),
+                "expectedIndex" to expectedIndex, "nativeIds" to ids,
+                "scrollX" to recents.scrollX, "scrollY" to recents.scrollY,
+                "rotation" to state.rotation, "stray" to state.quickswitchStray,
+                "strayHandled" to state.strayHandled, "committed" to state.overviewCommitted,
+                "pending" to state.orderSyncPending, "mode" to state.probe.lastMode,
+                "fullscreen" to state.fullscreenProgress, "contentAlpha" to state.contentAlpha,
+                "adjacentScale" to state.adjacentPageScale,
+                "live" to readLiveTileEnabled(recents, hooks), "cards" to cards)
+        } catch (throwable: Throwable) {
+            val probe = stateFor(recents).probe
+            if (!probe.failed) {
+                probe.failed = true
+                Logger.e(TAG, "读取堆叠探针失败", throwable)
+            }
+        }
+    }
+
+    /**
+     * showCurrentTask 只选中已有卡片，不保证重排；仅重建我们自己的 pages 不会改变原生分页。
+     * AbsSwipeUpHandler 只在 RECENTS 终点调用 onSwipeUpAnimationSuccess，此时调用原生重排，
+     * 由它维护 mMovingTaskView（防回收）、currentPage 和 currentPageScrollDiff。
+     * 不在手势起点改顺序，否则会破坏 NEW_TASK / LAST_TASK 的底部快速切换。
+     */
+    private fun hookTaskOrder(ctx: HookContext, recentsClass: Class<*>, hooks: ResolvedHooks) {
+        try {
+            val move = hooks.moveRunningTask
+            val success = findMethod(recentsClass, "onSwipeUpAnimationSuccess", Void.TYPE)
+            val initialized = hooks.pageScrollsInitialized
+            val utilsClass = findField(recentsClass, "mUtils")?.type
+            val expectedIndex = utilsClass?.let {
+                findMethod(it, "getRunningTaskExpectedIndex", Int::class.javaPrimitiveType, hooks.taskClass)
+            }
+            if (move == null || success == null || initialized == null || expectedIndex == null) {
+                Logger.w(TAG, "未找到完整的原生任务重排契约，保留原生顺序")
+                return
+            }
+            // Flyme 手机分支返回 indexOfChild(runningTaskView)，并非最近任务首位。
+            // 仅在本模块发起的重排调用栈内覆盖；其余调用（尤其 NEW_TASK）保持原生语义。
+            Reflect.hookMethod(ctx.api, expectedIndex) { chain ->
+                val task = chain.getArg(0) as? View ?: return@hookMethod chain.proceed()
+                val recents = task.parent as? ViewGroup
+                val target = stateByRecents[recents]?.promotion?.expectedIndex(task)
+                target ?: chain.proceed()
+            }
+            Reflect.hookMethod(ctx.api, success) { chain ->
+                val recents = chain.getThisObject() as? ViewGroup
+                if (recents != null) {
+                    stateFor(recents).overviewCommitted = true
+                    stateFor(recents).orderSyncPending = true
+                    syncRunningTaskOrder(recents, hooks)
+                }
+                chain.proceed()
+            }
+        } catch (throwable: Throwable) {
+            Logger.e(TAG, "挂载任务重排失败", throwable)
+        }
+        // applyLoadPlan 可能晚于手势成功，且可能复用相同数量的卡片。
+        // 原生方法名+List 参数是任务加载契约，不引用匿名回调或混淆符号。
+        mountPart("任务列表更新") {
+            findMethod(recentsClass, "applyLoadPlan", Void.TYPE, List::class.java)?.let { method ->
+                Reflect.hookMethod(ctx.api, method) { chain ->
+                    val result = chain.proceed()
+                    val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
+                    val state = stateFor(recents)
+                    if (state.overviewCommitted) state.orderSyncPending = true
+                    syncRunningTaskOrder(recents, hooks)
+                    requestStackApply(recents, rebuildPages = true)
+                    result
+                }
+            }
+        }
+        mountPart("手势会话") {
+            findMethodsInHierarchy(recentsClass).firstOrNull {
+                it.name == "onGestureAnimationStart" && it.returnType == Void.TYPE && it.parameterTypes.size == 1
+            }?.let { method ->
+                Reflect.hookMethod(ctx.api, method) { chain ->
+                    (chain.getThisObject() as? ViewGroup)?.let { recents ->
+                        stateFor(recents).overviewCommitted = false
+                        stateFor(recents).orderSyncPending = false
+                    }
+                    chain.proceed()
+                }
+            }
+        }
+    }
+
+    private fun syncRunningTaskOrder(recents: ViewGroup, hooks: ResolvedHooks) {
+        val state = stateFor(recents)
+        if (!state.orderSyncPending || !invokeBoolean(hooks.pageScrollsInitialized, recents)) return
+        state.orderSyncPending = false
+        if (invokeBoolean(hooks.showAsGrid, recents) || invokeBoolean(hooks.isSplitSelectionActive, recents)) return
+        try {
+            val running = resolveRunningTaskView(recents, hooks) ?: return
+            val runningIndex = recents.indexOfChild(running)
+            if (hooks.currentPage?.invoke(recents) != runningIndex || isDesktopTaskView(running)) return
+            val home = hooks.getHomeTaskView?.invoke(recents)
+            var firstTaskIndex = -1
+            for (index in 0 until recents.childCount) {
+                val task = recents.getChildAt(index)
+                if (hooks.taskClass.isInstance(task) && task !== home &&
+                    !isDesktopTaskView(task) && !isLauncherTask(task, hooks)
+                ) {
+                    firstTaskIndex = index
+                    break
+                }
+            }
+            if (firstTaskIndex < 0 || firstTaskIndex >= runningIndex) return
+            if (Logger.debugEnabled) probeSnapshot(recents, hooks, "reorder-before")
+            state.promotion.withTarget(running, firstTaskIndex) {
+                hooks.moveRunningTask?.invoke(recents)
+            }
+            if (recents.indexOfChild(running) != firstTaskIndex) {
+                Logger.w(TAG, "原生运行卡归首未生效", "targetIndex" to firstTaskIndex,
+                    "actualIndex" to recents.indexOfChild(running))
+            }
+            if (Logger.debugEnabled) probeSnapshot(recents, hooks, "reorder-after")
+            requestStackApply(recents, rebuildPages = true)
+        } catch (throwable: Throwable) {
+            Logger.e(TAG, "同步运行任务顺序失败", throwable)
+        }
+    }
+
+    /** 同数量的 remove/add 重排也必须失效；在原生回收前撤销增量，避免污染复用的 TaskView。 */
+    private fun hookTaskLifecycle(ctx: HookContext, recentsClass: Class<*>) {
+        for (name in listOf("onViewRemoved", "onViewAdded")) {
+            try {
+                val method = findMethod(recentsClass, name, Void.TYPE, View::class.java) ?: continue
+                Reflect.hookMethod(ctx.api, method) { chain ->
+                    val recents = chain.getThisObject() as? ViewGroup
+                    val task = chain.getArg(0) as? View
+                    if (recents != null && task != null) {
+                        val state = stateFor(recents)
+                        if (name == "onViewRemoved") {
+                            state.taskStates.remove(task)?.let { restoreTaskTransforms(task, it) }
+                        }
+                        state.cachedPages = null
+                        state.cachedAxis = null
+                        state.pageRebuildPending = true
+                    }
+                    val result = chain.proceed()
+                    if (recents != null) requestStackApply(recents, rebuildPages = true)
+                    result
+                }
+            } catch (throwable: Throwable) {
+                Logger.e(TAG, "挂载任务生命周期失败", throwable, "callback" to name)
+            }
+        }
+    }
 
     private fun hookLayoutCallbacks(ctx: HookContext, recentsClass: Class<*>, hooks: ResolvedHooks) {
         val dispatchDraw = requireMethod(recentsClass, "dispatchDraw", Void.TYPE, Canvas::class.java)
         Reflect.hookMethod(ctx.api, dispatchDraw) { chain ->
             val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod chain.proceed()
             val state = stateFor(recents)
+            state.drawRequested = false
             val allowPageRebuild = state.pageRebuildPending
             state.pageRebuildPending = false
+            val probing = Logger.debugEnabled
+            val frameStart = if (probing) System.nanoTime() else 0L
+            if (probing) {
+                state.probe.setupEnd = 0L
+                state.probe.cardsEnd = 0L
+            }
             applyStack(ctx, recents, hooks, allowPageRebuild)
-            chain.proceed()
+            val applyEnd = if (probing) System.nanoTime() else 0L
+            val result = chain.proceed()
+            if (probing) {
+                state.probe.frame(recents, frameStart, applyEnd, System.nanoTime())
+                state.probe.pendingSnapshot?.let { event ->
+                    state.probe.pendingSnapshot = null
+                    probeSnapshot(recents, hooks, event)
+                }
+            }
+            result
         }
 
         val onLayout = requireMethod(
@@ -180,9 +447,14 @@ object IosDepthStackRecentsHook : FeatureHook {
         Reflect.hookMethod(ctx.api, onLayout) { chain ->
             val result = chain.proceed()
             val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
-            // 旋转后重新读取方向处理器，不能继续复用上一次布局的主轴。
-            stateFor(recents).cachedAxis = null
-            requestStackApply(recents, rebuildPages = true)
+            val state = stateFor(recents)
+            val axis = axisFor(recents, hooks)
+            val rotationChanged = state.cachedAxis?.rotation != axis.rotation
+            state.cachedAxis = axis
+            if (Logger.debugEnabled) state.probe.layoutCallbacks++
+            syncRunningTaskOrder(recents, hooks)
+            // 原生滚动期间也会重复 layout；仅实际页坐标、子节点或方向变化时重建。
+            requestStackApply(recents, rebuildPages = rotationChanged || !cachedPagesMatch(recents, state, hooks))
             result
         }
 
@@ -231,6 +503,8 @@ object IosDepthStackRecentsHook : FeatureHook {
                 // contentAlpha 归零后 setVisibility(GONE) 生效、dispatchDraw 不再触发，
                 // 堆叠通道无法常规清理，须在此立即复位。
                 if (alpha <= EPSILON && !state.applying) {
+                    state.overviewCommitted = false
+                    state.orderSyncPending = false
                     resetAllTransforms(ctx, recents, state, hooks)
                     state.quickswitchStray = false
                     state.strayHandled = false
@@ -256,6 +530,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
                 val state = stateFor(recents)
                 val scale = readAdjacentPageScale(recents, hooks)
+                if (Logger.debugEnabled) state.probe.scaleCallbacks++
                 // 用 scale 升降区分入场(1→0) / 退桌(0→1)，只在退桌同帧 apply。
                 if (scale > state.lastAdjacentPageScale + 0.001f && scale > 0.02f) {
                     state.detachFadeActive = true
@@ -265,13 +540,9 @@ object IosDepthStackRecentsHook : FeatureHook {
                 }
                 state.lastAdjacentPageScale = scale
                 state.adjacentPageScale = scale
-                // 入场/稳态只 request 由 dispatchDraw 统一重算，避免双倍 applyStack；
-                // 退桌必须同帧收敛，否则 exitFade 慢一帧会滞留堆叠卡。
-                if (state.detachFadeActive && !state.applying) {
-                    applyStack(ctx, recents, hooks, allowPageRebuild = false)
-                } else {
-                    requestStackApply(recents, rebuildPages = false)
-                }
+                // 属性更新发生在绘制前；dispatchDraw 前统一应用即可同帧生效，
+                // 退桌也无需在每次 setter 中重算所有卡片（原生 dispatchDraw 最后才提交 live tile）。
+                requestStackApply(recents, rebuildPages = false)
                 result
             }
         } ?: Logger.w(TAG, "未找到 updatePageScales，悬浮卡片缩放稳定跳过")
@@ -293,19 +564,21 @@ object IosDepthStackRecentsHook : FeatureHook {
             Reflect.hookMethod(ctx.api, method) { chain ->
                 val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod chain.proceed()
                 val active = chain.getArg(1) != null
+                stateFor(recents).liveChannels.clear()
                 recents.setTag(TAG_REMOTE_TARGETS, active)
-                trace(ctx, recents, "setRecentsAnimationTargets active=$active childCount=${recents.childCount}")
+                trace(ctx, recents) { "setRecentsAnimationTargets active=$active childCount=${recents.childCount}" }
                 chain.proceed()
             }
         }
         findMethod(recentsClass, "cleanupRemoteTargets", Void.TYPE)?.let { method ->
             Reflect.hookMethod(ctx.api, method) { chain ->
                 val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod chain.proceed()
-                trace(ctx, recents, "cleanupRemoteTargets before")
+                trace(ctx, recents) { "cleanupRemoteTargets before" }
                 recents.setTag(TAG_REMOTE_TARGETS, false)
+                stateFor(recents).liveChannels.clear()
                 val result = chain.proceed()
                 val recentsAfter = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
-                trace(ctx, recentsAfter, "cleanupRemoteTargets after")
+                trace(ctx, recentsAfter) { "cleanupRemoteTargets after" }
                 markPlaceholderReleasePending(ctx, recentsAfter, hooks)
                 requestStackApply(recentsAfter, rebuildPages = false)
                 result
@@ -326,11 +599,11 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val suppressed = thumbnail.getTag(TAG_PLACEHOLDER_SUPPRESSED) == true
                 if (suppressed && hasThumbnailView(ctx, thumbnail)) {
                     releasePlaceholderFromThumbnail(thumbnail)
-                    trace(ctx, thumbnail, "thumbnail onDraw release-before-draw hasThumb=true")
+                    trace(ctx, thumbnail) { "thumbnail onDraw release-before-draw hasThumb=true" }
                     return@hookMethod chain.proceed()
                 }
                 if (suppressed) {
-                    trace(ctx, thumbnail, "thumbnail onDraw suppressed hasThumb=false")
+                    trace(ctx, thumbnail) { "thumbnail onDraw suppressed hasThumb=false" }
                     return@hookMethod null
                 }
                 chain.proceed()
@@ -342,9 +615,8 @@ object IosDepthStackRecentsHook : FeatureHook {
             Reflect.hookMethod(ctx.api, method) { chain ->
                 val result = chain.proceed()
                 val thumbnail = chain.getThisObject() as? View ?: return@hookMethod result
-                val hasThumb = hasThumbnailView(ctx, thumbnail)
-                trace(ctx, thumbnail, "setThumbnail after pending=${thumbnail.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)} suppressed=${thumbnail.getTag(TAG_PLACEHOLDER_SUPPRESSED)} hasThumb=$hasThumb args=${chain.getArgs().size}")
-                if (thumbnail.getTag(TAG_PLACEHOLDER_RELEASE_PENDING) == true && hasThumb) {
+                trace(ctx, thumbnail) { "setThumbnail after pending=${thumbnail.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)} suppressed=${thumbnail.getTag(TAG_PLACEHOLDER_SUPPRESSED)} args=${chain.getArgs().size}" }
+                if (thumbnail.getTag(TAG_PLACEHOLDER_RELEASE_PENDING) == true && hasThumbnailView(ctx, thumbnail)) {
                     releasePlaceholderFromThumbnail(thumbnail)
                 }
                 result
@@ -361,7 +633,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val result = chain.proceed()
                 val task = chain.getThisObject() as? View ?: return@hookMethod result
                 val shouldShow = chain.getArg(0) as? Boolean ?: return@hookMethod result
-                trace(ctx, task, "setShouldShowScreenshot after shouldShow=$shouldShow pending=${task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)}")
+                trace(ctx, task) { "setShouldShowScreenshot after shouldShow=$shouldShow pending=${task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)}" }
                 if (shouldShow) releasePlaceholderTask(ctx, task)
                 result
             }
@@ -450,7 +722,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val value = (chain.getArg(0) as? Number)?.toFloat() ?: 0f
                 val task = chain.getThisObject() as? View ?: return@hookMethod chain.proceed()
                 val recents = task.parent as? ViewGroup ?: return@hookMethod chain.proceed()
-                val axis = axisFor(recents, hooks)
+                val axis = stateFor(recents).cachedAxis ?: axisFor(recents, hooks)
                 val isSecondaryAxis = if (axis.landscape) !isYAxis else isYAxis
                 val result = if (isSecondaryAxis) {
                     chain.proceed()
@@ -523,6 +795,8 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
                 val state = stateFor(recents)
                 if (state.applying) return@hookMethod result
+                state.overviewCommitted = false
+                state.orderSyncPending = false
                 resetAllTransforms(ctx, recents, state, hooks)
                 state.quickswitchStray = false
                 state.strayHandled = false
@@ -537,15 +811,17 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     /** 事件源只置标志并请求下一帧重绘，真正重算合并到 dispatchDraw 前一次。 */
     private fun requestStackApply(recents: ViewGroup, rebuildPages: Boolean) {
-        if (rebuildPages) stateFor(recents).pageRebuildPending = true
-        recents.postInvalidateOnAnimation()
+        val state = stateFor(recents)
+        if (rebuildPages) state.pageRebuildPending = true
+        if (!state.drawRequested) {
+            state.drawRequested = true
+            recents.postInvalidateOnAnimation()
+        }
     }
 
     // === 主循环 ===
 
     private fun applyStack(ctx: HookContext, recents: ViewGroup, hooks: ResolvedHooks, allowPageRebuild: Boolean) {
-        // 堆叠激活：桌面卡完全隐藏（native 翻页不参与，退出堆叠由 resetAllTransforms 恢复）。
-        setDesktopTasksVisible(recents, false)
         val state = stateFor(recents)
         if (state.applying) return
         state.applying = true
@@ -589,12 +865,15 @@ object IosDepthStackRecentsHook : FeatureHook {
             ) {
                 state.cachedPages!!
             } else {
+                if (Logger.debugEnabled) state.probe.rebuilds++
                 collectTaskPages(recents, hooks, state, axis).also {
                     state.cachedPages = it
                     state.cachedPagesChildCount = recents.childCount
                     state.cachedPagesRotation = rotation
                 }
             }
+            // 分类只在收集页时读取一次，不对 clear-all 等非任务视图逐帧反射 getType。
+            setDesktopTasksVisible(state, false)
             if (pages.isEmpty()) return
 
             val cardPrimarySize = pages.firstNotNullOfOrNull { page ->
@@ -672,13 +951,11 @@ object IosDepthStackRecentsHook : FeatureHook {
             val visualCenter = axis.primaryViewportSize(recents) / 2f
             if (TRACE_TASK_FRAMES) {
                 state.traceFrame++
-                trace(
-                    ctx,
-                    recents,
+                trace(ctx, recents) {
                     "frame=${state.traceFrame} rot=$rotation land=${axis.landscape} pages=${pages.size} " +
                         "scroll=$scrollPosition clamp=$clampedPosition over=$overscroll " +
-                        "fullscreen=${state.fullscreenProgress} content=${state.contentAlpha} remote=${recents.getTag(TAG_REMOTE_TARGETS)}",
-                )
+                        "fullscreen=${state.fullscreenProgress} content=${state.contentAlpha} remote=${recents.getTag(TAG_REMOTE_TARGETS)}"
+                }
             }
 
             // 每帧只解析一次运行卡（isRunningTask 内部即 getRunningTaskView 比较，逐卡 invoke 浪费）；
@@ -726,13 +1003,29 @@ object IosDepthStackRecentsHook : FeatureHook {
             val stackOverscroll = if (axis.invertStackDepth) -overscroll else overscroll
             // TaskViewSimulator.apply() 单独提交实时 Surface，View.scale 不会同步过去。
             // 以真实运行卡的深度为整组缩放基准，让它保持 1，其余卡保留相对大小。
-            val hasRunningLiveTile = runningOrdinal >= 0 && readLiveTileEnabled(recents, hooks) &&
-                !readRemoteTargetHandles(recents, hooks).isNullOrEmpty()
+            val liveHandles = if (runningOrdinal >= 0 && readLiveTileEnabled(recents, hooks)) {
+                readRemoteTargetHandles(recents, hooks)
+            } else null
+            val hasRunningLiveTile = !liveHandles.isNullOrEmpty()
+            if (Logger.debugEnabled) {
+                val probe = state.probe
+                probe.pageCount = pages.size
+                probe.frameBudgetNs = (1_000_000_000.0 / (recents.display?.refreshRate ?: 60f)).toLong()
+                val mode = (if (settledOverview) 1 else 0) or (if (scrolling) 2 else 0) or
+                    (if (state.quickswitchStray) 4 else 0) or (if (hasRunningLiveTile) 8 else 0) or
+                    (if (dismissing != null) 16 else 0) or (rotation shl 5)
+                if (probe.lastMode != mode) {
+                    probe.lastMode = mode
+                    probe.pendingSnapshot = "stack-mode-change"
+                }
+                probe.setupEnd = System.nanoTime()
+            }
             val runningDepthScale = if (hasRunningLiveTile) {
                 val relative = stackRelativeFor(
                     effectiveOrdinalFor(runningOrdinal, runningTaskView === dismissing) - clampedPosition,
                 )
-                RecentsDepthScale.at(relative) * overscrollSinkScale(relative, stackOverscroll)
+                state.taskStates[runningTaskView]?.geometry
+                    ?.update(visualCenter, cardPrimarySize, relative, stackOverscroll)?.scale ?: 1f
             } else {
                 1f
             }
@@ -740,7 +1033,6 @@ object IosDepthStackRecentsHook : FeatureHook {
             pages.forEachIndexed { ordinal, page ->
                 val task = page.view
                 val taskState = state.taskStates.getOrPut(task) { TaskVisualState(task.translationZ) }
-                val nativePrimaryTranslation = removeCustomPrimaryOffset(task, taskState, hooks, axis)
                 val isDismissing = task === dismissing
                 // live tile 用独立 surface，加 offset/scale 会让 TaskView 底板与 surface 分离露出；
                 // 特权仅授予锚定 running；占位抑制跟随真实身份（不锚定），防滑离主位时闪白板。
@@ -757,7 +1049,19 @@ object IosDepthStackRecentsHook : FeatureHook {
                 // Seascape 下 ordinal 与屏幕左右相反：曲线在视觉空间采样（stackRelative=-rel），
                 // 坐标再镜像回 layout；quickswitch 错位态把右侧滞留旧卡折叠到对称堆叠位。
                 val stackRelative = stackRelativeFor(relativePosition)
-                val visual = stackVisual(
+                // 深处完全透明的卡片不参与绘制：稳态连续隐藏时保留上次 RenderNode，
+                // 到达淡入边界即恢复全部通道同步。运行卡、删除和退场动画始终走完整路径。
+                if (settledOverview && !state.multiDismissActive && dismissing == null &&
+                    !isRunningView && stackRelative <= -3f &&
+                    taskState.lastAppliedAlpha == 0f && task.alpha == 0f
+                ) {
+                    taskState.frameRelativePosition = stackRelative
+                    taskState.frameVisibleAlpha = 0f
+                    if (Logger.debugEnabled) state.probe.skippedTransforms++
+                    return@forEachIndexed
+                }
+                val nativePrimaryTranslation = removeCustomPrimaryOffset(task, taskState, hooks, axis)
+                val visual = taskState.geometry.update(
                     visualCenter,
                     cardPrimarySize,
                     stackRelative,
@@ -780,9 +1084,12 @@ object IosDepthStackRecentsHook : FeatureHook {
                         primaryScroll
                     val customPrimaryOffset = (targetPrimaryCenter - layoutCenter) * stackLayoutAmount
                     applyCustomPrimaryOffset(task, taskState, hooks, axis, customPrimaryOffset)
-                    if (isRunning || (hasRunningLiveTile && isRunningView)) {
+                    // 缩放基准可以引用离开主位的运行卡，位移同步仍仅限锚定主位。
+                    // 离开后由原生 Simulator 的滚动通道驱动，避免强行把实时画面推到远端堆叠位。
+                    if (isRunning) {
                         syncRunningLiveTile(
-                            recents,
+                            state,
+                            liveHandles,
                             hooks,
                             axis.primaryTranslation(task),
                             axis.secondaryTranslation(task),
@@ -798,16 +1105,14 @@ object IosDepthStackRecentsHook : FeatureHook {
                 applyScale(task, taskState, hooks, scaleFactor)
                 if (TRACE_TASK_FRAMES && (abs(stackRelative) < 0.35f || isRunning)) {
                     val thumbnail = thumbnailViewForTask(ctx, task)
-                    trace(
-                        ctx,
-                        task,
+                    trace(ctx, task) {
                         "frame=${state.traceFrame} task ord=$ordinal child=${page.childIndex} rel=$relativePosition stackRel=$stackRelative eff=$effectiveOrdinal " +
                             "run=$isRunning dis=$isDismissing nativePrim=$nativePrimaryTranslation custom=${taskState.customPrimaryOffset} " +
                             "scaleFactor=$scaleFactor nativeScale=${taskState.nativeScale} stableScale=${taskState.lastStableNativeScale} " +
                             "sx=${task.scaleX} sy=${task.scaleY} tx=${task.translationX} ty=${task.translationY} z=${task.translationZ} alpha=${task.alpha} " +
                             "visPrim=$targetPrimaryCenter curvePrim=${visual.primaryCenter} visScale=${visual.scale} visAlpha=${visual.alpha} suppress=${thumbnail?.getTag(TAG_PLACEHOLDER_SUPPRESSED)} " +
-                            "pending=${task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)} hasThumb=${thumbnail?.let { hasThumbnailView(ctx, it) }} bounds=${task.left},${task.top},${task.right},${task.bottom}",
-                    )
+                            "pending=${task.getTag(TAG_PLACEHOLDER_RELEASE_PENDING)} hasThumb=${thumbnail?.let { hasThumbnailView(ctx, it) }} bounds=${task.left},${task.top},${task.right},${task.bottom}"
+                    }
                 }
                 // Z 序：默认/Seascape 按 ordinal；quickswitch 错位态按视觉堆叠深度；被删卡保持自身层级飞出。
                 val depthOrder = when {
@@ -828,6 +1133,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                 taskState.frameVisibleAlpha = alpha
             }
 
+            if (Logger.debugEnabled) state.probe.cardsEnd = System.nanoTime()
             // 标题遮挡/头部模糊依赖 getGlobalVisibleRect + overlay，开销大，仅稳定态计算；
             // 上层邻卡默认 ordinal+1，Seascape 镜像后为 ordinal-1。
             if (settledOverview && exitFade >= 1f - EPSILON && dismissing == null && !state.multiDismissActive) {
@@ -889,83 +1195,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         }
     }
 
-    // === 闭式几何（照 4933a65）===
-
-    /** 单帧内顺序消费的 scratch：stackVisual 填充后立即使用，避免每帧每卡分配。 */
-    private val scratchVisual = StackVisual()
-
-    private fun stackVisual(
-        viewportCenter: Float,
-        cardPrimarySize: Float,
-        relativePosition: Float,
-        overscroll: Float,
-    ): StackVisual {
-        scratchVisual.primaryCenter = stackPrimaryCenter(viewportCenter, cardPrimarySize, relativePosition, overscroll)
-        scratchVisual.scale = RecentsDepthScale.at(relativePosition) * overscrollSinkScale(relativePosition, overscroll)
-        scratchVisual.alpha = when {
-            relativePosition >= -2f -> 1f
-            relativePosition <= -3f -> 0f
-            else -> 3f + relativePosition
-        }
-        return scratchVisual
-    }
-
-    /** 主轴视口坐标下的卡片目标中心（横竖屏共用闭式曲线）。 */
-    private fun stackPrimaryCenter(
-        viewportCenter: Float,
-        cardPrimarySize: Float,
-        relativePosition: Float,
-        overscroll: Float,
-    ): Float {
-        val leftPeek = cardPrimarySize * LEFT_PEEK_FACTOR
-        val rightSpacing = cardPrimarySize * RIGHT_SPACING_FACTOR
-        val base = if (relativePosition <= 0f) {
-            val distance = -relativePosition
-            viewportCenter - leftPeek * (1f - LEFT_DECAY.pow(distance)) / (1f - LEFT_DECAY)
-        } else {
-            // 保持一页的间距，去掉中心附近导数趋零的幂函数缓动。
-            viewportCenter + relativePosition * rightSpacing
-        }
-        if (abs(overscroll) <= EPSILON) return base
-        val weight = if (overscroll < 0f) {
-            val distance = relativePosition.coerceAtLeast(0f)
-            0.72f + 0.55f * (distance / (distance + 0.6f))
-        } else {
-            val distance = (-relativePosition).coerceAtLeast(0f)
-            0.65f / (distance + 1f)
-        }
-        val absOverscroll = abs(overscroll)
-        val damped = absOverscroll / (1f + absOverscroll * 0.8f)
-        return base - overscroll.sign * damped * rightSpacing * weight
-    }
-
-    private fun overscrollSinkScale(relativePosition: Float, overscroll: Float): Float {
-        if (overscroll <= 0f) return 1f
-        val distance = (-relativePosition).coerceAtLeast(0f)
-        val sinkWeight = 0.3f + 0.7f * (distance / (distance + 0.8f))
-        val damped = overscroll / (1f + overscroll * 0.8f)
-        return 1f - damped * 0.15f * sinkWeight
-    }
-
     private fun lerp(start: Float, end: Float, t: Float): Float = start + (end - start) * t
-
-    /** 仅在 running task 接近当前页时用其原生位置锚定堆叠，避免横滑到邻页时整组卡片被远端 running task 拉飞。 */
-    private fun runningAnchorWeight(relativePosition: Float): Float {
-        val distance = abs(relativePosition)
-        if (distance <= 0.92f) return 1f
-        if (distance >= 1.28f) return 0f
-        return smoothStep((1.28f - distance) / 0.36f)
-    }
-
-    /** running task 锚点只影响它自身与左侧堆叠卡，右侧待切换卡保持原始滑动曲线，避免被锚点拉出弹簧感。 */
-    private fun runningAnchorInfluence(relativePosition: Float, anchorRelative: Float): Float {
-        if (anchorRelative.isNaN()) return 0f
-        if (relativePosition > anchorRelative + EPSILON) return 0f
-        val distance = anchorRelative - relativePosition
-        if (distance <= 1f) return 1f
-        if (distance >= 2.2f) return 0f
-        return smoothStep((2.2f - distance) / 1.2f)
-    }
 
     private fun smoothStep(v: Float): Float {
         val x = v.coerceIn(0f, 1f)
@@ -1017,14 +1247,15 @@ object IosDepthStackRecentsHook : FeatureHook {
         val pkg = task.context.packageName
         val iconId = task.resources.getIdentifier("icon", "id", pkg)
         state.iconView = if (iconId != 0) task.findViewById(iconId) else null
+        state.iconDrawableMethod = state.iconView?.let { findNoArgMethod(it.javaClass, "getDrawable") }
         // task_head 是图标+标题的父容器，入场淡入由 onSettledProgressUpdated 改写它的 alpha 驱动。
         val headId = task.resources.getIdentifier("task_head", "id", pkg)
         state.taskHeadView = if (headId != 0) task.findViewById(headId) else null
         return state.iconView
     }
 
-    private fun readIconDrawable(ctx: HookContext, icon: View): Drawable? = try {
-        Reflect.callMethod(ctx.api, icon, "getDrawable") as? Drawable
+    private fun readIconDrawable(state: TaskVisualState, icon: View): Drawable? = try {
+        state.iconDrawableMethod?.invoke(icon) as? Drawable
     } catch (_: Throwable) { null }
 
     /**
@@ -1042,7 +1273,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             if (state.headerBlurred) clearHeaderBlur(icon, state)
             return
         }
-        val source = readIconDrawable(ctx, icon)
+        val source = readIconDrawable(state, icon)
         if (source == null) { if (state.headerBlurred) clearHeaderBlur(icon, state); return }
 
         val density = task.resources.displayMetrics.density
@@ -1054,7 +1285,13 @@ object IosDepthStackRecentsHook : FeatureHook {
         val bounds = state.iconBounds
         bounds.set(0, 0, icon.width, icon.height)
         host.offsetDescendantRectToMyCoords(icon, bounds)
-        overlay.layout(bounds.left - paddingPx, bounds.top - paddingPx, bounds.right + paddingPx, bounds.bottom + paddingPx)
+        val left = bounds.left - paddingPx
+        val top = bounds.top - paddingPx
+        val right = bounds.right + paddingPx
+        val bottom = bounds.bottom + paddingPx
+        if (overlay.left != left || overlay.top != top || overlay.right != right || overlay.bottom != bottom) {
+            overlay.layout(left, top, right, bottom)
+        }
         overlay.rotation = icon.rotation
         overlay.scaleX = icon.scaleX
         overlay.scaleY = icon.scaleY
@@ -1064,7 +1301,11 @@ object IosDepthStackRecentsHook : FeatureHook {
         overlay.alpha = HEADER_BLUR_ALPHA
 
         if (!state.headerBlurred) {
-            overlay.setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.DECAL))
+            if (state.blurRadius != radius || state.blurEffect == null) {
+                state.blurEffect = RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.DECAL)
+                state.blurRadius = radius
+                overlay.setRenderEffect(state.blurEffect)
+            }
             state.iconNativeAlpha = icon.alpha
             host.overlay.add(overlay)
             state.overlayAdded = true
@@ -1077,7 +1318,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         val host = state.taskHeadView as? ViewGroup
         state.blurOverlay?.let { overlay ->
             if (state.overlayAdded) { host?.overlay?.remove(overlay); state.overlayAdded = false }
-            overlay.setRenderEffect(null)
+            // 从 overlay 移除即不再参与合成；保留 RenderEffect，下一次静止时直接复用。
         }
         icon.alpha = state.iconNativeAlpha
         state.headerBlurred = false
@@ -1268,7 +1509,8 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     private fun resetAllTransforms(ctx: HookContext, recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks) {
         // 退出堆叠：桌面卡恢复可见
-        setDesktopTasksVisible(recents, true)
+        setDesktopTasksVisible(state, true)
+        state.drawRequested = false
         // 清空模式随 reset 一并复位，防下次进 overview 误屏蔽单卡删除。
         state.multiDismissActive = false
         state.lastDismissMoveTime = 0L
@@ -1278,28 +1520,37 @@ object IosDepthStackRecentsHook : FeatureHook {
         val it = state.taskStates.entries.iterator()
         while (it.hasNext()) {
             val (task, ts) = it.next()
-            // 即便已从 parent 摘掉也要清 offset 通道：TaskView 被复用后残留会造成斜对角位移。
-            clearAllStackOffsetChannels(task, ts)
+            restoreTaskTransforms(task, ts)
             if (task.parent !== recents) { it.remove(); continue }
-            if (!ts.lastAppliedScale.isNaN()) { task.scaleX = ts.nativeScale; task.scaleY = ts.nativeScale; ts.lastAppliedScale = Float.NaN }
-            if (!ts.lastAppliedAlpha.isNaN()) { task.alpha = ts.nativeAlpha; ts.lastAppliedAlpha = Float.NaN }
-            if (ts.centerPivotApplied) { task.pivotX = ts.nativePivotX; task.pivotY = ts.nativePivotY; ts.centerPivotApplied = false }
-            task.translationZ = ts.initialTranslationZ
-            // 恢复标题原生 alpha 与可见性。
-            if (!ts.titleLastApplied.isNaN()) {
-                ts.titleView?.let { title ->
-                    title.alpha = ts.titleNativeAlpha
-                    if (title.visibility == View.INVISIBLE) title.visibility = View.VISIBLE
-                }
-                ts.titleLastApplied = Float.NaN
-            }
-            // 恢复头部模糊。
-            if (ts.headerBlurred) {
-                ts.iconView?.let { clearHeaderBlur(it, ts) }
-            }
             setPlaceholderSuppressed(ctx, task, false)
         }
         // 未进入 taskStates 的卡片没有模块增量，不改写其原生入场通道。
+    }
+
+    private fun restoreTaskTransforms(task: View, state: TaskVisualState) {
+        clearAllStackOffsetChannels(task, state)
+        if (!state.lastAppliedScale.isNaN()) {
+            task.scaleX = state.nativeScale
+            task.scaleY = state.nativeScale
+            state.lastAppliedScale = Float.NaN
+        }
+        if (!state.lastAppliedAlpha.isNaN()) {
+            task.alpha = state.nativeAlpha
+            state.lastAppliedAlpha = Float.NaN
+        }
+        if (state.centerPivotApplied) {
+            task.pivotX = state.nativePivotX
+            task.pivotY = state.nativePivotY
+            state.centerPivotApplied = false
+        }
+        task.translationZ = state.initialTranslationZ
+        if (!state.titleLastApplied.isNaN()) {
+            state.titleView?.alpha = state.titleNativeAlpha
+            state.titleLastApplied = Float.NaN
+        }
+        if (state.headerBlurred) state.iconView?.let { clearHeaderBlur(it, state) }
+        state.placeholderThumbnail?.let { releasePlaceholderThumbnail(it) }
+        task.setTag(TAG_PLACEHOLDER_RELEASE_PENDING, false)
     }
 
     private fun setPlaceholderSuppressed(ctx: HookContext, task: View, suppress: Boolean) {
@@ -1330,6 +1581,8 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     /** 热路径版：tag 无变化时跳过 setTag（getTag 为直读，开销可忽略）。 */
     private fun setPlaceholderSuppressedCached(ctx: HookContext, task: View, state: TaskVisualState, suppress: Boolean) {
+        // 非运行卡通常从未抑制占位层，无需解析其 TaskContainer / thumbnail。
+        if (!suppress && !state.placeholderThumbnailResolved) return
         val thumbnail = resolvePlaceholderThumbnail(ctx, task, state) ?: return
         if ((thumbnail.getTag(TAG_PLACEHOLDER_SUPPRESSED) == true) == suppress) return
         thumbnail.setTag(TAG_PLACEHOLDER_SUPPRESSED, suppress)
@@ -1390,9 +1643,9 @@ object IosDepthStackRecentsHook : FeatureHook {
         }
     }
 
-    private fun trace(ctx: HookContext, view: View, message: String) {
+    private inline fun trace(ctx: HookContext, view: View, crossinline message: () -> String) {
         if (!TRACE_PLACEHOLDER) return
-        Log.i(LOGCAT_TAG, "t=${SystemClock.uptimeMillis()} ${viewIdentity(ctx, view)} $message")
+        Logger.d(TAG) { "t=${SystemClock.uptimeMillis()} ${viewIdentity(ctx, view)} ${message()}" }
     }
 
     private fun viewIdentity(ctx: HookContext, view: View): String = try {
@@ -1411,22 +1664,40 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     // === 页面收集 ===
 
+    private fun cachedPagesMatch(recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks): Boolean {
+        val pages = state.cachedPages ?: return false
+        if (state.cachedPagesChildCount != recents.childCount) return false
+        val scrolls = try { hooks.pageScrollsField?.get(recents) as? IntArray } catch (_: Throwable) { null }
+        for (page in pages) {
+            if (recents.getChildAt(page.childIndex) !== page.view) return false
+            val scroll = scrolls?.getOrNull(page.childIndex)?.toFloat()
+                ?: (hooks.getScrollForPage.invoke(recents, page.childIndex) as? Number)?.toFloat()
+            if (scroll != page.pageScroll) return false
+        }
+        return true
+    }
+
     private fun collectTaskPages(recents: ViewGroup, hooks: ResolvedHooks, state: RecentsState, axis: RecentsAxis): List<TaskPage> {
         val pages = ArrayList<TaskPage>()
+        state.desktopTasks.clear()
         val homeTask = try { hooks.getHomeTaskView?.invoke(recents) as? View } catch (_: Throwable) { null }
         for (index in 0 until recents.childCount) {
             val child = recents.getChildAt(index)
             if (!hooks.taskClass.isInstance(child)) continue
             state.taskStates.getOrPut(child) { TaskVisualState(child.translationZ) }
+            if (isDesktopTaskView(child)) {
+                state.desktopTasks.add(child)
+            }
             if (child === homeTask || isLauncherTask(child, hooks)) continue
             // 与 axis.primaryScroll 同空间：不二次符号翻转；Landscape 的 RTL 已写入 mPageScrolls。
             val pageScroll = (hooks.getScrollForPage.invoke(recents, index) as? Number)?.toFloat() ?: continue
             pages += TaskPage(child, index, pageScroll)
         }
         if (pages.size <= 1) return pages
-        val sorted = pages.sortedBy { it.pageScroll }
-        val usable = sorted.zipWithNext().any { (a, b) -> abs(b.pageScroll - a.pageScroll) > 1f }
-        if (usable) return sorted
+        pages.sortBy { it.pageScroll }
+        for (index in 1 until pages.size) {
+            if (abs(pages[index].pageScroll - pages[index - 1].pageScroll) > 1f) return pages
+        }
         // pageScroll 不可用时按主轴视口相对位置回退。
         val viewportHalf = axis.primaryViewportSize(recents) / 2f
         return pages.map { page ->
@@ -1441,24 +1712,25 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     /** 桌面进程卡片（DesktopTaskView）特征：getType() == TaskViewType.DESKTOP；结果缓存防混淆依赖类名。 */
-    private val taskTypeMethodCache = ConcurrentHashMap<Class<*>, Method?>()
+    private val taskTypeMethodCache = HashMap<Class<*>, Method?>()
 
     private fun isDesktopTaskView(task: View): Boolean = try {
-        val m = taskTypeMethodCache.computeIfAbsent(task.javaClass) { c ->
-            runCatching { c.getMethod("getType") }.getOrNull()
-        } ?: return false
+        val clazz = task.javaClass
+        // HashMap 保存 null，缺少可选 API 的版本不会逐帧抛 NoSuchMethodException。
+        if (!taskTypeMethodCache.containsKey(clazz)) {
+            taskTypeMethodCache[clazz] = findNoArgMethod(clazz, "getType")
+        }
+        val m = taskTypeMethodCache[clazz] ?: return false
         (m.invoke(task) as? Enum<*>)?.name == "DESKTOP"
     } catch (_: Throwable) {
         false
     }
 
     /** 桌面卡完全隐藏；退出/复位时恢复。INVISIBLE 保留布局尺寸，不影响原生分页计算。 */
-    private fun setDesktopTasksVisible(recents: ViewGroup, visible: Boolean) {
-        for (i in 0 until recents.childCount) {
-            val child = recents.getChildAt(i) ?: continue
-            if (isDesktopTaskView(child)) {
-                child.visibility = if (visible) View.VISIBLE else View.INVISIBLE
-            }
+    private fun setDesktopTasksVisible(state: RecentsState, visible: Boolean) {
+        val visibility = if (visible) View.VISIBLE else View.INVISIBLE
+        for (child in state.desktopTasks) {
+            if (child.visibility != visibility) child.visibility = visibility
         }
     }
 
@@ -1530,16 +1802,22 @@ object IosDepthStackRecentsHook : FeatureHook {
     private fun pagesIndexOf(pages: List<TaskPage>, view: View?): Int =
         if (view == null) -1 else pages.indexOfFirst { it.view === view }
 
-    private fun syncRunningLiveTile(recents: ViewGroup, hooks: ResolvedHooks, primary: Float, secondary: Float) {
+    private fun syncRunningLiveTile(state: RecentsState, handles: Array<*>?, hooks: ResolvedHooks, primary: Float, secondary: Float) {
         try {
-            if (!readLiveTileEnabled(recents, hooks)) return
-            val handles = readRemoteTargetHandles(recents, hooks) ?: return
+            if (handles == null) return
             for (handle in handles) {
-                val simulator = hooks.getTaskViewSimulator?.invoke(handle ?: continue) ?: continue
-                val primaryFloat = hooks.taskPrimaryTranslationField?.get(simulator) ?: continue
-                hooks.animatedFloatValueField?.setFloat(primaryFloat, primary)
-                val secondaryFloat = hooks.taskSecondaryTranslationField?.get(simulator)
-                hooks.animatedFloatValueField?.setFloat(secondaryFloat, secondary)
+                if (handle == null) continue
+                // Simulator 和两个 AnimatedFloat 均为 final，每轮 targets 生命周期只解析一次。
+                var channels = state.liveChannels[handle]
+                if (channels == null) {
+                    val simulator = hooks.getTaskViewSimulator?.invoke(handle) ?: continue
+                    val primaryFloat = hooks.taskPrimaryTranslationField?.get(simulator) ?: continue
+                    val secondaryFloat = hooks.taskSecondaryTranslationField?.get(simulator) ?: continue
+                    channels = LiveTileChannels(primaryFloat, secondaryFloat)
+                    state.liveChannels[handle] = channels
+                }
+                hooks.animatedFloatValueField?.setFloat(channels.primary, primary)
+                hooks.animatedFloatValueField?.setFloat(channels.secondary, secondary)
             }
         } catch (_: Throwable) {
             return
@@ -1626,16 +1904,15 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     private data class TaskPage(val view: View, val childIndex: Int, val pageScroll: Float)
 
-    /** 帧内 scratch：由 stackVisual 填充，单帧顺序消费，避免每帧每卡分配。 */
-    private class StackVisual {
-        var primaryCenter = 0f
-        var scale = 1f
-        var alpha = 1f
-    }
+    private data class LiveTileChannels(val primary: Any, val secondary: Any)
 
     private class RecentsState {
         var applying = false
         var overviewEnabled = false
+        var overviewCommitted = false
+        var orderSyncPending = false
+        val probe = RecentsStackProbe()
+        val promotion = RecentsTaskPromotion()
         var contentAlpha = 0f
         var fullscreenProgress = 0f
         var fullscreenProgressKnown = false
@@ -1656,11 +1933,14 @@ object IosDepthStackRecentsHook : FeatureHook {
         var detachFadeActive = false
         var rotation = -1
         var pageRebuildPending = false
+        var drawRequested = false
         var cachedPages: List<TaskPage>? = null
         var cachedPagesChildCount = -1
         var cachedPagesRotation = -1
         var cachedAxis: RecentsAxis? = null
         val taskStates = IdentityHashMap<View, TaskVisualState>()
+        val desktopTasks = ArrayList<View>()
+        val liveChannels = IdentityHashMap<Any, LiveTileChannels>()
         // dismiss 接管：正在删除的卡与删除进度(0→1，按被删卡次轴位移/卡高)。
         var dismissingTask: View? = null
         var dismissProgress = 0f
@@ -1672,6 +1952,7 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     private class TaskVisualState(val initialTranslationZ: Float) {
+        val geometry = RecentsStackGeometry()
         var offsetResolved = false
         var offsetRotation = -1
         var offsetProperty: FloatProperty<Any>? = null
@@ -1700,11 +1981,14 @@ object IosDepthStackRecentsHook : FeatureHook {
         // 头部模糊：icon 视图、承接模糊扩散的 overlay 及生效标记。
         var headerResolved = false
         var iconView: View? = null
+        var iconDrawableMethod: Method? = null
         var taskHeadView: View? = null
         var iconNativeAlpha = 1f
         var blurOverlay: BlurredIconOverlayView? = null
         var overlayAdded = false
         var headerBlurred = false
+        var blurEffect: RenderEffect? = null
+        var blurRadius = Float.NaN
         val iconBounds = Rect()
         // 占位底板视图缓存：TaskView 回收/容器重建后经 isAttachedToWindow 校验失效重解析。
         var placeholderThumbnailResolved = false
@@ -1780,5 +2064,11 @@ object IosDepthStackRecentsHook : FeatureHook {
         val animatedFloatValueField: Field?,
         val adjacentPageScaleField: Field?,
         val pageInTransitionField: Field?,
+        val moveRunningTask: Method?,
+        val pageScrollsInitialized: Method?,
+        val currentPage: Method?,
+        val runningTaskIndex: Method?,
+        val taskViewId: Method?,
+        val pageScrollsField: Field?,
     )
 }
