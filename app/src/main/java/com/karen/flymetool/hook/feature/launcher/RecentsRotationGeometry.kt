@@ -29,9 +29,11 @@ import android.view.ViewGroup
  * ## 视口主轴公式（横竖统一）
  * ```
  * visualCenter = primaryViewportSize / 2
- * nativeCenter = childPrimaryStart + primarySize/2 - primaryScroll + nativeOffset
- * customOffset = stackPrimaryCenter(...) - nativeCenter
+ * layoutCenter = childPrimaryStart + primarySize/2 - primaryScroll
+ * customOffset = stackPrimaryCenter(...) - layoutCenter
+ * visualCenterWithAnimation = stackPrimaryCenter(...) + nativeTranslation
  * ```
+ * 原生入场/退场位移继续叠加，首次绑定及复位只能撤销模块增量，不能清零原生通道。
  *
  * Landscape 的 pageScroll 方向已由 `getRecentsRtlSetting` 写入 `mPageScrolls` /
  * `getScrollForPage`，排序与插值直接使用该逻辑空间，不再二次符号翻转。

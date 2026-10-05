@@ -39,7 +39,6 @@ object IosDepthStackRecentsHook : FeatureHook {
     private const val LEFT_PEEK_FACTOR = 0.24f
     private const val LEFT_DECAY = 0.28f
     private const val RIGHT_SPACING_FACTOR = 0.85f
-    private const val RIGHT_PARALLAX_EXPONENT = 1.2f
     private const val FOCUSED_SCALE = 1f
     private const val MIN_LEFT_SCALE = 0.956f
     private const val LEFT_SCALE_DECAY = 0.50f
@@ -129,6 +128,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             animatedFloatValueField = findField(animatedFloatClass, "value"),
             // Flyme 退桌动画驱动 ADJACENT_PAGE_SCALE(0→1)，contentAlpha 直到动画结束才置 0。
             adjacentPageScaleField = findField(recentsClass, "mAdjacentPageScale"),
+            pageInTransitionField = findField(recentsClass, "mIsPageInTransition"),
         )
 
         hookLayoutCallbacks(ctx, recentsClass, hooks)
@@ -145,10 +145,8 @@ object IosDepthStackRecentsHook : FeatureHook {
         // 都能重新进入 anchoredRunning/quickswitchStray 修正（防止滑动期 running 卡邻卡化）。
         findMethod(recentsClass, "moveRunningTaskToExpectedPosition", Void.TYPE)?.let { m ->
             Reflect.hookMethod(ctx.api, m) { chain ->
-                Logger.i(TAG, "MOVE-RUNNING before t=${SystemClock.uptimeMillis()}")
                 val result = chain.proceed()
                 val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
-                Logger.i(TAG, "MOVE-RUNNING after children=${recents.childCount} order=[${(0 until recents.childCount).joinToString { i -> taskIdentity(ctx, recents.getChildAt(i)) }}]")
                 stateFor(recents).apply {
                     quickswitchStray = false
                     strayHandled = false
@@ -161,12 +159,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             }
         }
 
-        Logger.i(
-            TAG,
-            "已挂载: recents=${recentsClass.name}, task=${taskClass.name}, " +
-                "独立位移属性=${hooks.horizontalOffsetProperty != null}, " +
-                "方向处理器=${pagedOrientationHandler != null}",
-        )
+        Logger.i(TAG, "已挂载堆叠最近任务")
     }
 
     // === Hooks ===
@@ -189,7 +182,10 @@ object IosDepthStackRecentsHook : FeatureHook {
         )
         Reflect.hookMethod(ctx.api, onLayout) { chain ->
             val result = chain.proceed()
-            requestStackApply(chain.getThisObject() as? ViewGroup ?: return@hookMethod result, rebuildPages = true)
+            val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
+            // 旋转后重新读取方向处理器，不能继续复用上一次布局的主轴。
+            stateFor(recents).cachedAxis = null
+            requestStackApply(recents, rebuildPages = true)
             result
         }
 
@@ -600,10 +596,6 @@ object IosDepthStackRecentsHook : FeatureHook {
                     state.cachedPages = it
                     state.cachedPagesChildCount = recents.childCount
                     state.cachedPagesRotation = rotation
-                    // 诊断：rebuild 时打印页面顺序与滚动位置
-                    val running = resolveRunningTaskView(recents, hooks)
-                    val runningOrd = pagesIndexOf(it, running)
-                    Logger.i(TAG, "REBUILD pages=[${it.joinToString { p -> taskIdentity(ctx, p.view) }}] scrollPos=${calculateScrollPosition(it, axis.primaryScroll(recents))} runningOrd=$runningOrd running=${running?.let { v -> taskIdentity(ctx, v) }} children=${recents.childCount}")
                 }
             }
             if (pages.isEmpty()) return
@@ -614,6 +606,18 @@ object IosDepthStackRecentsHook : FeatureHook {
 
             // pageScroll 与 primaryScroll 同处 handler 主轴逻辑空间；Landscape 的 RTL 已体现在 getScrollForPage。
             val primaryScroll = axis.primaryScroll(recents)
+            val scrollChanged = state.lastPrimaryScroll.isNaN() ||
+                abs(primaryScroll - state.lastPrimaryScroll) > EPSILON
+            state.lastPrimaryScroll = primaryScroll
+            // PagedView 的过渡状态同时覆盖手指拖动和松手后的惯性滚动。
+            val pageInTransition = try {
+                hooks.pageInTransitionField?.getBoolean(recents) ?: false
+            } catch (_: Throwable) {
+                false
+            }
+            val scrolling = pageInTransition || scrollChanged
+            // 原生 draw() 在 dispatchDraw 后结束翻页；补一帧以恢复静止态装饰。
+            if (scrollChanged) recents.postInvalidateOnAnimation()
             val scrollPosition = calculateScrollPosition(pages, primaryScroll)
             val maxPosition = (pages.size - 1).coerceAtLeast(0).toFloat()
             val clampedPosition = scrollPosition.coerceIn(0f, maxPosition)
@@ -758,12 +762,12 @@ object IosDepthStackRecentsHook : FeatureHook {
                 // 被删卡的主轴位移交给原生(飞出/回弹)。running task 的 live tile surface 同步到相同 offset，
                 // 保持原始堆叠手感，同时避免 TaskView 底板与 surface 分离露出纯色占位层。
                 if (!isDismissing) {
-                    // 视口主轴坐标：nativeCenter = start + size/2 - scroll + nativeOffset
-                    val nativeCenter = axis.childPrimaryStart(task) +
+                    // 只校正布局中心，原生入场/退场位移仍叠加在堆叠位置上。
+                    // 横屏共享 primaryTaskOffset，也不能从目标值中抵消原生动画基线。
+                    val layoutCenter = axis.childPrimaryStart(task) +
                         axis.childPrimarySize(task) / 2f -
-                        primaryScroll +
-                        nativePrimaryTranslation
-                    val customPrimaryOffset = (targetPrimaryCenter - nativeCenter) * stackLayoutAmount
+                        primaryScroll
+                    val customPrimaryOffset = (targetPrimaryCenter - layoutCenter) * stackLayoutAmount
                     applyCustomPrimaryOffset(task, taskState, hooks, axis, customPrimaryOffset)
                     if (isRunning) {
                         syncRunningLiveTile(
@@ -812,20 +816,28 @@ object IosDepthStackRecentsHook : FeatureHook {
             // 标题遮挡/头部模糊依赖 getGlobalVisibleRect + overlay，开销大，仅稳定态计算；
             // 上层邻卡默认 ordinal+1，Seascape 镜像后为 ordinal-1。
             if (settledOverview && exitFade >= 1f - EPSILON && dismissing == null && !state.multiDismissActive) {
-                pages.forEach { it.view.getGlobalVisibleRect(state.taskStates.getValue(it.view).bounds) }
+                pages.forEach { page ->
+                    val ts = state.taskStates.getValue(page.view)
+                    ts.bounds.setEmpty()
+                    if (ts.frameVisibleAlpha > 0.05f && !page.view.getGlobalVisibleRect(ts.bounds)) {
+                        ts.bounds.setEmpty()
+                    }
+                }
                 val frontOrdinalDelta = if (axis.invertStackDepth) -1 else 1
                 pages.forEachIndexed { ordinal, page ->
                     val taskState = state.taskStates.getValue(page.view)
                     val frontBounds = pages.getOrNull(ordinal + frontOrdinalDelta)
                         ?.let { state.taskStates.getValue(it.view).bounds }
-                    applyTitleOcclusion(page.view, taskState, frontBounds, axis)
+                    if (!taskState.bounds.isEmpty) {
+                        applyTitleOcclusion(page.view, taskState, frontBounds, axis)
+                    }
                 }
                 // 头部模糊：可见堆叠中后方 peek（stackRel 最小且仍可见）。
                 var blurIndex = -1
                 var minStackRel = Float.MAX_VALUE
                 pages.forEachIndexed { index, page ->
                     val ts = state.taskStates.getValue(page.view)
-                    if (ts.frameVisibleAlpha > 0.05f && ts.frameRelativePosition < minStackRel) {
+                    if (!scrolling && !ts.bounds.isEmpty && ts.frameRelativePosition < minStackRel) {
                         minStackRel = ts.frameRelativePosition
                         blurIndex = index
                     }
@@ -852,15 +864,11 @@ object IosDepthStackRecentsHook : FeatureHook {
                     }
                 }
             }
-            // 诊断：翻页帧摘要（节流 150ms）
-            val nowMs = SystemClock.uptimeMillis()
-            if (nowMs - state.lastFrameLogMs >= 150) {
-                state.lastFrameLogMs = nowMs
-                val rels = pages.mapIndexed { i, _ -> (i - clampedPosition) }.joinToString { String.format("%.1f", it) }
-                Logger.i(TAG, "FRAME stray=${state.quickswitchStray} scroll=${String.format("%.2f", scrollPosition)} clamp=${String.format("%.2f", clampedPosition)} runOrd=$runningOrdinal anchored=${anchoredRunning != null} settled=$settledOverview rels=[$rels]")
-            }
         } catch (throwable: Throwable) {
-            Logger.once(TAG, "runtime_degrade", "运行时降级: ${throwable.javaClass.simpleName}: ${throwable.message}")
+            if (!state.runtimeFailureLogged) {
+                state.runtimeFailureLogged = true
+                Logger.e(TAG, "堆叠布局计算失败", throwable)
+            }
         } finally {
             state.applying = false
         }
@@ -900,7 +908,8 @@ object IosDepthStackRecentsHook : FeatureHook {
             val distance = -relativePosition
             viewportCenter - leftPeek * (1f - LEFT_DECAY.pow(distance)) / (1f - LEFT_DECAY)
         } else {
-            viewportCenter + relativePosition.pow(RIGHT_PARALLAX_EXPONENT) * rightSpacing
+            // 保持一页的间距，去掉中心附近导数趋零的幂函数缓动。
+            viewportCenter + relativePosition * rightSpacing
         }
         if (abs(overscroll) <= EPSILON) return base
         val weight = if (overscroll < 0f) {
@@ -969,7 +978,7 @@ object IosDepthStackRecentsHook : FeatureHook {
     private fun applyTitleOcclusion(task: View, state: TaskVisualState, frontBounds: Rect?, axis: RecentsAxis) {
         val title = resolveTitle(task, state) ?: return
         val visibleFraction = if (frontBounds == null) 1f else {
-            title.getGlobalVisibleRect(scratchRect)
+            if (!title.getGlobalVisibleRect(scratchRect)) return
             val childStart = axis.boundsPrimaryStart(scratchRect)
             val childEnd = axis.boundsPrimaryEnd(scratchRect)
             val frontStart = axis.boundsPrimaryStart(frontBounds)
@@ -988,9 +997,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         val applied = state.titleNativeAlpha * occlusionAlpha
         if (abs(title.alpha - applied) > EPSILON) title.alpha = applied
         state.titleLastApplied = applied
-        val hidden = occlusionAlpha <= 0.02f
-        if (hidden && title.visibility == View.VISIBLE) title.visibility = View.INVISIBLE
-        else if (!hidden && title.visibility == View.INVISIBLE) title.visibility = View.VISIBLE
+        // alpha 已能完成遮挡；切 visibility 会导致不可见标题的 bounds 失效。
     }
 
     /** 定位并缓存卡片头部图标(icon)视图。 */
@@ -1015,6 +1022,7 @@ object IosDepthStackRecentsHook : FeatureHook {
      * 对 overlay 施加模糊后原图标 alpha 置 0——模糊可向外扩散，不被图标矩形 bounds 裁成硬边。
      */
     private fun applyHeaderBlur(ctx: HookContext, task: View, state: TaskVisualState, enable: Boolean) {
+        if (!enable && !state.headerBlurred) return
         val icon = resolveHeader(task, state) ?: return
         // overlay 挂到 task_head 的 ViewOverlay：随宿主一起绘制并继承其 alpha，
         // 于是入场淡入(onSettledProgressUpdated 改写 task_head.alpha)自动带上模糊图标，
@@ -1033,7 +1041,8 @@ object IosDepthStackRecentsHook : FeatureHook {
         val overlay = state.blurOverlay ?: BlurredIconOverlayView(task.context).also { state.blurOverlay = it }
         if (!overlay.updateSource(source)) { if (state.headerBlurred) clearHeaderBlur(icon, state); return }
 
-        val bounds = Rect(0, 0, icon.width, icon.height)
+        val bounds = state.iconBounds
+        bounds.set(0, 0, icon.width, icon.height)
         host.offsetDescendantRectToMyCoords(icon, bounds)
         overlay.layout(bounds.left - paddingPx, bounds.top - paddingPx, bounds.right + paddingPx, bounds.bottom + paddingPx)
         overlay.rotation = icon.rotation
@@ -1099,29 +1108,29 @@ object IosDepthStackRecentsHook : FeatureHook {
         state.lastAppliedPrimaryTranslation = translation
     }
 
-    private fun clearCustomPrimaryOffset(task: View, state: TaskVisualState, hooks: ResolvedHooks, axis: RecentsAxis) {
-        val property = resolveOffsetProperty(task, state, hooks, axis)
-        if (property != null) {
-            if (abs(state.customPrimaryOffset) > EPSILON) {
-                try { property.set(task, state.nativeStackOffset) } catch (_: Throwable) {}
-                state.customPrimaryOffset = 0f
+    /**
+     * 仅撤销本模块实际写入的增量。使用绑定时保存的 property，旋转后仍能清理旧轴。
+     * Flyme 用 primaryTaskOffset 驱动入场，不能无条件把两条通道都清零；
+     * 若原生已覆盖该属性，则保留新的原生值，避免复位时再写回过期基线。
+     */
+    private fun clearAllStackOffsetChannels(task: View, state: TaskVisualState) {
+        try {
+            val property = state.offsetProperty
+            if (property != null && abs(state.customPrimaryOffset) > EPSILON) {
+                val expected = state.nativeStackOffset + state.customPrimaryOffset
+                if (abs(property.get(task) - expected) <= EPSILON) {
+                    property.set(task, state.nativeStackOffset)
+                }
+            } else if (property == null && !state.lastAppliedPrimaryTranslation.isNaN()) {
+                val oldAxis = RecentsAxis(state.offsetRotation, RecentsAxis.isLandscape(state.offsetRotation))
+                if (abs(oldAxis.primaryTranslation(task) - state.lastAppliedPrimaryTranslation) <= EPSILON) {
+                    oldAxis.setPrimaryTranslation(task, state.nativePrimaryTranslation)
+                }
             }
+        } catch (throwable: Throwable) {
+            Logger.e(TAG, "恢复原生卡片位移失败", throwable)
             return
         }
-        if (!state.lastAppliedPrimaryTranslation.isNaN()) {
-            axis.setPrimaryTranslation(task, state.nativePrimaryTranslation)
-            state.lastAppliedPrimaryTranslation = Float.NaN
-        }
-    }
-
-    /**
-     * 同时清掉竖屏 horizontalOffset(X) 与横屏 primaryTaskOffset(Y) 两条堆叠通道。
-     * 切轴/退出 overview 后 state.rotation 可能已是 -1 或新方向，只清“当前轴”会让另一轴残留，
-     * 表现为横屏卡片既有 X 又有 Y → 斜对角飞出视口。
-     */
-    private fun clearAllStackOffsetChannels(task: View, state: TaskVisualState, hooks: ResolvedHooks) {
-        zeroOffsetProperty(task, hooks.horizontalOffsetProperty)
-        zeroOffsetProperty(task, hooks.primaryTaskOffsetProperty)
         state.customPrimaryOffset = 0f
         state.nativeStackOffset = 0f
         state.lastAppliedPrimaryTranslation = Float.NaN
@@ -1130,41 +1139,20 @@ object IosDepthStackRecentsHook : FeatureHook {
         state.offsetProperty = null
     }
 
-    private fun zeroOffsetProperty(task: View, getter: Method?) {
-        if (getter == null) return
-        try {
-            @Suppress("UNCHECKED_CAST")
-            val property = getter.invoke(task) as? FloatProperty<Any> ?: return
-            property.set(task, 0f)
-        } catch (_: Throwable) {
-            return
-        }
-    }
-
     /**
      * 竖屏：horizontalOffset（只进 applyTranslationX，与原生 page offset 通道分离）。
      * 横屏：primaryTaskOffset（Landscape/Seascape 主轴 = Y，对应 TASK_OFFSET_TRANSLATION_Y）。
-     * 绑定时先把“非当前轴”的堆叠通道置 0，避免竖屏→横屏残留 X 造成斜排。
+     * 首次绑定只读取基线；切轴时只撤销旧轴中本模块的增量。
      */
     private fun resolveOffsetProperty(task: View, state: TaskVisualState, hooks: ResolvedHooks, axis: RecentsAxis): FloatProperty<Any>? {
         if (state.offsetResolved && state.offsetRotation == axis.rotation) return state.offsetProperty
-        // 轴切换：清掉另一条通道上的自定义位移（property 值留在 View 上，不只是我们的 state）。
-        if (axis.landscape) {
-            zeroOffsetProperty(task, hooks.horizontalOffsetProperty)
-        } else {
-            zeroOffsetProperty(task, hooks.primaryTaskOffsetProperty)
-        }
+        clearAllStackOffsetChannels(task, state)
         state.offsetResolved = true
         state.offsetRotation = axis.rotation
         val method = if (axis.landscape) hooks.primaryTaskOffsetProperty else hooks.horizontalOffsetProperty
         @Suppress("UNCHECKED_CAST")
         state.offsetProperty = try { method?.invoke(task) as? FloatProperty<Any> } catch (_: Throwable) { null }
-        // 只认原生基线；我们的 custom 从 0 重新累加，避免把残留 custom 读成 native。
-        state.nativeStackOffset = 0f
-        try {
-            state.offsetProperty?.set(task, 0f)
-        } catch (_: Throwable) {
-        }
+        state.nativeStackOffset = state.offsetProperty?.get(task) ?: 0f
         state.customPrimaryOffset = 0f
         return state.offsetProperty
     }
@@ -1242,7 +1230,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         val it = state.taskStates.entries.iterator()
         while (it.hasNext()) {
             val (task, ts) = it.next()
-            clearAllStackOffsetChannels(task, ts, hooks)
+            clearAllStackOffsetChannels(task, ts)
             if (task.parent !== recents) {
                 it.remove()
                 continue
@@ -1266,13 +1254,6 @@ object IosDepthStackRecentsHook : FeatureHook {
             ts.nativeAlpha = 1f
             setPlaceholderSuppressed(ctx, task, false)
         }
-        for (i in 0 until recents.childCount) {
-            val child = recents.getChildAt(i) ?: continue
-            if (!hooks.taskClass.isInstance(child)) continue
-            if (state.taskStates.containsKey(child)) continue
-            zeroOffsetProperty(child, hooks.horizontalOffsetProperty)
-            zeroOffsetProperty(child, hooks.primaryTaskOffsetProperty)
-        }
     }
 
     private fun resetAllTransforms(ctx: HookContext, recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks) {
@@ -1283,11 +1264,12 @@ object IosDepthStackRecentsHook : FeatureHook {
         state.lastDismissMoveTime = 0L
         state.dismissingTask = null
         state.dismissProgress = 0f
+        state.lastPrimaryScroll = Float.NaN
         val it = state.taskStates.entries.iterator()
         while (it.hasNext()) {
             val (task, ts) = it.next()
             // 即便已从 parent 摘掉也要清 offset 通道：TaskView 被复用后残留会造成斜对角位移。
-            clearAllStackOffsetChannels(task, ts, hooks)
+            clearAllStackOffsetChannels(task, ts)
             if (task.parent !== recents) { it.remove(); continue }
             if (!ts.lastAppliedScale.isNaN()) { task.scaleX = ts.nativeScale; task.scaleY = ts.nativeScale; ts.lastAppliedScale = Float.NaN }
             if (!ts.lastAppliedAlpha.isNaN()) { task.alpha = ts.nativeAlpha; ts.lastAppliedAlpha = Float.NaN }
@@ -1307,14 +1289,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             }
             setPlaceholderSuppressed(ctx, task, false)
         }
-        // 仍挂在 recents 下但未入 taskStates 的 TaskView 也清一遍（旋转后新建 state 前的残留）。
-        for (i in 0 until recents.childCount) {
-            val child = recents.getChildAt(i) ?: continue
-            if (!hooks.taskClass.isInstance(child)) continue
-            if (state.taskStates.containsKey(child)) continue
-            zeroOffsetProperty(child, hooks.horizontalOffsetProperty)
-            zeroOffsetProperty(child, hooks.primaryTaskOffsetProperty)
-        }
+        // 未进入 taskStates 的卡片没有模块增量，不改写其原生入场通道。
     }
 
     private fun setPlaceholderSuppressed(ctx: HookContext, task: View, suppress: Boolean) {
@@ -1662,8 +1637,8 @@ object IosDepthStackRecentsHook : FeatureHook {
         var strayAnchorScroll = 0f
         // 锚点在首次稳态时才记录（入场动画中 scroll 由动画驱动，不能作为用户翻页的判定基准）。
         var strayAnchorSettled = false
-        // 诊断帧摘要节流时间戳。
-        var lastFrameLogMs = 0L
+        var lastPrimaryScroll = Float.NaN
+        var runtimeFailureLogged = false
         // Flyme ADJACENT_PAGE_SCALE：0=贴合 overview，1=退桌 detached。
         var adjacentPageScale = 0f
         var lastAdjacentPageScale = 0f
@@ -1720,6 +1695,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         var blurOverlay: BlurredIconOverlayView? = null
         var overlayAdded = false
         var headerBlurred = false
+        val iconBounds = Rect()
         // 占位底板视图缓存：TaskView 回收/容器重建后经 isAttachedToWindow 校验失效重解析。
         var placeholderThumbnailResolved = false
         var placeholderThumbnail: View? = null
@@ -1731,24 +1707,35 @@ object IosDepthStackRecentsHook : FeatureHook {
         private var drawable: Drawable? = null
 
         fun updateSource(newSource: Drawable): Boolean {
+            var changed = false
             if (source !== newSource || drawable == null) {
                 val copy = newSource.constantState?.newDrawable(resources)?.mutate() ?: return false
                 source = newSource
                 drawable = copy
+                changed = true
             }
             drawable?.let { copy ->
-                copy.state = newSource.state
-                copy.level = newSource.level
-                copy.alpha = newSource.alpha
-                copy.layoutDirection = newSource.layoutDirection
-                copy.colorFilter = newSource.colorFilter
+                if (!copy.state.contentEquals(newSource.state)) { copy.state = newSource.state; changed = true }
+                if (copy.level != newSource.level) { copy.level = newSource.level; changed = true }
+                if (copy.alpha != newSource.alpha) { copy.alpha = newSource.alpha; changed = true }
+                if (copy.layoutDirection != newSource.layoutDirection) { copy.layoutDirection = newSource.layoutDirection; changed = true }
+                if (copy.colorFilter !== newSource.colorFilter) { copy.colorFilter = newSource.colorFilter; changed = true }
             }
+            if (changed) invalidate()
             return true
         }
 
         fun updateDrawableBounds(sourceBounds: Rect, paddingPx: Int) {
-            drawable?.bounds = Rect(sourceBounds).also { it.offset(paddingPx, paddingPx) }
-            invalidate()
+            val copy = drawable ?: return
+            val bounds = copy.bounds
+            val left = sourceBounds.left + paddingPx
+            val top = sourceBounds.top + paddingPx
+            val right = sourceBounds.right + paddingPx
+            val bottom = sourceBounds.bottom + paddingPx
+            if (bounds.left != left || bounds.top != top || bounds.right != right || bounds.bottom != bottom) {
+                copy.setBounds(left, top, right, bottom)
+                invalidate()
+            }
         }
 
         override fun onDraw(canvas: Canvas) {
@@ -1782,5 +1769,6 @@ object IosDepthStackRecentsHook : FeatureHook {
         val taskSecondaryTranslationField: Field?,
         val animatedFloatValueField: Field?,
         val adjacentPageScaleField: Field?,
+        val pageInTransitionField: Field?,
     )
 }
