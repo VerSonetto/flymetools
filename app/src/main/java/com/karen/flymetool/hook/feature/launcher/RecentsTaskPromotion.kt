@@ -2,6 +2,10 @@ package com.karen.flymetool.hook.feature.launcher
 
 /** 仅在一次原生重排调用内覆盖目标位置，不影响底部快速切换或普通任务加载。 */
 internal class RecentsTaskPromotion {
+    companion object {
+        fun shouldPromote(endTarget: String?): Boolean = endTarget == "RECENTS"
+    }
+
     private var task: Any? = null
     private var index = -1
 

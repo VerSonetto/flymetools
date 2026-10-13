@@ -1,11 +1,44 @@
 package com.karen.flymetool.hook.feature.launcher
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Test
 
 class RecentsTaskPromotionTest {
+    @Test
+    fun onlyConfirmedRecentsTargetAllowsPromotion() {
+        assertTrue(RecentsTaskPromotion.shouldPromote("RECENTS"))
+        for (target in listOf("NEW_TASK", "LAST_TASK", "HOME", "ALL_APPS", null)) {
+            assertFalse(RecentsTaskPromotion.shouldPromote(target))
+        }
+    }
+
+    @Test
+    fun visualStateIsPreservedOnlyForTheTemporarilyMovedInstance() {
+        data class Card(val id: Int)
+        val running = Card(1)
+        val equalButDifferent = Card(1)
+        val promotion = RecentsTaskPromotion()
+        val states = java.util.IdentityHashMap<Card, Any>()
+        val visual = Any()
+        states[running] = visual
+        states[equalButDifferent] = Any()
+        fun removed(card: Card) {
+            if (promotion.expectedIndex(card) == null) states.remove(card)
+        }
+        promotion.withTarget(running, 0) {
+            removed(running)
+            removed(equalButDifferent)
+            assertSame(visual, states[running])
+            assertNull(states[equalButDifferent])
+        }
+        removed(running)
+        assertTrue(states.isEmpty())
+    }
+
     @Test
     fun phoneNativeContractPromotesQuickSwitchedTaskOnlyDuringOverviewCommit() {
         val theme = Any()

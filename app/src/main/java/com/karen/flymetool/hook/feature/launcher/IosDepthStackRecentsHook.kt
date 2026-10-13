@@ -415,20 +415,27 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     /**
      * showCurrentTask 只选中已有卡片，不保证重排；仅重建我们自己的 pages 不会改变原生分页。
-     * AbsSwipeUpHandler 只在 RECENTS 终点调用 onSwipeUpAnimationSuccess，此时调用原生重排，
-     * 由它维护 mMovingTaskView（防回收）、currentPage 和 currentPageScrollDiff。
+     * 仅在 RECENTS 目标确定、主要收尾动画启动前同步归首，不在动画结束后补做可见重排。
+     * 由原生维护 mMovingTaskView（防回收）、currentPage 和 currentPageScrollDiff。
      * 不在手势起点改顺序，否则会破坏 NEW_TASK / LAST_TASK 的底部快速切换。
      */
     private fun hookTaskOrder(ctx: HookContext, recentsClass: Class<*>, hooks: ResolvedHooks) {
         try {
             val move = hooks.moveRunningTask
             val success = findMethod(recentsClass, "onSwipeUpAnimationSuccess", Void.TYPE)
+            val prepare = findMethodsInHierarchy(recentsClass).firstOrNull { method ->
+                val types = method.parameterTypes
+                method.name == "onPrepareGestureEndAnimation" && method.returnType == Void.TYPE &&
+                    types.size == 3 && types[0] == AnimatorSet::class.java &&
+                    types[1].isEnum && types[1].enumConstants.any { (it as Enum<*>).name == "RECENTS" } &&
+                    types[2].isArray && types[2].componentType == hooks.getRemoteTargetHandles?.returnType?.componentType
+            }?.apply { isAccessible = true }
             val initialized = hooks.pageScrollsInitialized
             val utilsClass = findField(recentsClass, "mUtils")?.type
             val expectedIndex = utilsClass?.let {
                 findMethod(it, "getRunningTaskExpectedIndex", Int::class.javaPrimitiveType, hooks.taskClass)
             }
-            if (move == null || success == null || initialized == null || expectedIndex == null) {
+            if (move == null || prepare == null || success == null || initialized == null || expectedIndex == null) {
                 Logger.w(TAG, "未找到完整的原生任务重排契约，保留原生顺序")
                 return
             }
@@ -440,12 +447,25 @@ object IosDepthStackRecentsHook : FeatureHook {
                 val target = stateByRecents[recents]?.promotion?.expectedIndex(task)
                 target ?: chain.proceed()
             }
-            Reflect.hookMethod(ctx.api, success) { chain ->
+            Reflect.hookMethod(ctx.api, prepare) { chain ->
                 val recents = chain.getThisObject() as? ViewGroup
                 if (recents != null) {
+                    val state = stateFor(recents)
+                    state.orderSyncPending = RecentsTaskPromotion.shouldPromote(
+                        (chain.getArg(1) as? Enum<*>)?.name,
+                    )
+                    try {
+                        syncRunningTaskOrder(recents, hooks)
+                    } finally {
+                        // 数据或页坐标未就绪时放弃本次归首，不延迟到可见动画中执行。
+                        state.orderSyncPending = false
+                    }
+                }
+                chain.proceed()
+            }
+            Reflect.hookMethod(ctx.api, success) { chain ->
+                (chain.getThisObject() as? ViewGroup)?.let { recents ->
                     stateFor(recents).overviewCommitted = true
-                    stateFor(recents).orderSyncPending = true
-                    syncRunningTaskOrder(recents, hooks)
                 }
                 chain.proceed()
             }
@@ -460,8 +480,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                     val result = chain.proceed()
                     val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
                     val state = stateFor(recents)
-                    if (state.overviewCommitted) state.orderSyncPending = true
-                    syncRunningTaskOrder(recents, hooks)
+                    state.orderSyncPending = false
                     requestStackApply(recents, rebuildPages = true)
                     result
                 }
@@ -531,7 +550,7 @@ object IosDepthStackRecentsHook : FeatureHook {
                     val task = chain.getArg(0) as? View
                     if (recents != null && task != null) {
                         val state = stateFor(recents)
-                        if (name == "onViewRemoved") {
+                        if (name == "onViewRemoved" && state.promotion.expectedIndex(task) == null) {
                             state.taskStates.remove(task)?.let { restoreTaskTransforms(task, it) }
                         }
                         state.cachedPages = null
@@ -588,7 +607,6 @@ object IosDepthStackRecentsHook : FeatureHook {
             val rotationChanged = state.cachedAxis?.rotation != axis.rotation
             state.cachedAxis = axis
             if (Logger.debugEnabled) state.probe.layoutCallbacks++
-            syncRunningTaskOrder(recents, hooks)
             // 原生滚动期间也会重复 layout；仅实际页坐标、子节点或方向变化时重建。
             requestStackApply(recents, rebuildPages = rotationChanged || !cachedPagesMatch(recents, state, hooks))
             result
