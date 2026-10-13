@@ -20,6 +20,7 @@ fun hasFeatureConfig(featureKey: String): Boolean = when (featureKey) {
     "notification_icon_limit",
     "task_card_radius",
     "task_blur_intensity",
+    "ios_stacked_recents",
     "memory_display",
     "power_display",
     "hide_status_bar_icon",
@@ -65,6 +66,7 @@ fun FeatureConfig(
         "notification_icon_limit" -> NotificationIconLimitConfig(packageName, featureKey)
         "task_card_radius" -> TaskCardRadiusConfig(packageName, featureKey)
         "task_blur_intensity" -> BlurIntensityConfig(packageName, featureKey)
+        "ios_stacked_recents" -> RecentsSlideSensitivityConfig(packageName, featureKey)
         "memory_display" -> MemoryDisplayConfig(packageName, featureKey)
         "power_display" -> PowerDisplayConfig(packageName, featureKey)
         "hide_status_bar_icon" -> HideStatusBarIconConfig(packageName, featureKey)

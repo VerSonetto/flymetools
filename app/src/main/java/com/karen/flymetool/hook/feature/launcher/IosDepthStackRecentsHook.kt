@@ -18,6 +18,7 @@ import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.Reflect
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.util.Collections
 import java.util.IdentityHashMap
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -40,6 +41,14 @@ object IosDepthStackRecentsHook : FeatureHook {
     private const val HEADER_BLUR_ALPHA = 0.9f
     // 模糊向外扩散预留：padding = 半径 * 倍数，避免被 overlay bounds 裁切成硬矩形。
     private const val HEADER_BLUR_PADDING_MULTIPLIER = 2f
+    // 左右滑动灵敏度：放大松手时交给 FlymeOverScroller 的甩动速度。
+    // 惯性距离近似正比于 v^2.35（200% ≈ 滑行距离 ×5）；慢拖走原生 ±1 页，不受影响。
+    private const val SLIDE_SENSITIVITY_SUFFIX = "sensitivity"
+    private const val SLIDE_SENSITIVITY_DEFAULT = 100
+    private const val SLIDE_SENSITIVITY_MIN = 50
+    private const val SLIDE_SENSITIVITY_MAX = 300
+    // 放大后的速度上限，仅作极端手感下的兜底。
+    private const val MAX_FLING_VELOCITY = 100_000
     private const val TAG_PLACEHOLDER_SUPPRESSED = Int.MAX_VALUE - 901
     private const val TAG_REMOTE_TARGETS = Int.MAX_VALUE - 902
     private const val TAG_PLACEHOLDER_RELEASE_PENDING = Int.MAX_VALUE - 903
@@ -53,6 +62,9 @@ object IosDepthStackRecentsHook : FeatureHook {
     )
     private val runtimeRotationMethods = HashMap<Class<*>, Method?>()
     private val stateByRecents = IdentityHashMap<ViewGroup, RecentsState>()
+    /** fling 回调拿不到 RecentsView，用 scroller 身份限定作用域，避免连带改掉桌面翻页。 */
+    private val scrollersOfRecents: MutableSet<Any> =
+        Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
     private val scratchRect = Rect()
 
     override fun handle(ctx: HookContext) {
@@ -127,6 +139,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         )
 
         mountPart("布局") { hookLayoutCallbacks(ctx, recentsClass, hooks) }
+        mountPart("滑动灵敏度") { hookSlideSensitivity(ctx, recentsClass) }
         mountPart("状态") { hookStateCallbacks(ctx, recentsClass, hooks) }
         mountPart("缩放") { hookPageScaleUpdates(ctx, recentsClass, hooks) }
         mountPart("实时画面") { hookRemoteTargetLifecycle(ctx, recentsClass, hooks) }
@@ -151,6 +164,49 @@ object IosDepthStackRecentsHook : FeatureHook {
         } catch (throwable: Throwable) {
             Logger.e(TAG, "挂载堆叠子功能失败", throwable, "part" to part)
         }
+    }
+
+    /**
+     * 最近任务左右滑动的灵敏度。
+     *
+     * 自由滚动分支松手后把速度交给 FlymeOverScroller.fling，惯性距离近似正比于 v^2.35，
+     * 因此按百分比放大速度就是「更小的幅度划到更远的卡片」；慢拖不走 fling（原生落
+     * mCurrentPage ± 1），保持不动。fling 声明在 scroller 上、回调拿不到 RecentsView，
+     * 用 mScroller 身份集合限定作用域，桌面/文件夹翻页不受影响。
+     */
+    private fun hookSlideSensitivity(ctx: HookContext, recentsClass: Class<*>) {
+        val intType = Int::class.javaPrimitiveType
+        val scrollerClass = findField(recentsClass, "mScroller")?.type ?: run {
+            Logger.w(TAG, "未找到 mScroller 字段，滑动灵敏度保持原生")
+            return
+        }
+        // 重载只有 8/10 参数两种，后者是实际实现，前者转调它。
+        val fling = findMethodsInHierarchy(scrollerClass)
+            .filter {
+                it.name == "fling" && it.returnType == Void.TYPE &&
+                    it.parameterTypes.all { type -> type == intType }
+            }
+            .maxByOrNull { it.parameterCount } ?: run {
+            Logger.w(TAG, "未找到 scroller.fling，滑动灵敏度保持原生")
+            return
+        }
+        Reflect.hookMethod(ctx.api, fling) { chain ->
+            val scroller = chain.getThisObject()
+            if (scroller == null || !scrollersOfRecents.contains(scroller)) return@hookMethod chain.proceed()
+            val velocity = chain.getArg(2) as? Int ?: return@hookMethod chain.proceed()
+            if (velocity == 0) return@hookMethod chain.proceed()
+            // 逐次读取：拖动滑块后无需重启桌面进程即可生效。
+            val percent = ctx.featureExtraValue(FEATURE_KEY, SLIDE_SENSITIVITY_SUFFIX, SLIDE_SENSITIVITY_DEFAULT)
+                .coerceIn(SLIDE_SENSITIVITY_MIN, SLIDE_SENSITIVITY_MAX)
+            if (percent == SLIDE_SENSITIVITY_DEFAULT) return@hookMethod chain.proceed()
+            val scaled = (velocity * percent / SLIDE_SENSITIVITY_DEFAULT.toFloat()).roundToInt()
+                .coerceIn(-MAX_FLING_VELOCITY, MAX_FLING_VELOCITY)
+            if (scaled == velocity) return@hookMethod chain.proceed()
+            val args: Array<Any?> = chain.getArgs().toTypedArray()
+            args[2] = scaled
+            chain.proceed(args)
+        }
+        Logger.i(TAG, "已挂载左右滑动灵敏度")
     }
 
     /** 仅观察生命周期，不改写参数或结果；通过事件前后快照判断原生是否真正移动了运行卡。 */
@@ -1877,8 +1933,17 @@ object IosDepthStackRecentsHook : FeatureHook {
         }
     }
 
-    private fun stateFor(recents: ViewGroup): RecentsState =
-        stateByRecents.getOrPut(recents) { RecentsState() }
+    private fun stateFor(recents: ViewGroup): RecentsState {
+        val state = stateByRecents.getOrPut(recents) { RecentsState() }
+        if (!state.scrollerTracked) {
+            state.scrollerTracked = true
+            try {
+                Reflect.getObjectField(recents, "mScroller")?.let { scrollersOfRecents.add(it) }
+            } catch (_: Throwable) {
+            }
+        }
+        return state
+    }
 
     // === 数据类 ===
 
@@ -1888,6 +1953,7 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     private class RecentsState {
         var applying = false
+        var scrollerTracked = false
         var overviewEnabled = false
         var overviewCommitted = false
         var orderSyncPending = false
