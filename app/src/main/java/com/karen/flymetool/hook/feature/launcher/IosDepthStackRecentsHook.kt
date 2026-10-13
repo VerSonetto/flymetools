@@ -1,5 +1,8 @@
 package com.karen.flymetool.hook.feature.launcher
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.AnimatorSet
 import android.content.ComponentName
 import android.content.Context
 import android.graphics.Canvas
@@ -18,6 +21,7 @@ import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.Reflect
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.util.Collections
 import java.util.IdentityHashMap
 import kotlin.math.abs
@@ -138,6 +142,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             pageScrollsField = findField(recentsClass, "mPageScrolls"),
         )
 
+        mountPart("任务启动") { hookTaskLaunch(ctx, recentsClass, hooks) }
         mountPart("布局") { hookLayoutCallbacks(ctx, recentsClass, hooks) }
         mountPart("滑动灵敏度") { hookSlideSensitivity(ctx, recentsClass) }
         mountPart("状态") { hookStateCallbacks(ctx, recentsClass, hooks) }
@@ -207,6 +212,73 @@ object IosDepthStackRecentsHook : FeatureHook {
             chain.proceed(args)
         }
         Logger.i(TAG, "已挂载左右滑动灵敏度")
+    }
+
+    private fun hookTaskLaunch(ctx: HookContext, recentsClass: Class<*>, hooks: ResolvedHooks) {
+        val utils = ctx.classLoader.loadClass("com.android.quickstep.TaskViewUtils")
+        val methods = utils.declaredMethods.filter { method ->
+            val types = method.parameterTypes
+            method.name == "composeRecentsLaunchAnimator" &&
+                Modifier.isStatic(method.modifiers) && method.returnType == Void.TYPE &&
+                types.size >= 8 && types[0] == AnimatorSet::class.java &&
+                types[1] == View::class.java &&
+                (2..4).all { types[it].isArray &&
+                    types[it].componentType?.name == "android.view.RemoteAnimationTarget" } &&
+                types[5] == Boolean::class.javaPrimitiveType &&
+                types.count { recentsClass.isAssignableFrom(it) } == 1
+        }
+        if (methods.isEmpty()) {
+            Logger.w(TAG, "未找到任务窗口启动动画契约，保留原有堆叠更新")
+            return
+        }
+        for (method in methods) {
+            method.isAccessible = true
+            val recentsIndex = method.parameterTypes.indexOfFirst { recentsClass.isAssignableFrom(it) }
+            Reflect.hookMethod(ctx.api, method) { chain ->
+                val recents = chain.getArg(recentsIndex) as? ViewGroup ?: return@hookMethod chain.proceed()
+                val task = chain.getArg(1) as? View ?: return@hookMethod chain.proceed()
+                val animation = chain.getArg(0) as? AnimatorSet ?: return@hookMethod chain.proceed()
+                val state = stateByRecents[recents] ?: return@hookMethod chain.proceed()
+                if (task.parent !== recents || state.taskStates[task] == null ||
+                    (!state.overviewEnabled && state.contentAlpha <= EPSILON) ||
+                    invokeBoolean(hooks.showAsGrid, recents) || invokeBoolean(hooks.isSplitSelectionActive, recents)
+                ) return@hookMethod chain.proceed()
+
+                val token = state.launchGate.begin()
+                val scrollX = recents.scrollX
+                val scrollY = recents.scrollY
+                // 原生按卡片屏幕坐标校正 scroll；启动期间不能再把该 scroll 当作翻页重排。
+                state.drawRequested = false
+                state.taskStates.values.forEach { visual ->
+                    if (visual.headerBlurred) visual.iconView?.let { clearHeaderBlur(it, visual) }
+                }
+                fun resumeStack() {
+                    if (!state.launchGate.cancel(token)) return
+                    recents.scrollTo(scrollX, scrollY)
+                    state.lastPrimaryScroll = Float.NaN
+                    requestStackApply(recents, rebuildPages = true)
+                }
+                val listener = object : AnimatorListenerAdapter() {
+                    override fun onAnimationCancel(animation: Animator) {
+                        resumeStack()
+                    }
+
+                    override fun onAnimationEnd(animation: Animator) {
+                        // 成功后等原生 reset/隐藏清理，不能在结束回调中重新露出堆叠卡片。
+                        animation.removeListener(this)
+                    }
+                }
+                animation.addListener(listener)
+                try {
+                    chain.proceed()
+                } catch (throwable: Throwable) {
+                    animation.removeListener(listener)
+                    resumeStack()
+                    throw throwable
+                }
+            }
+        }
+        Logger.i(TAG, "已挂载任务启动期间堆叠暂停")
     }
 
     /** 仅观察生命周期，不改写参数或结果；通过事件前后快照判断原生是否真正移动了运行卡。 */
@@ -401,6 +473,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             }?.let { method ->
                 Reflect.hookMethod(ctx.api, method) { chain ->
                     (chain.getThisObject() as? ViewGroup)?.let { recents ->
+                        stateFor(recents).launchGate.reset()
                         stateFor(recents).overviewCommitted = false
                         stateFor(recents).orderSyncPending = false
                     }
@@ -538,7 +611,10 @@ object IosDepthStackRecentsHook : FeatureHook {
             Reflect.hookMethod(ctx.api, method) { chain ->
                 val result = chain.proceed()
                 val recents = chain.getThisObject() as? ViewGroup ?: return@hookMethod result
-                stateFor(recents).overviewEnabled = chain.getArg(0) as? Boolean ?: false
+                val state = stateFor(recents)
+                val enabled = chain.getArg(0) as? Boolean ?: false
+                if (enabled && !state.overviewEnabled) state.launchGate.reset()
+                state.overviewEnabled = enabled
                 requestStackApply(recents, rebuildPages = true)
                 result
             }
@@ -870,6 +946,7 @@ object IosDepthStackRecentsHook : FeatureHook {
     private fun requestStackApply(recents: ViewGroup, rebuildPages: Boolean) {
         val state = stateFor(recents)
         if (rebuildPages) state.pageRebuildPending = true
+        if (state.launchGate.active) return
         if (!state.drawRequested) {
             state.drawRequested = true
             recents.postInvalidateOnAnimation()
@@ -880,7 +957,7 @@ object IosDepthStackRecentsHook : FeatureHook {
 
     private fun applyStack(ctx: HookContext, recents: ViewGroup, hooks: ResolvedHooks, allowPageRebuild: Boolean) {
         val state = stateFor(recents)
-        if (state.applying) return
+        if (state.applying || state.launchGate.active) return
         state.applying = true
         try {
             // dispatchDraw 路径也采样一次，防止只靠 updatePageScales 漏帧。
@@ -1544,6 +1621,7 @@ object IosDepthStackRecentsHook : FeatureHook {
     }
 
     private fun resetAllTransforms(ctx: HookContext, recents: ViewGroup, state: RecentsState, hooks: ResolvedHooks) {
+        state.launchGate.reset()
         // 退出堆叠：桌面卡恢复可见
         setDesktopTasksVisible(state, true)
         state.drawRequested = false
@@ -1952,6 +2030,7 @@ object IosDepthStackRecentsHook : FeatureHook {
     private data class LiveTileChannels(val primary: Any, val secondary: Any)
 
     private class RecentsState {
+        val launchGate = RecentsLaunchGate()
         var applying = false
         var scrollerTracked = false
         var overviewEnabled = false
