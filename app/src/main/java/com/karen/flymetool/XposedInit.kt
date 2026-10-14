@@ -118,6 +118,7 @@ class XposedInit : XposedModule() {
 private val entryFactories: Map<String, () -> HookEntry> = mapOf(
     "com.android.systemui" to { com.karen.flymetool.hook.entry.SystemUIEntry },
     "com.android.settings" to { com.karen.flymetool.hook.entry.SettingsEntry },
+    "com.meizu.connectivitysettings" to { com.karen.flymetool.hook.entry.ConnectivitySettingsEntry },
     "com.android.packageinstaller" to { com.karen.flymetool.hook.entry.PackageInstallerEntry },
     "android" to { com.karen.flymetool.hook.entry.AndroidEntry },
     "com.meizu.customizecenter" to { com.karen.flymetool.hook.entry.CustomizeCenterEntry },

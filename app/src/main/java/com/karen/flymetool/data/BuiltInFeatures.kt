@@ -106,6 +106,8 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
             group = "手势导航"),
     ),
     "com.android.settings" to listOf(
+        HookFeature("show_wifi_password", "显示已保存 Wi-Fi 密码",
+            description = "在 Wi-Fi 条目下显示已保存的密码；旁人、截图和录屏均可看到。需勾选「连接设置」作用域，开启后重启设置和连接设置应用"),
         HookFeature("never_lock_screen", "永不锁屏",
             description = "在自动锁屏选项中添加「永不锁屏」选项",
             minVersion = "Flyme 10"),

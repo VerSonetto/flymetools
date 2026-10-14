@@ -7,6 +7,7 @@ object SettingsEntry : HookEntry {
     override val targetPackage = "com.android.settings"
 
     private val hookFactories: List<Pair<String, () -> FeatureHook>> = listOf(
+        "ShowWifiPasswordHook" to { com.karen.flymetool.hook.feature.settings.ShowWifiPasswordHook },
         "NeverLockScreenHook" to { com.karen.flymetool.hook.feature.settings.NeverLockScreenHook },
         "ForceNotificationEnableHook" to { com.karen.flymetool.hook.feature.settings.ForceNotificationEnableHook },
     )

@@ -9,6 +9,10 @@
       "name": "设置"
     },
     {
+      "package": "com.meizu.connectivitysettings",
+      "name": "连接设置"
+    },
+    {
       "package": "com.android.packageinstaller",
       "name": "软件包安装程序"
     },
