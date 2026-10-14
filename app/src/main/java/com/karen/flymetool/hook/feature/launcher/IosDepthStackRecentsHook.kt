@@ -70,6 +70,7 @@ object IosDepthStackRecentsHook : FeatureHook {
     private val scrollersOfRecents: MutableSet<Any> =
         Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
     private val scratchRect = Rect()
+    private var gestureActiveMethod: Method? = null
 
     override fun handle(ctx: HookContext) {
         if (ctx.packageName != TARGET_PACKAGE) return
@@ -116,6 +117,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             getHomeTaskView = findMethod(recentsClass, "getHomeTaskView", taskClass),
             isRunningTask = findMethod(taskClass, "isRunningTask", Boolean::class.javaPrimitiveType),
             applyScale = findMethod(taskClass, "applyScale", Void.TYPE),
+            nativeScaleReader = resolveNativeScaleReader(taskClass),
             horizontalOffsetProperty = findNoArgMethod(taskClass, "getHorizontalOffsetTranslationProperty"),
             primaryTaskOffsetProperty = findNoArgMethod(taskClass, "getPrimaryTaskOffsetTranslationProperty"),
             taskComponent = findNoArgMethod(taskClass, "getTaskFlowComponent"),
@@ -142,6 +144,7 @@ object IosDepthStackRecentsHook : FeatureHook {
             pageScrollsField = findField(recentsClass, "mPageScrolls"),
         )
 
+        mountPart("手势装饰") { hookGestureDecorations(ctx, recentsClass) }
         mountPart("任务启动") { hookTaskLaunch(ctx, recentsClass, hooks) }
         mountPart("布局") { hookLayoutCallbacks(ctx, recentsClass, hooks) }
         mountPart("滑动灵敏度") { hookSlideSensitivity(ctx, recentsClass) }
@@ -212,6 +215,21 @@ object IosDepthStackRecentsHook : FeatureHook {
             chain.proceed(args)
         }
         Logger.i(TAG, "已挂载左右滑动灵敏度")
+    }
+
+    private fun hookGestureDecorations(ctx: HookContext, recentsClass: Class<*>) {
+        val active = findMethod(recentsClass, "isGestureActive", Boolean::class.javaPrimitiveType)
+        val end = findMethod(recentsClass, "onGestureAnimationEnd", Void.TYPE)
+        if (active == null || end == null) {
+            Logger.w(TAG, "缺少手势生命周期契约，装饰保持进度阈值判断")
+            return
+        }
+        gestureActiveMethod = active
+        Reflect.hookMethod(ctx.api, end) { chain ->
+            val result = chain.proceed()
+            (chain.getThisObject() as? ViewGroup)?.let { requestStackApply(it, rebuildPages = false) }
+            result
+        }
     }
 
     private fun hookTaskLaunch(ctx: HookContext, recentsClass: Class<*>, hooks: ResolvedHooks) {
@@ -1113,7 +1131,8 @@ object IosDepthStackRecentsHook : FeatureHook {
             val runningOrdinal = if (runningTaskView != null) pages.indexOfFirst { it.view === runningTaskView } else -1
             val anchoredRunning = if (runningOrdinal >= 0 && abs(runningOrdinal - clampedPosition) <= 0.55f) runningTaskView else null
             // 稳定态判定提前：仅用于标题遮挡/头部模糊等稳态附加效果。
-            val settledOverview = !state.detachFadeActive &&
+            val gestureActive = invokeBoolean(gestureActiveMethod, recents)
+            val settledOverview = !gestureActive && !state.detachFadeActive &&
                 state.contentAlpha >= 0.98f &&
                 (!state.fullscreenProgressKnown || state.fullscreenProgress <= 0.02f) &&
                 state.adjacentPageScale <= 0.02f
@@ -1172,9 +1191,10 @@ object IosDepthStackRecentsHook : FeatureHook {
                 // Seascape 下 ordinal 与屏幕左右相反：曲线在视觉空间采样（stackRelative=-rel），
                 // 坐标再镜像回 layout；同一卡片的相对位置在整次翻页中保持连续。
                 val stackRelative = stackRelativeFor(relativePosition)
-                // 深处完全透明的卡片不参与绘制：稳态连续隐藏时保留上次 RenderNode，
-                // 到达淡入边界即恢复全部通道同步。运行卡、删除和退场动画始终走完整路径。
-                if (settledOverview && !state.multiDismissActive && dismissing == null &&
+                // 已连续透明的深层卡在手势入场也无需校正，跨入可见边界即恢复全部通道。
+                // 原生重新写入非零 alpha、运行卡、删除及退场仍走完整路径。
+                if ((settledOverview || gestureActive) && !state.detachFadeActive &&
+                    !state.multiDismissActive && dismissing == null &&
                     !isRunningView && stackRelative <= -3f &&
                     taskState.lastAppliedAlpha == 0f && task.alpha == 0f
                 ) {
@@ -1537,7 +1557,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         if (state.lastAppliedScale.isNaN() || abs(task.scaleX - state.lastAppliedScale) > EPSILON) {
             normalizeNativeScale(task, state, hooks)
         }
-        if (state.scaleInitialized &&
+        if ((hooks.nativeScaleReader == null || state.nativeScaleReadFailed) && state.scaleInitialized &&
             factor < 1f - EPSILON && state.nativeScale > state.lastStableNativeScale + 0.02f
         ) {
             state.nativeScale = state.lastStableNativeScale
@@ -1554,8 +1574,38 @@ object IosDepthStackRecentsHook : FeatureHook {
         }
     }
 
-    /** Flyme 在悬浮阈值时通过 updatePageScales() 放大非运行卡，此处先让 applyScale() 重算以校正基线。 */
+    private fun resolveNativeScaleReader(taskClass: Class<*>): NativeScaleReader? {
+        val persistent = findMethod(taskClass, "getPersistentScale", Float::class.javaPrimitiveType)
+        val dismiss = findField(taskClass, "dismissScale")?.takeIf { it.type == Float::class.javaPrimitiveType }
+        val modalness = findMethod(taskClass, "getModalness", Float::class.javaPrimitiveType)
+        val modalScale = findMethod(taskClass, "getModalScale", Float::class.javaPrimitiveType)
+        if (persistent == null || dismiss == null || modalness == null || modalScale == null) {
+            Logger.w(TAG, "缺少完整原生缩放读取契约，回退原生缩放校正")
+            return null
+        }
+        return NativeScaleReader(persistent, dismiss, modalness, modalScale)
+    }
+
+    /** 只读取原生缩放组成，避免调用 applyScale 连带刷新缩略图及轮廓。 */
     private fun normalizeNativeScale(task: View, state: TaskVisualState, hooks: ResolvedHooks) {
+        val reader = hooks.nativeScaleReader
+        if (reader != null && !state.nativeScaleReadFailed) {
+            val native = try {
+                RecentsNativeScale.compose(
+                    reader.persistent.invoke(task) as Float,
+                    reader.dismiss.getFloat(task),
+                    reader.modalness.invoke(task) as Float,
+                    reader.modalScale.invoke(task) as Float,
+                )
+            } catch (_: Throwable) { null }
+            if (native != null) {
+                state.nativeScale = native
+                state.lastAppliedScale = Float.NaN
+                return
+            }
+            state.nativeScaleReadFailed = true
+            Logger.w(TAG, "原生缩放读取失败，该卡片回退原生校正")
+        }
         val before = task.scaleX
         val expected = state.lastAppliedScale
         if (hooks.applyScale != null && !expected.isNaN() && abs(before - expected) > EPSILON) {
@@ -2095,6 +2145,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         var customPrimaryOffset = 0f
         var nativePrimaryTranslation = 0f
         var lastAppliedPrimaryTranslation = Float.NaN
+        var nativeScaleReadFailed = false
         var nativeScale = 1f
         var lastStableNativeScale = 1f
         var scaleInitialized = false
@@ -2177,6 +2228,13 @@ object IosDepthStackRecentsHook : FeatureHook {
         override fun hasOverlappingRendering(): Boolean = false
     }
 
+    private data class NativeScaleReader(
+        val persistent: Method,
+        val dismiss: Field,
+        val modalness: Method,
+        val modalScale: Method,
+    )
+
     private data class ResolvedHooks(
         val taskClass: Class<*>,
         val getScrollForPage: Method,
@@ -2185,6 +2243,7 @@ object IosDepthStackRecentsHook : FeatureHook {
         val getHomeTaskView: Method?,
         val isRunningTask: Method?,
         val applyScale: Method?,
+        val nativeScaleReader: NativeScaleReader?,
         val horizontalOffsetProperty: Method?,
         val primaryTaskOffsetProperty: Method?,
         val taskComponent: Method?,
