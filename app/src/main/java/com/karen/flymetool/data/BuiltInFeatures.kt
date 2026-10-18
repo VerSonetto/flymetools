@@ -85,6 +85,8 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         // 通知行为
         HookFeature("ticker_click", "点击滚动消息跳转",
             description = "点击状态栏滚动通知消息跳转到对应应用（点击跳转，滑动仍可下拉通知栏/控制中心）", group = "通知行为"),
+        HookFeature("ticker_left_of_camera", "滚动消息只显示在前摄左侧",
+            description = "状态栏滚动消息只在前摄左侧显示，可调滚动速度", group = "通知行为"),
         HookFeature("notification_manage", "解除通知管理限制",
             description = "解除系统通知不支持管理的限制，允许管理所有系统通知", group = "通知行为"),
         HookFeature("force_live_notification", "强制实况通知",

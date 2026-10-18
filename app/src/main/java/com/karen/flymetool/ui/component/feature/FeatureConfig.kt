@@ -41,7 +41,8 @@ fun hasFeatureConfig(featureKey: String): Boolean = when (featureKey) {
     "mback_double_click",
     "slide_gesture_multi_arc",
     "custom_search_engine",
-    "home_screen_limit" -> true
+    "home_screen_limit",
+    "ticker_left_of_camera" -> true
     else -> false
 }
 
@@ -89,5 +90,6 @@ fun FeatureConfig(
         "slide_gesture_multi_arc" -> SlideGestureMultiArcConfig(packageName, featureKey)
         "custom_search_engine" -> CustomSearchEngineConfig(packageName, featureKey)
         "home_screen_limit" -> HomeScreenLimitConfig(packageName, featureKey)
+        "ticker_left_of_camera" -> TickerLeftOfCameraConfig(packageName, featureKey)
     }
 }

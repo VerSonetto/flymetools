@@ -32,6 +32,7 @@ object SystemUIEntry : HookEntry {
         "NotificationCardBlurHook" to { com.karen.flymetool.hook.feature.systemui.NotificationCardBlurHook },
 
         "TickerClickHook" to { com.karen.flymetool.hook.feature.systemui.TickerClickHook },
+        "TickerLeftOfCameraHook" to { com.karen.flymetool.hook.feature.systemui.TickerLeftOfCameraHook },
         "NotificationManageHook" to { com.karen.flymetool.hook.feature.systemui.NotificationManageHook },
         "HideMediaAppIconBgHook" to { com.karen.flymetool.hook.feature.systemui.HideMediaAppIconBgHook },
         "MediaCardRadiusHook" to { com.karen.flymetool.hook.feature.systemui.MediaCardRadiusHook },
