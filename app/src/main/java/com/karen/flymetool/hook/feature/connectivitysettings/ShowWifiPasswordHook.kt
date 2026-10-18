@@ -1,4 +1,4 @@
-package com.karen.flymetool.hook.feature.settings
+package com.karen.flymetool.hook.feature.connectivitysettings
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -18,7 +18,6 @@ import com.karen.flymetool.hook.base.FeatureHook
 import com.karen.flymetool.hook.base.HookContext
 import com.karen.flymetool.hook.base.Logger
 import com.karen.flymetool.hook.base.Reflect
-import com.karen.flymetool.hook.base.XposedPrefs
 import java.lang.ref.WeakReference
 import java.lang.reflect.Field
 import java.lang.reflect.Method
@@ -100,42 +99,10 @@ object ShowWifiPasswordHook : FeatureHook {
     }
 
     override fun handle(ctx: HookContext) {
-        if (ctx.packageName != "com.android.settings" && ctx.packageName != "com.meizu.connectivitysettings") return
-        if (!XposedPrefs.isFeatureEnabled("com.android.settings", "show_wifi_password")) return
+        if (ctx.packageName != "com.meizu.connectivitysettings") return
+        if (!ctx.featureEnabled("show_wifi_password")) return
         try {
-            if (ctx.packageName == "com.meizu.connectivitysettings") {
-                hookConnectivity(ctx)
-                return
-            }
-            val preferenceClass = Reflect.findClass("androidx.preference.Preference", ctx.classLoader)
-            val holderClass = Reflect.findClass("androidx.preference.PreferenceViewHolder", ctx.classLoader)
-            val findView = holderClass.getMethod("findViewById", Int::class.javaPrimitiveType)
-            Reflect.hookMethodOn(ctx.api, preferenceClass, "onBindViewHolder", holderClass) { chain ->
-                val summary = runCatching {
-                    findView.invoke(chain.getArgs()[0], android.R.id.summary) as? TextView
-                }.getOrNull()
-                if (Looper.myLooper() == Looper.getMainLooper() && summary != null) {
-                    rows.remove(summary)?.let { restore(summary, it) }
-                    summary.removeOnAttachStateChangeListener(attachment)
-                }
-                val result = chain.proceed()
-                if (Looper.myLooper() == Looper.getMainLooper() && summary != null) {
-                    try {
-                        val preference = chain.getThisObject()
-                        if (preference != null && configuration(preference) != null) {
-                            val row = snapshot(summary, preference)
-                            rows[summary] = row
-                            summary.addOnAttachStateChangeListener(attachment)
-                            if (summary.isAttachedToWindow) startMonitoring(summary.context.applicationContext)
-                            render(summary, row)
-                        }
-                    } catch (_: Throwable) {
-                        // 布局或条目签名不匹配时保留原生绑定结果。
-                    }
-                }
-                result
-            }
-            Logger.i(TAG, "已挂载 Wi-Fi 列表摘要显示")
+            hookConnectivity(ctx)
         } catch (error: Throwable) {
             Logger.e(TAG, "挂载失败", error)
         }

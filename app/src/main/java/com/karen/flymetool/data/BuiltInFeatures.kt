@@ -106,13 +106,15 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
             group = "手势导航"),
     ),
     "com.android.settings" to listOf(
-        HookFeature("show_wifi_password", "显示已保存 Wi-Fi 密码",
-            description = "在 Wi-Fi 条目下显示已保存的密码；旁人、截图和录屏均可看到。需勾选「连接设置」作用域，开启后重启设置和连接设置应用"),
         HookFeature("never_lock_screen", "永不锁屏",
             description = "在自动锁屏选项中添加「永不锁屏」选项",
             minVersion = "Flyme 10"),
         HookFeature("force_notification_enable", "强制开启通知开关",
             description = "强制开启所有应用的通知开关权限，解除系统对通知开关的限制"),
+    ),
+    "com.meizu.connectivitysettings" to listOf(
+        HookFeature("show_wifi_password", "显示已保存 Wi-Fi 密码",
+            description = "在连接设置的 Wi-Fi 列表中显示已保存的密码；旁人、截图和录屏均可看到。开启后需重启连接设置"),
     ),
     "com.android.packageinstaller" to listOf(
         HookFeature("skip_install_scan", "跳过安装扫描",

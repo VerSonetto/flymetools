@@ -7,7 +7,7 @@ object ConnectivitySettingsEntry : HookEntry {
     override val targetPackage = "com.meizu.connectivitysettings"
 
     private val hookFactories: List<Pair<String, () -> FeatureHook>> = listOf(
-        "ShowWifiPasswordHook" to { com.karen.flymetool.hook.feature.settings.ShowWifiPasswordHook },
+        "ShowWifiPasswordHook" to { com.karen.flymetool.hook.feature.connectivitysettings.ShowWifiPasswordHook },
     )
 
     override fun initHooks(ctx: HookContext) {
