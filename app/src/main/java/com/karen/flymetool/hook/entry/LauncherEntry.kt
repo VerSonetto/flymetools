@@ -12,6 +12,7 @@ object LauncherEntry : HookEntry {
         "IosDepthStackRecentsHook" to { com.karen.flymetool.hook.feature.launcher.IosDepthStackRecentsHook },
         "MemoryDisplayHook" to { com.karen.flymetool.hook.feature.launcher.MemoryDisplayHook },
         "FolderBlurHook" to { com.karen.flymetool.hook.feature.launcher.FolderBlurHook },
+        "HomeScreenLimitHook" to { com.karen.flymetool.hook.feature.launcher.HomeScreenLimitHook },
     )
 
     override fun initHooks(ctx: HookContext) {

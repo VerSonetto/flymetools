@@ -153,6 +153,8 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         HookFeature("hide_clear_all_button", "隐藏最近任务清空按钮",
             description = "隐藏最近任务界面底部的清空按钮和最后一页的清空项",
             minVersion = "Flyme 12"),
+        HookFeature("home_screen_limit", "桌面页数上限",
+            description = "自定义桌面可添加的最大页数（默认 9 页，不含负一屏与隐私空间），修改后需重启桌面生效"),
     ),
     "com.android.mms" to listOf(
         HookFeature("auto_copy_verify_code", "自动复制验证码",
