@@ -166,6 +166,15 @@ object StatusBarDoubleClickHook : FeatureHook {
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                // 歌词区域的手势归 StatusBarLyricGestureHook：那里的横滑用于切歌、点按用于开播放器。
+                // 这里整段跳过，避免同一次横滑既切歌又调亮度；纵向下拉走系统自己的触摸处理，不受影响。
+                if (StatusBarLyricGestureHook.isLyricGestureArea(event.rawX, event.rawY)) {
+                    if (phase != Phase.IDLE) {
+                        clearWaitingState(api, abort = false, view = view)
+                    }
+                    return false
+                }
+
                 // 双击第二击：取消暂扣的第一击，吞掉第二击
                 if (dblClickEnabled &&
                     phase == Phase.WAIT_SECOND &&

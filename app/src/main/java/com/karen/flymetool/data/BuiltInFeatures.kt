@@ -92,6 +92,11 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
         HookFeature("force_live_notification", "强制实况通知",
             description = "选择应用强制以实况通知胶囊显示在状态栏，点击胶囊展开通知卡片",
             group = "通知行为", minVersion = "Flyme 12"),
+        // 状态栏歌词
+        HookFeature("statusbar_lyric_click", "点击歌词跳转播放器",
+            description = "点击状态栏上滚动的歌词，直接打开当前音乐播放器的播放界面", group = "状态栏歌词"),
+        HookFeature("statusbar_lyric_swipe", "滑动歌词切歌",
+            description = "在状态栏歌词上左右滑动切歌：左滑下一首、右滑上一首；歌词区域以切歌为准，不再响应滑动调亮度", group = "状态栏歌词"),
         // 手势导航
         HookFeature("hide_gesture_bar", "隐藏底部手势条",
             description = "隐藏底部导航栏的手势指示条", group = "手势导航"),
