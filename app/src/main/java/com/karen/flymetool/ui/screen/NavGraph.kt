@@ -15,12 +15,16 @@ import com.karen.flymetool.data.ScopedApp
 
 sealed class Screen(val route: String) {
     data object Home : Screen("home")
-    data object AppDetail : Screen("app_detail/{packageName}") {
-        fun createRoute(packageName: String) = "app_detail/$packageName"
+    data object AppDetail : Screen("app_detail/{packageName}?highlight={featureKey}") {
+        fun createRoute(packageName: String, highlightKey: String? = null): String {
+            val base = "app_detail/$packageName"
+            return if (highlightKey.isNullOrEmpty()) base else "$base?highlight=$highlightKey"
+        }
     }
-    data object FeatureGroup : Screen("app_feature_group/{packageName}/{groupName}") {
-        fun createRoute(packageName: String, groupName: String): String {
-            return "app_feature_group/$packageName/${Uri.encode(groupName)}"
+    data object FeatureGroup : Screen("app_feature_group/{packageName}/{groupName}?highlight={featureKey}") {
+        fun createRoute(packageName: String, groupName: String, highlightKey: String? = null): String {
+            val base = "app_feature_group/$packageName/${Uri.encode(groupName)}"
+            return if (highlightKey.isNullOrEmpty()) base else "$base?highlight=$highlightKey"
         }
     }
     data object AppSelect : Screen("app_select/{packageName}/{featureKey}") {
@@ -46,11 +50,26 @@ fun AppNavHost(
             MainScreen(
                 onAppClick = { app ->
                     navController.navigate(Screen.AppDetail.createRoute(app.packageName))
+                },
+                onFeatureClick = { app, feature ->
+                    val route = feature.group?.let { group ->
+                        Screen.FeatureGroup.createRoute(app.packageName, group, feature.key)
+                    } ?: Screen.AppDetail.createRoute(app.packageName, feature.key)
+                    navController.navigate(route)
                 }
             )
         }
-        composable(route = Screen.AppDetail.route) { backStackEntry ->
+        composable(
+            route = Screen.AppDetail.route,
+            arguments = listOf(
+                navArgument("featureKey") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                }
+            )
+        ) { backStackEntry ->
             val packageName = backStackEntry.arguments?.getString("packageName") ?: return@composable
+            val highlightKey = backStackEntry.arguments?.getString("featureKey").orEmpty()
             val app = remember(packageName) {
                 AppData.getScopedApps(context).find { it.packageName == packageName } ?: ScopedApp(
                     packageName = packageName,
@@ -59,6 +78,7 @@ fun AppNavHost(
             }
             AppDetailScreen(
                 app = app,
+                highlightKey = highlightKey,
                 onBack = { navController.popBackStack() },
                 onNavigate = { route -> navController.navigate(route) }
             )
@@ -67,12 +87,17 @@ fun AppNavHost(
             route = Screen.FeatureGroup.route,
             arguments = listOf(
                 navArgument("packageName") { type = NavType.StringType },
-                navArgument("groupName") { type = NavType.StringType }
+                navArgument("groupName") { type = NavType.StringType },
+                navArgument("featureKey") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                }
             )
         ) { backStackEntry ->
             val packageName = backStackEntry.arguments?.getString("packageName") ?: return@composable
             val groupNameEncoded = backStackEntry.arguments?.getString("groupName") ?: return@composable
             val groupName = Uri.decode(groupNameEncoded)
+            val highlightKey = backStackEntry.arguments?.getString("featureKey").orEmpty()
             val app = remember(packageName) {
                 AppData.getScopedApps(context).find { it.packageName == packageName } ?: ScopedApp(
                     packageName = packageName,
@@ -82,6 +107,7 @@ fun AppNavHost(
             FeatureGroupScreen(
                 app = app,
                 groupName = groupName,
+                highlightKey = highlightKey,
                 onBack = { navController.popBackStack() },
                 onNavigate = { route -> navController.navigate(route) }
             )

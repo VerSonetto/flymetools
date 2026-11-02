@@ -12,13 +12,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -28,6 +32,7 @@ import com.karen.flymetool.data.PrefsHelper
 import com.karen.flymetool.data.ScopedApp
 import com.karen.flymetool.ui.component.FeatureListRow
 import com.karen.flymetool.ui.component.visibleFeatures
+import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
@@ -38,6 +43,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 fun FeatureGroupScreen(
     app: ScopedApp,
     groupName: String,
+    highlightKey: String = "",
     onBack: () -> Unit,
     onNavigate: (String) -> Unit = {}
 ) {
@@ -55,6 +61,21 @@ fun FeatureGroupScreen(
         }
     }
     val visible = visibleFeatures(groupFeatures, featureStates)
+
+    val listState = rememberLazyListState()
+    var highlightActive by remember(highlightKey) { mutableStateOf(highlightKey.isNotEmpty()) }
+
+    LaunchedEffect(highlightKey, visible) {
+        if (highlightKey.isEmpty()) return@LaunchedEffect
+        val index = visible.indexOfFirst { it.key == highlightKey }
+        if (index >= 0) listState.scrollToItem(index)
+    }
+
+    LaunchedEffect(highlightKey) {
+        if (highlightKey.isEmpty()) return@LaunchedEffect
+        delay(2400)
+        highlightActive = false
+    }
 
     Scaffold(
         containerColor = MiuixTheme.colorScheme.background,
@@ -89,6 +110,7 @@ fun FeatureGroupScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues),
+            state = listState,
             contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -117,7 +139,8 @@ fun FeatureGroupScreen(
                         feature = feature,
                         featureStates = featureStates,
                         context = context,
-                        onNavigate = onNavigate
+                        onNavigate = onNavigate,
+                        highlighted = highlightActive && feature.key == highlightKey
                     )
                 }
             }

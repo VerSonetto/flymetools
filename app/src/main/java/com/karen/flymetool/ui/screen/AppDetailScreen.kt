@@ -17,13 +17,17 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -37,6 +41,7 @@ import com.karen.flymetool.ui.component.AppIcon
 import com.karen.flymetool.ui.component.FeatureGroupCard
 import com.karen.flymetool.ui.component.FeatureListRow
 import com.karen.flymetool.ui.component.visibleFeatures
+import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
@@ -46,6 +51,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 @Composable
 fun AppDetailScreen(
     app: ScopedApp,
+    highlightKey: String = "",
     onBack: () -> Unit,
     onNavigate: (String) -> Unit = {}
 ) {
@@ -62,6 +68,24 @@ fun AppDetailScreen(
     }
 
     val visibleUngrouped = visibleFeatures(sections.ungrouped, featureStates)
+
+    // “其他功能”列表在 LazyColumn 中的起始下标：身份区 + 可选分组区 + 区块标题
+    val ungroupedItemsStart = 1 + if (sections.groups.isNotEmpty()) 1 + sections.groups.size else 0
+
+    val listState = rememberLazyListState()
+    var highlightActive by remember(highlightKey) { mutableStateOf(highlightKey.isNotEmpty()) }
+
+    LaunchedEffect(highlightKey, visibleUngrouped) {
+        if (highlightKey.isEmpty()) return@LaunchedEffect
+        val index = visibleUngrouped.indexOfFirst { it.key == highlightKey }
+        if (index >= 0) listState.scrollToItem(ungroupedItemsStart + 1 + index)
+    }
+
+    LaunchedEffect(highlightKey) {
+        if (highlightKey.isEmpty()) return@LaunchedEffect
+        delay(2400)
+        highlightActive = false
+    }
 
     Scaffold(
         containerColor = MiuixTheme.colorScheme.background,
@@ -97,6 +121,7 @@ fun AppDetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues),
+            state = listState,
             contentPadding = PaddingValues(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -138,7 +163,8 @@ fun AppDetailScreen(
                         featureStates = featureStates,
                         context = context,
                         onNavigate = onNavigate,
-                        modifier = Modifier.padding(horizontal = 16.dp)
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        highlighted = highlightActive && feature.key == highlightKey
                     )
                 }
             }

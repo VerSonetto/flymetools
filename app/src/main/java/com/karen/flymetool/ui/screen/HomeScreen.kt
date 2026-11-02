@@ -17,16 +17,21 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -40,14 +45,26 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.DpSize
 import com.karen.flymetool.data.AppData
+import com.karen.flymetool.data.FeatureSearch
+import com.karen.flymetool.data.FeatureSearchResult
+import com.karen.flymetool.data.HookFeature
 import com.karen.flymetool.data.PrefsHelper
 import com.karen.flymetool.data.ScopedApp
 import com.karen.flymetool.ui.component.AppIcon
@@ -59,7 +76,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.launch
 import java.io.File
 import top.yukonga.miuix.kmp.basic.Checkbox
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
+import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.FloatingActionButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -82,7 +101,9 @@ private val HomeFabBottomPadding = 112.dp
 @Composable
 fun HomeScreen(
     onAppClick: (ScopedApp) -> Unit,
-    modifier: Modifier = Modifier) {
+    onFeatureClick: (ScopedApp, HookFeature) -> Unit,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     val apps = remember(context) { AppData.getScopedApps(context) }
     var showRestartDialog by remember { mutableStateOf(false) }
@@ -97,6 +118,17 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
 
     var updateChecked by rememberSaveable { mutableStateOf(false) }
+
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    val searchTokens = remember(searchQuery) { FeatureSearch.queryTokens(searchQuery) }
+    val searching = searchQuery.isNotBlank()
+    val searchResults = if (searching) {
+        FeatureSearch.search(context, apps, searchQuery)
+    } else {
+        emptyList()
+    }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     LaunchedEffect(Unit) {
         if (!PrefsHelper.isIntroShown(context)) {
@@ -128,22 +160,46 @@ fun HomeScreen(
                 onCheckUpdate = { showUpdateDialog = true }
             )
 
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 20.dp),
-                contentPadding = PaddingValues(bottom = 96.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(
-                    items = apps,
-                    key = { app -> app.packageName },
-                    contentType = { "scoped_app" }
-                ) { app ->
-                    AppListItem(
-                        app = app,
-                        onClick = { onAppClick(app) }
-                    )
+            HomeSearchField(
+                query = searchQuery,
+                onQueryChange = { searchQuery = it },
+                onClear = { searchQuery = "" },
+                onSearch = {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                },
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp)
+            )
+
+            if (searching) {
+                SearchResultList(
+                    query = searchQuery,
+                    tokens = searchTokens,
+                    results = searchResults,
+                    onResultClick = { result ->
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
+                        onFeatureClick(result.app, result.feature)
+                    }
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 20.dp),
+                    contentPadding = PaddingValues(bottom = 96.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(
+                        items = apps,
+                        key = { app -> app.packageName },
+                        contentType = { "scoped_app" }
+                    ) { app ->
+                        AppListItem(
+                            app = app,
+                            onClick = { onAppClick(app) }
+                        )
+                    }
                 }
             }
         }
@@ -640,6 +696,212 @@ private fun AppListItem(
             tint = MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.5f),
             modifier = Modifier.size(24.dp)
         )
+    }
+}
+
+@Composable
+private fun HomeSearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onClear: () -> Unit,
+    onSearch: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    TextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = modifier.fillMaxWidth(),
+        label = "搜索功能",
+        useLabelAsPlaceholder = true,
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Default.Search,
+                contentDescription = null,
+                tint = MiuixTheme.colorScheme.onBackgroundVariant,
+                modifier = Modifier
+                    .padding(horizontal = 12.dp)
+                    .size(20.dp)
+            )
+        },
+        trailingIcon = if (query.isNotEmpty()) {
+            {
+                IconButton(
+                    onClick = onClear,
+                    minWidth = 40.dp,
+                    minHeight = 40.dp
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "清除搜索内容",
+                        tint = MiuixTheme.colorScheme.onBackgroundVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        } else {
+            null
+        },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { onSearch() })
+    )
+}
+
+@Composable
+private fun SearchResultList(
+    query: String,
+    tokens: List<String>,
+    results: List<FeatureSearchResult>,
+    onResultClick: (FeatureSearchResult) -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 96.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item(key = "search_summary") {
+            Text(
+                text = if (results.isEmpty()) {
+                    "没有找到与「${query.trim()}」相关的功能"
+                } else {
+                    "找到 ${results.size} 个相关功能"
+                },
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onBackgroundVariant,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+            )
+        }
+        if (results.isEmpty()) {
+            item(key = "search_hint") {
+                Text(
+                    text = "试试功能名称或描述里的关键词，支持拼音与首字母，如 ztl、tongzhi。",
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+            }
+        }
+        items(
+            items = results,
+            key = { result -> "${result.app.packageName}:${result.feature.key}" }
+        ) { result ->
+            FeatureSearchResultRow(
+                result = result,
+                tokens = tokens,
+                onClick = { onResultClick(result) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun FeatureSearchResultRow(
+    result: FeatureSearchResult,
+    tokens: List<String>,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.98f else 1f,
+        animationSpec = tween(100),
+        label = "search_result_scale"
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .scale(scale)
+            .clip(RoundedCornerShape(20.dp))
+            .background(MiuixTheme.colorScheme.surface)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            )
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AppIcon(
+            packageName = result.app.packageName,
+            modifier = Modifier.size(40.dp)
+        )
+        Spacer(modifier = Modifier.width(14.dp))
+        Column(
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(
+                text = highlightMatches(result.feature.label, tokens, MiuixTheme.colorScheme.primary),
+                style = MiuixTheme.textStyles.title4,
+                color = MiuixTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (result.feature.description.isNotBlank()) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = highlightMatches(result.feature.description, tokens, MiuixTheme.colorScheme.primary),
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onBackgroundVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = if (result.group != null) {
+                    "${result.app.name} · ${result.group}"
+                } else {
+                    "${result.app.name} · 功能配置"
+                },
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.primary.copy(alpha = 0.8f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Icon(
+            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MiuixTheme.colorScheme.onBackgroundVariant.copy(alpha = 0.5f),
+            modifier = Modifier.size(22.dp)
+        )
+    }
+}
+
+/** 把搜索词在文本中的出现位置标成主题色，拼音命中的部分自然不高亮。 */
+private fun highlightMatches(text: String, tokens: List<String>, color: Color): AnnotatedString {
+    if (tokens.isEmpty()) return AnnotatedString(text)
+
+    val marked = BooleanArray(text.length)
+    for (token in tokens) {
+        var index = text.indexOf(token, ignoreCase = true)
+        while (index >= 0) {
+            for (i in index until minOf(index + token.length, text.length)) {
+                marked[i] = true
+            }
+            index = text.indexOf(token, ignoreCase = true, startIndex = index + token.length)
+        }
+    }
+
+    return buildAnnotatedString {
+        var i = 0
+        while (i < text.length) {
+            val start = i
+            val highlighted = marked[i]
+            while (i < text.length && marked[i] == highlighted) i++
+            if (highlighted) {
+                withStyle(SpanStyle(color = color, fontWeight = FontWeight.SemiBold)) {
+                    append(text.substring(start, i))
+                }
+            } else {
+                append(text.substring(start, i))
+            }
+        }
     }
 }
 

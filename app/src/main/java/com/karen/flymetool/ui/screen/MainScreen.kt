@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.karen.flymetool.data.HookFeature
 import com.karen.flymetool.data.ScopedApp
 import top.yukonga.miuix.kmp.basic.FloatingNavigationBar
 import top.yukonga.miuix.kmp.basic.FloatingNavigationBarItem
@@ -28,7 +29,8 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
 fun MainScreen(
-    onAppClick: (ScopedApp) -> Unit
+    onAppClick: (ScopedApp) -> Unit,
+    onFeatureClick: (ScopedApp, HookFeature) -> Unit
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(MainTab.HOME) }
     val contentInsets = WindowInsets.systemBars.exclude(WindowInsets.navigationBars)
@@ -61,6 +63,7 @@ fun MainScreen(
         MainContent(
             selectedTab = selectedTab,
             onAppClick = onAppClick,
+            onFeatureClick = onFeatureClick,
             modifier = Modifier.padding(paddingValues)
         )
     }
@@ -70,6 +73,7 @@ fun MainScreen(
 private fun MainContent(
     selectedTab: MainTab,
     onAppClick: (ScopedApp) -> Unit,
+    onFeatureClick: (ScopedApp, HookFeature) -> Unit,
     modifier: Modifier = Modifier
 ) {
     AnimatedContent(
@@ -90,6 +94,7 @@ private fun MainContent(
             when (tab) {
                 MainTab.HOME -> HomeScreen(
                     onAppClick = onAppClick,
+                    onFeatureClick = onFeatureClick,
                     modifier = Modifier.fillMaxSize()
                 )
                 MainTab.ABOUT -> AboutScreen(

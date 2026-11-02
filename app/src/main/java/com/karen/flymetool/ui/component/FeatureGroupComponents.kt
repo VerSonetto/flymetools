@@ -2,6 +2,7 @@ package com.karen.flymetool.ui.component
 
 import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -94,16 +95,26 @@ fun FeatureListRow(
     context: Context,
     onNavigate: (String) -> Unit,
     modifier: Modifier = Modifier,
-    showDivider: Boolean = false
+    showDivider: Boolean = false,
+    highlighted: Boolean = false
 ) {
     val hasConfig = hasFeatureConfig(feature.key)
     var expanded by remember(feature.key) { mutableStateOf(false) }
+    val rowColor by animateColorAsState(
+        targetValue = if (highlighted) {
+            MiuixTheme.colorScheme.primary.copy(alpha = 0.12f)
+        } else {
+            MiuixTheme.colorScheme.surface
+        },
+        animationSpec = tween(300),
+        label = "feature_row_highlight"
+    )
 
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(MiuixTheme.colorScheme.surface)
+            .background(rowColor)
     ) {
         FeatureSwitch(
             title = feature.label,
