@@ -6,6 +6,7 @@ import io.github.libxposed.api.XposedInterface.ExceptionMode
 import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -273,8 +274,17 @@ object Reflect {
         hookMethod(api, m, block)
     }
 
+    /** 抽象声明没有可挂载的方法体；只在 Hook 枚举时过滤，保留普通反射查找的继承语义。 */
+    internal fun findHookableMethods(
+        clazz: Class<*>,
+        name: String,
+        excluded: (Method) -> Boolean = { false },
+    ): List<Method> = findMethods(clazz, name).filter {
+        !Modifier.isAbstract(it.modifiers) && !excluded(it)
+    }
+
     /**
-     * 语义同 XposedBridge.hookAllMethods：挂接同名全部方法。
+     * 挂接同名的全部非抽象方法，保留父类具体实现与重载。
      * block 放在最后，使 `hookAllMethods(api, clazz, name) { chain -> ... }`
      * 的尾随 lambda 能正确绑定到 block（而非 excluded）。
      */
@@ -285,7 +295,7 @@ object Reflect {
         excluded: (Method) -> Boolean = { false },
         block: (Chain) -> Any?
     ) {
-        findMethods(clazz, name).filter { !excluded(it) }.forEach { hookMethod(api, it, block) }
+        findHookableMethods(clazz, name, excluded).forEach { hookMethod(api, it, block) }
     }
 
     /** 语义同 XposedBridge.hookAllConstructors。 */
