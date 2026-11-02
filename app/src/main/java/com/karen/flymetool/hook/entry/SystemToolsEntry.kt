@@ -8,6 +8,7 @@ object SystemToolsEntry : HookEntry {
 
     private val hookFactories: List<Pair<String, () -> FeatureHook>> = listOf(
         "SlideGestureMultiArcHook" to { com.karen.flymetool.hook.feature.systemtools.SlideGestureMultiArcHook },
+        "SlideGestureSearchEntryHook" to { com.karen.flymetool.hook.feature.systemtools.SlideGestureSearchEntryHook },
     )
 
     override fun initHooks(ctx: HookContext) {

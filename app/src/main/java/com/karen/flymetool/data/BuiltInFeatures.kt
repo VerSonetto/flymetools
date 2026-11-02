@@ -199,7 +199,9 @@ val builtInFeatures: Map<String, List<HookFeature>> = mapOf(
     ),
     "com.flyme.systemuitools" to listOf(
         HookFeature("slide_gesture_multi_arc", "小窗快捷菜单多圆弧",
-            description = "自定义斜滑唤出的小窗快捷菜单圆弧条数，最多 4 条；更多应用入口保留在系统默认圆弧")
+            description = "自定义斜滑唤出的小窗快捷菜单圆弧条数，最多 4 条；更多应用入口保留在系统默认圆弧"),
+        HookFeature("slide_gesture_search_entry", "快捷菜单唤起检索",
+            description = "在小窗快捷菜单的「功能」页加入「唤起检索」，可加入弧菜单，点击后在弧菜单同侧展开桌面的字母检索面板；改动后需重启系统界面工具与桌面")
     ),
     "com.flyme.systemuieditor" to listOf(
         HookFeature("classic_clock_depth", "经典时钟景深",

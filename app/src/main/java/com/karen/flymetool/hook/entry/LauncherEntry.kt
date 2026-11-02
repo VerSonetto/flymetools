@@ -13,6 +13,7 @@ object LauncherEntry : HookEntry {
         "MemoryDisplayHook" to { com.karen.flymetool.hook.feature.launcher.MemoryDisplayHook },
         "FolderBlurHook" to { com.karen.flymetool.hook.feature.launcher.FolderBlurHook },
         "HomeScreenLimitHook" to { com.karen.flymetool.hook.feature.launcher.HomeScreenLimitHook },
+        "SlideSearchLauncherHook" to { com.karen.flymetool.hook.feature.launcher.SlideSearchLauncherHook },
     )
 
     override fun initHooks(ctx: HookContext) {
